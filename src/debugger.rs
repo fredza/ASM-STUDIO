@@ -205,6 +205,33 @@ impl Debugger {
     pub fn is_alive(&self) -> bool {
         self.state == RunState::Stopped
     }
+
+    /// Lit `len` octets à l'adresse `addr` dans l'espace mémoire du tracé,
+    /// via `/proc/<pid>/mem`.
+    pub fn read_mem(&self, addr: u64, len: usize) -> Result<Vec<u8>, String> {
+        use std::fs::File;
+        use std::os::unix::fs::FileExt;
+
+        let path = format!("/proc/{}/mem", self.child.as_raw());
+        let f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
+        let mut buf = vec![0u8; len];
+        f.read_exact_at(&mut buf, addr)
+            .map_err(|e| format!("read @0x{addr:X}: {e}"))?;
+        Ok(buf)
+    }
+
+    /// Lit `count` mots de 64 bits à partir de `addr` (little-endian).
+    /// Renvoie une valeur nulle pour les mots illisibles (au-delà de la pile mappée).
+    pub fn read_qwords(&self, addr: u64, count: usize) -> Vec<u64> {
+        (0..count)
+            .map(|i| {
+                let a = addr + (i as u64) * 8;
+                self.read_mem(a, 8)
+                    .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+                    .unwrap_or(0)
+            })
+            .collect()
+    }
 }
 
 impl Drop for Debugger {

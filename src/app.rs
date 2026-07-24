@@ -1,22 +1,32 @@
-//! Application eframe : barre d'outils + panneau Registres/Flags (M1).
+//! Application eframe : barre d'outils + Registres/Flags + Désassemblage + Pile.
 
 use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, RichText};
 
 use crate::assemble;
-use crate::debugger::{Debugger, Flags, RunState};
+use crate::debugger::{Debugger, RunState};
+use crate::disasm::{self, Insn};
 
 /// Couleur d'une valeur qui vient de changer au dernier step.
 const CHANGED: Color32 = Color32::from_rgb(0xF5, 0xA6, 0x23); // orange
 const FLAG_ON: Color32 = Color32::from_rgb(0x4C, 0xAF, 0x50); // vert
 const FLAG_OFF: Color32 = Color32::from_rgb(0x88, 0x88, 0x88); // gris
+const RIP_ROW: Color32 = Color32::from_rgb(0x3A, 0x33, 0x1E); // fond de la ligne RIP
+const ADDR_COL: Color32 = Color32::from_rgb(0x7F, 0x9C, 0xD1); // adresses (bleuté)
+const BYTES_COL: Color32 = Color32::from_rgb(0x88, 0x88, 0x88); // octets (gris)
+const MNEMONIC: Color32 = Color32::from_rgb(0x6E, 0xB4, 0xE8); // mnémonique
+
+/// Nombre de mots de pile affichés à partir de RSP.
+const STACK_ROWS: usize = 12;
 
 pub struct App {
     src_path: PathBuf,
     out_dir: PathBuf,
     binary: Option<PathBuf>,
     dbg: Option<Debugger>,
+    /// Désassemblage de `.text`, calculé une fois au lancement.
+    disasm: Vec<Insn>,
     console: String,
     status: String,
 }
@@ -28,6 +38,7 @@ impl App {
             out_dir: PathBuf::from("build"),
             binary: None,
             dbg: None,
+            disasm: Vec::new(),
             console: String::new(),
             status: "Prêt".to_string(),
         }
@@ -62,6 +73,11 @@ impl App {
         let Some(bin) = self.binary.clone() else {
             return;
         };
+        // Désassemble le .text pour la vue centrale.
+        match disasm::disassemble_text(&bin) {
+            Ok(insns) => self.disasm = insns,
+            Err(e) => self.log(&e),
+        }
         self.dbg = None; // relâche l'ancien processus (Drop tue le tracé)
         match Debugger::launch(&bin) {
             Ok(dbg) => {
@@ -95,6 +111,11 @@ impl App {
             }
         }
     }
+
+    /// Adresse de l'instruction courante (RIP), si un programme est vivant.
+    fn current_rip(&self) -> Option<u64> {
+        self.dbg.as_ref().filter(|d| d.is_alive()).map(|d| d.regs.rip)
+    }
 }
 
 impl eframe::App for App {
@@ -127,7 +148,7 @@ impl eframe::App for App {
         // --- Console (bas) ---
         egui::TopBottomPanel::bottom("console")
             .resizable(true)
-            .default_height(140.0)
+            .default_height(120.0)
             .show(ctx, |ui| {
                 ui.label(RichText::new("CONSOLE").strong());
                 egui::ScrollArea::vertical()
@@ -141,61 +162,160 @@ impl eframe::App for App {
                     });
             });
 
-        // --- Flags (panneau droit) ---
-        egui::SidePanel::right("flags")
+        // --- Registres + Flags (gauche) ---
+        egui::SidePanel::left("regs_panel")
             .resizable(false)
-            .default_width(140.0)
+            .default_width(240.0)
             .show(ctx, |ui| {
+                self.registers_ui(ui);
+            });
+
+        // --- Pile (droite) ---
+        egui::SidePanel::right("stack_panel")
+            .resizable(false)
+            .default_width(280.0)
+            .show(ctx, |ui| {
+                self.stack_ui(ui);
+            });
+
+        // --- Désassemblage (centre) ---
+        egui::CentralPanel::default().show(ctx, |ui| {
+            self.disasm_ui(ui);
+        });
+    }
+}
+
+impl App {
+    fn registers_ui(&self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("REGISTERS").strong());
+        ui.separator();
+        match &self.dbg {
+            Some(d) => {
+                egui::Grid::new("regs_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        for ((name, val), (_, pval)) in d.regs.named().iter().zip(d.prev.named()) {
+                            ui.label(RichText::new(*name).monospace().strong());
+                            let mut value = RichText::new(format!("0x{val:016X}")).monospace();
+                            if *val != pval {
+                                value = value.color(CHANGED);
+                            }
+                            ui.label(value);
+                            ui.end_row();
+                        }
+                    });
+
+                ui.add_space(8.0);
                 ui.label(RichText::new("FLAGS").strong());
                 ui.separator();
-                let (flags, prev) = match &self.dbg {
-                    Some(d) => (d.flags(), d.prev_flags()),
-                    None => (Flags::default(), Flags::default()),
-                };
+                let (flags, prev) = (d.flags(), d.prev_flags());
                 egui::Grid::new("flags_grid").num_columns(2).show(ui, |ui| {
                     for ((name, val), (_, pval)) in flags.named().iter().zip(prev.named()) {
-                        let changed = *val != pval;
                         let mut label = RichText::new(*name).monospace();
-                        if changed {
+                        if *val != pval {
                             label = label.color(CHANGED);
                         }
                         ui.label(label);
                         let color = if *val { FLAG_ON } else { FLAG_OFF };
-                        ui.label(RichText::new(if *val { "1" } else { "0" }).monospace().color(color));
+                        ui.label(
+                            RichText::new(if *val { "1" } else { "0" })
+                                .monospace()
+                                .color(color),
+                        );
                         ui.end_row();
                     }
                 });
-            });
+            }
+            None => {
+                ui.label("Aucun programme lancé.");
+            }
+        }
+    }
 
-        // --- Registres (centre) ---
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.label(RichText::new("REGISTERS").strong());
-            ui.separator();
-            match &self.dbg {
-                Some(d) => {
-                    egui::Grid::new("regs_grid")
-                        .num_columns(2)
-                        .spacing([16.0, 4.0])
-                        .show(ui, |ui| {
-                            for ((name, val), (_, pval)) in
-                                d.regs.named().iter().zip(d.prev.named())
-                            {
-                                let changed = *val != pval;
-                                ui.label(RichText::new(*name).monospace().strong());
-                                let mut value =
-                                    RichText::new(format!("0x{val:016X}")).monospace();
-                                if changed {
-                                    value = value.color(CHANGED);
-                                }
-                                ui.label(value);
-                                ui.end_row();
-                            }
-                        });
-                }
-                None => {
-                    ui.label("Aucun programme lancé. Cliquez sur « Lancer ».");
+    fn disasm_ui(&self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("DISASSEMBLY").strong());
+        ui.separator();
+        if self.disasm.is_empty() {
+            ui.label("Cliquez sur « Lancer » pour désassembler et exécuter.");
+            return;
+        }
+        let rip = self.current_rip();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for insn in &self.disasm {
+                let is_current = Some(insn.address) == rip;
+                let row = egui::RichText::new(format!("0x{:08X}", insn.address))
+                    .monospace()
+                    .color(ADDR_COL);
+
+                let resp = ui.horizontal(|ui| {
+                    // Flèche RIP
+                    if is_current {
+                        ui.label(RichText::new("➤").color(CHANGED));
+                    } else {
+                        ui.label("  ");
+                    }
+                    ui.label(row);
+                    ui.label(
+                        RichText::new(format!("{:<20}", insn.bytes_hex()))
+                            .monospace()
+                            .color(BYTES_COL),
+                    );
+                    ui.label(
+                        RichText::new(format!("{:<7}", insn.mnemonic))
+                            .monospace()
+                            .color(MNEMONIC),
+                    );
+                    ui.label(RichText::new(&insn.operands).monospace());
+                });
+
+                // Surligne la ligne courante.
+                if is_current {
+                    ui.painter().rect_filled(
+                        resp.response.rect.expand2(egui::vec2(0.0, 1.0)),
+                        2.0,
+                        RIP_ROW,
+                    );
                 }
             }
         });
+    }
+
+    fn stack_ui(&self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("STACK").strong());
+        ui.separator();
+        let Some(dbg) = self.dbg.as_ref().filter(|d| d.is_alive()) else {
+            ui.label("—");
+            return;
+        };
+        let rsp = dbg.regs.rsp;
+        let rbp = dbg.regs.rbp;
+        let words = dbg.read_qwords(rsp, STACK_ROWS);
+        egui::Grid::new("stack_grid")
+            .num_columns(3)
+            .spacing([10.0, 3.0])
+            .show(ui, |ui| {
+                for (i, val) in words.iter().enumerate() {
+                    let addr = rsp + (i as u64) * 8;
+                    ui.label(
+                        RichText::new(format!("0x{addr:012X}"))
+                            .monospace()
+                            .color(ADDR_COL),
+                    );
+                    ui.label(RichText::new(format!("0x{val:016X}")).monospace());
+                    // Repères RSP / RBP.
+                    let marker = if addr == rsp && addr == rbp {
+                        "← RSP,RBP"
+                    } else if addr == rsp {
+                        "← RSP"
+                    } else if addr == rbp {
+                        "← RBP"
+                    } else {
+                        ""
+                    };
+                    ui.label(RichText::new(marker).monospace().color(CHANGED));
+                    ui.end_row();
+                }
+            });
     }
 }

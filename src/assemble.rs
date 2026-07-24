@@ -9,8 +9,6 @@ use std::process::Command;
 pub struct BuildOutput {
     /// Chemin du binaire ELF produit, prêt à être lancé sous ptrace.
     pub binary: PathBuf,
-    /// Chemin du listing NASM (mapping adresse ↔ ligne, exploité plus tard).
-    pub listing: PathBuf,
     /// Journal des commandes exécutées (affiché dans la console).
     pub log: String,
 }
@@ -63,5 +61,5 @@ pub fn assemble(src: &Path, out_dir: &Path) -> Result<BuildOutput, String> {
     }
 
     log.push_str("Build OK\n");
-    Ok(BuildOutput { binary, listing, log })
+    Ok(BuildOutput { binary, log })
 }
