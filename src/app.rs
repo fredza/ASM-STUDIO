@@ -7,6 +7,7 @@ use eframe::egui::{self, Color32, RichText};
 use crate::assemble;
 use crate::debugger::{Debugger, RunState};
 use crate::disasm::{self, Insn};
+use crate::explain;
 
 /// Couleur d'une valeur qui vient de changer au dernier step.
 const CHANGED: Color32 = Color32::from_rgb(0xF5, 0xA6, 0x23); // orange
@@ -27,6 +28,9 @@ pub struct App {
     dbg: Option<Debugger>,
     /// Désassemblage de `.text`, calculé une fois au lancement.
     disasm: Vec<Insn>,
+    /// Instruction sélectionnée au clic (adresse) pour le panneau d'explication.
+    /// `None` => on explique l'instruction courante (RIP).
+    selected: Option<u64>,
     console: String,
     status: String,
 }
@@ -39,6 +43,7 @@ impl App {
             binary: None,
             dbg: None,
             disasm: Vec::new(),
+            selected: None,
             console: String::new(),
             status: "Prêt".to_string(),
         }
@@ -78,6 +83,7 @@ impl App {
             Ok(insns) => self.disasm = insns,
             Err(e) => self.log(&e),
         }
+        self.selected = None; // l'explication suit à nouveau RIP
         self.dbg = None; // relâche l'ancien processus (Drop tue le tracé)
         match Debugger::launch(&bin) {
             Ok(dbg) => {
@@ -170,6 +176,14 @@ impl eframe::App for App {
                 self.registers_ui(ui);
             });
 
+        // --- Explication de l'instruction (extrême droite) ---
+        egui::SidePanel::right("instruction_panel")
+            .resizable(true)
+            .default_width(320.0)
+            .show(ctx, |ui| {
+                self.instruction_ui(ui);
+            });
+
         // --- Pile (droite) ---
         egui::SidePanel::right("stack_panel")
             .resizable(false)
@@ -233,7 +247,7 @@ impl App {
         }
     }
 
-    fn disasm_ui(&self, ui: &mut egui::Ui) {
+    fn disasm_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("DISASSEMBLY").strong());
         ui.separator();
         if self.disasm.is_empty() {
@@ -241,21 +255,24 @@ impl App {
             return;
         }
         let rip = self.current_rip();
+        let mut clicked: Option<u64> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             for insn in &self.disasm {
                 let is_current = Some(insn.address) == rip;
-                let row = egui::RichText::new(format!("0x{:08X}", insn.address))
-                    .monospace()
-                    .color(ADDR_COL);
+                let is_selected = Some(insn.address) == self.selected;
 
-                let resp = ui.horizontal(|ui| {
+                let inner = ui.horizontal(|ui| {
                     // Flèche RIP
                     if is_current {
                         ui.label(RichText::new("➤").color(CHANGED));
                     } else {
-                        ui.label("  ");
+                        ui.label("    ");
                     }
-                    ui.label(row);
+                    ui.label(
+                        RichText::new(format!("0x{:08X}", insn.address))
+                            .monospace()
+                            .color(ADDR_COL),
+                    );
                     ui.label(
                         RichText::new(format!("{:<20}", insn.bytes_hex()))
                             .monospace()
@@ -269,16 +286,106 @@ impl App {
                     ui.label(RichText::new(&insn.operands).monospace());
                 });
 
-                // Surligne la ligne courante.
+                // Toute la ligne est cliquable (sélection pour l'explication).
+                let row = inner.response.interact(egui::Sense::click());
+                if row.clicked() {
+                    clicked = Some(insn.address);
+                }
+
+                // Fond : ligne courante (RIP) puis surlignage de sélection.
                 if is_current {
+                    ui.painter()
+                        .rect_filled(row.rect.expand2(egui::vec2(0.0, 1.0)), 2.0, RIP_ROW);
+                }
+                if is_selected && !is_current {
                     ui.painter().rect_filled(
-                        resp.response.rect.expand2(egui::vec2(0.0, 1.0)),
+                        row.rect.expand2(egui::vec2(0.0, 1.0)),
                         2.0,
-                        RIP_ROW,
+                        Color32::from_rgb(0x2A, 0x2A, 0x33),
                     );
+                }
+                if row.hovered() {
+                    ui.painter()
+                        .rect_stroke(row.rect, 2.0, egui::Stroke::new(1.0_f32, ADDR_COL));
                 }
             }
         });
+        if let Some(addr) = clicked {
+            // Reclic sur la même ligne => on revient au suivi de RIP.
+            self.selected = if self.selected == Some(addr) { None } else { Some(addr) };
+        }
+    }
+
+    /// Panneau « INSTRUCTION » : explique l'instruction sélectionnée (ou RIP).
+    fn instruction_ui(&self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("INSTRUCTION").strong());
+        ui.separator();
+
+        // Instruction à expliquer : sélection explicite, sinon RIP courant.
+        let target = self.selected.or_else(|| self.current_rip());
+        let Some(addr) = target else {
+            ui.label("Lancez le programme, puis cliquez une instruction.");
+            return;
+        };
+        let Some(insn) = self.disasm.iter().find(|i| i.address == addr) else {
+            ui.label("—");
+            return;
+        };
+        let flags = self
+            .dbg
+            .as_ref()
+            .filter(|d| d.is_alive())
+            .map(|d| d.flags())
+            .unwrap_or_default();
+
+        let e = explain::explain(&insn.mnemonic, &insn.operands, flags);
+
+        if self.selected.is_some() {
+            ui.label(RichText::new("(sélection — reclic pour suivre RIP)").small().weak());
+        } else {
+            ui.label(RichText::new("(instruction courante)").small().weak());
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new(&e.title).heading().color(MNEMONIC));
+        ui.label(RichText::new(e.category).italics().weak());
+        ui.add_space(6.0);
+        ui.label(RichText::new("Description").strong());
+        ui.label(&e.description);
+
+        if let Some(cond) = &e.condition {
+            ui.add_space(6.0);
+            ui.label(RichText::new("Condition").strong());
+            ui.label(RichText::new(cond).monospace());
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("État actuel :").strong());
+                for (name, val) in &e.relevant_flags {
+                    let c = if *val { FLAG_ON } else { FLAG_OFF };
+                    ui.label(
+                        RichText::new(format!("{name} = {}", *val as u8))
+                            .monospace()
+                            .color(c),
+                    );
+                }
+            });
+
+            if let Some(taken) = e.taken {
+                ui.add_space(6.0);
+                let (txt, col) = if taken {
+                    ("✔ Condition vraie — le saut sera pris.", FLAG_ON)
+                } else {
+                    ("✘ Condition fausse — pas de saut (on continue).", Color32::from_rgb(0xD9, 0x5B, 0x5B))
+                };
+                ui.label(RichText::new(txt).color(col).strong());
+            }
+        }
+
+        if !e.affects_flags.is_empty() {
+            ui.add_space(6.0);
+            ui.label(RichText::new("Flags positionnés").strong());
+            ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
+        }
     }
 
     fn stack_ui(&self, ui: &mut egui::Ui) {

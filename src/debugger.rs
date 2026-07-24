@@ -158,8 +158,17 @@ impl Debugger {
                 unsafe { libc::_exit(127) };
             }
             ForkResult::Parent { child } => {
-                // Premier arrêt : juste après execve, avant la 1re instruction.
-                waitpid(child, None).map_err(|e| format!("waitpid initial: {e}"))?;
+                // Premier arrêt attendu : SIGTRAP juste après execve, avant la
+                // 1re instruction. Si l'enfant est déjà mort, execve a échoué.
+                match waitpid(child, None).map_err(|e| format!("waitpid initial: {e}"))? {
+                    WaitStatus::Stopped(_, _) => {}
+                    WaitStatus::Exited(_, code) => {
+                        return Err(format!(
+                            "le programme n'a pas démarré (execve a échoué, code {code})"
+                        ));
+                    }
+                    other => return Err(format!("état initial inattendu: {other:?}")),
+                }
                 let regs = read_regs(child)?;
                 Ok(Debugger {
                     child,
@@ -260,7 +269,8 @@ mod tests {
     /// résultat négatif => ZF=0, SF=1, CF=1 (emprunt), OF=0.
     #[test]
     fn step_through_example_sets_flags() {
-        let out = assemble::assemble(Path::new("examples/test.asm"), Path::new("build"))
+        // Dossier dédié : évite toute collision avec les autres tests parallèles.
+        let out = assemble::assemble(Path::new("examples/test.asm"), Path::new("build/test-dbg"))
             .expect("assemblage");
         let mut dbg = Debugger::launch(&out.binary).expect("launch");
 

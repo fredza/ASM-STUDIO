@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn first_instruction_is_mov_rax_5() {
-        let out = assemble::assemble(Path::new("examples/test.asm"), Path::new("build"))
+        let out = assemble::assemble(Path::new("examples/test.asm"), Path::new("build/test-disasm"))
             .expect("assemblage");
         let insns = disassemble_text(&out.binary).expect("désassemblage");
         let first = &insns[0];

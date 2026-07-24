@@ -2,6 +2,7 @@ mod app;
 mod assemble;
 mod debugger;
 mod disasm;
+mod explain;
 
 fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
