@@ -59,6 +59,15 @@ pub fn disassemble_text(binary: &Path) -> Result<Vec<Insn>, String> {
         .collect())
 }
 
+/// Adresse virtuelle de début d'une section (ex. `.data`), si présente.
+pub fn section_address(binary: &Path, name: &str) -> Option<u64> {
+    let data = std::fs::read(binary).ok()?;
+    let file = object::File::parse(&*data).ok()?;
+    file.sections()
+        .find(|s| s.name() == Ok(name))
+        .map(|s| s.address())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

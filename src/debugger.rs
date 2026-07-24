@@ -130,15 +130,23 @@ pub enum RunState {
     Signaled,
 }
 
+/// Nombre de mots de pile capturés dans chaque snapshot (à partir de RSP).
+pub const STACK_WINDOW: usize = 16;
+
+/// État complet du CPU à une étape donnée, conservé pour la timeline (M5).
+#[derive(Clone)]
+pub struct Snapshot {
+    pub regs: Registers,
+    /// Fenêtre de pile (`STACK_WINDOW` mots de 64 bits) à partir de RSP.
+    pub stack: Vec<u64>,
+}
+
 pub struct Debugger {
     child: Pid,
     pub state: RunState,
-    /// Registres à l'instruction courante.
-    pub regs: Registers,
-    /// Registres à l'instruction précédente (pour la coloration du diff).
-    pub prev: Registers,
-    /// Nombre d'instructions exécutées depuis le lancement.
-    pub steps: u64,
+    /// Historique des états, un par instruction exécutée (index 0 = état initial).
+    /// Permet le scrubbing de la timeline sans ré-exécuter (record-and-replay).
+    pub history: Vec<Snapshot>,
 }
 
 impl Debugger {
@@ -170,18 +178,17 @@ impl Debugger {
                     other => return Err(format!("état initial inattendu: {other:?}")),
                 }
                 let regs = read_regs(child)?;
+                let snap = snapshot_of(child, &regs);
                 Ok(Debugger {
                     child,
                     state: RunState::Stopped,
-                    prev: regs.clone(),
-                    regs,
-                    steps: 0,
+                    history: vec![snap],
                 })
             }
         }
     }
 
-    /// Exécute exactement une instruction machine.
+    /// Exécute exactement une instruction machine et enregistre un snapshot.
     pub fn step(&mut self) -> Result<(), String> {
         if self.state != RunState::Stopped {
             return Ok(());
@@ -195,51 +202,42 @@ impl Debugger {
                 self.state = RunState::Signaled;
             }
             _ => {
-                self.prev = self.regs.clone();
-                self.regs = read_regs(self.child)?;
-                self.steps += 1;
+                let regs = read_regs(self.child)?;
+                let snap = snapshot_of(self.child, &regs);
+                self.history.push(snap);
             }
         }
         Ok(())
     }
 
-    pub fn flags(&self) -> Flags {
-        Flags::from_eflags(self.regs.eflags)
+    /// Snapshot de tête (état courant).
+    pub fn head(&self) -> &Snapshot {
+        self.history.last().expect("history non vide")
     }
 
-    pub fn prev_flags(&self) -> Flags {
-        Flags::from_eflags(self.prev.eflags)
+    /// Registres courants (tête de l'historique).
+    pub fn regs(&self) -> &Registers {
+        &self.head().regs
+    }
+
+    /// Nombre d'instructions exécutées (index max de la timeline).
+    pub fn steps(&self) -> usize {
+        self.history.len() - 1
     }
 
     pub fn is_alive(&self) -> bool {
         self.state == RunState::Stopped
     }
 
-    /// Lit `len` octets à l'adresse `addr` dans l'espace mémoire du tracé,
-    /// via `/proc/<pid>/mem`.
-    pub fn read_mem(&self, addr: u64, len: usize) -> Result<Vec<u8>, String> {
-        use std::fs::File;
-        use std::os::unix::fs::FileExt;
-
-        let path = format!("/proc/{}/mem", self.child.as_raw());
-        let f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
-        let mut buf = vec![0u8; len];
-        f.read_exact_at(&mut buf, addr)
-            .map_err(|e| format!("read @0x{addr:X}: {e}"))?;
-        Ok(buf)
+    /// PID du processus tracé.
+    pub fn pid(&self) -> i32 {
+        self.child.as_raw()
     }
 
-    /// Lit `count` mots de 64 bits à partir de `addr` (little-endian).
-    /// Renvoie une valeur nulle pour les mots illisibles (au-delà de la pile mappée).
-    pub fn read_qwords(&self, addr: u64, count: usize) -> Vec<u64> {
-        (0..count)
-            .map(|i| {
-                let a = addr + (i as u64) * 8;
-                self.read_mem(a, 8)
-                    .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
-                    .unwrap_or(0)
-            })
-            .collect()
+    /// Lit `len` octets à l'adresse `addr` dans l'espace mémoire du tracé (état
+    /// courant vivant), via `/proc/<pid>/mem`.
+    pub fn read_mem(&self, addr: u64, len: usize) -> Result<Vec<u8>, String> {
+        read_mem_pid(self.child, addr, len)
     }
 }
 
@@ -256,6 +254,40 @@ impl Drop for Debugger {
 fn read_regs(pid: Pid) -> Result<Registers, String> {
     let raw = ptrace::getregs(pid).map_err(|e| format!("getregs: {e}"))?;
     Ok(Registers::from_raw(&raw))
+}
+
+/// Lit `len` octets à `addr` dans l'espace mémoire du processus `pid`.
+fn read_mem_pid(pid: Pid, addr: u64, len: usize) -> Result<Vec<u8>, String> {
+    use std::fs::File;
+    use std::os::unix::fs::FileExt;
+
+    let path = format!("/proc/{}/mem", pid.as_raw());
+    let f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
+    let mut buf = vec![0u8; len];
+    f.read_exact_at(&mut buf, addr)
+        .map_err(|e| format!("read @0x{addr:X}: {e}"))?;
+    Ok(buf)
+}
+
+/// Lit `count` mots de 64 bits à partir de `addr` (little-endian).
+/// Renvoie 0 pour les mots illisibles (au-delà de la pile mappée).
+fn read_qwords_pid(pid: Pid, addr: u64, count: usize) -> Vec<u64> {
+    (0..count)
+        .map(|i| {
+            let a = addr.wrapping_add((i as u64) * 8);
+            read_mem_pid(pid, a, 8)
+                .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+/// Capture un snapshot (registres + fenêtre de pile) de l'état courant.
+fn snapshot_of(pid: Pid, regs: &Registers) -> Snapshot {
+    Snapshot {
+        regs: regs.clone(),
+        stack: read_qwords_pid(pid, regs.rsp, STACK_WINDOW),
+    }
 }
 
 #[cfg(test)]
@@ -279,7 +311,7 @@ mod tests {
             dbg.step().expect("step");
             assert!(dbg.is_alive(), "le programme ne devrait pas être terminé");
         }
-        let f = dbg.flags();
+        let f = Flags::from_eflags(dbg.regs().eflags);
         assert!(!f.zf, "ZF doit être 0 (5 != 8)");
         assert!(f.sf, "SF doit être 1 (5 - 8 < 0)");
         assert!(f.cf, "CF doit être 1 (emprunt sur 5 - 8)");
@@ -293,5 +325,26 @@ mod tests {
             dbg.step().expect("step");
         }
         assert!(matches!(dbg.state, RunState::Exited(0)), "exit 0 attendu");
+    }
+
+    /// M5 : l'historique enregistre un snapshot par step, et la fenêtre de pile
+    /// capture bien la valeur empilée par `push rax`.
+    #[test]
+    fn history_records_snapshots_and_stack() {
+        let out = assemble::assemble(Path::new("examples/test.asm"), Path::new("build/test-hist"))
+            .expect("assemblage");
+        let mut dbg = Debugger::launch(&out.binary).expect("launch");
+
+        assert_eq!(dbg.history.len(), 1, "état initial = 1 snapshot");
+        assert_eq!(dbg.steps(), 0);
+
+        // mov rax,5 ; push rax  => après 2 steps, le sommet de pile vaut 5.
+        dbg.step().expect("step");
+        dbg.step().expect("step");
+        assert_eq!(dbg.history.len(), 3, "3 snapshots (initial + 2 steps)");
+        assert_eq!(dbg.head().stack[0], 5, "push rax a empilé 5");
+
+        // Le snapshot de tête reflète bien les registres courants.
+        assert_eq!(dbg.head().regs.rip, dbg.regs().rip);
     }
 }
