@@ -1,56 +1,91 @@
-//! Application eframe : menu, barre d'outils, panneaux (Registres/Flags,
-//! Désassemblage, Pile, Instruction, Mémoire, Timeline, Console) + barre d'état.
+//! Application eframe : éditeur NASM + débogueur pédagogique.
 //!
-//! L'état affiché est toujours lu dans l'historique du debugger à l'index
-//! `view_index` (timeline), ce qui unifie « état courant » et « scrubbing ».
+//! Layout : menu / barre d'outils en haut, barre d'état + bande
+//! (Mémoire | Timeline | Console) en bas, Registres/Flags à gauche,
+//! Instruction + Pile à droite, éditeur/désassemblage au centre (onglets).
+//! L'état affiché est lu dans l'historique du debugger à `view_index`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Color32, RichText, text::LayoutJob};
 
 use crate::assemble;
-use crate::debugger::{Debugger, RunState, Snapshot};
+use crate::debugger::{Debugger, Flags, RunState, Snapshot};
 use crate::disasm::{self, Insn};
 use crate::{explain, syscall};
 
-// Palette (sombre, proche de la maquette).
-const CHANGED: Color32 = Color32::from_rgb(0xF5, 0xA6, 0x23); // valeur modifiée (orange)
-const FLAG_ON: Color32 = Color32::from_rgb(0x4C, 0xAF, 0x50); // vert
-const FLAG_OFF: Color32 = Color32::from_rgb(0x88, 0x88, 0x88); // gris
-const RIP_ROW: Color32 = Color32::from_rgb(0x3A, 0x33, 0x1E); // fond ligne RIP
-const SEL_ROW: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x33); // fond sélection
-const ADDR_COL: Color32 = Color32::from_rgb(0x7F, 0x9C, 0xD1); // adresses
-const BYTES_COL: Color32 = Color32::from_rgb(0x88, 0x88, 0x88); // octets
-const MNEMONIC: Color32 = Color32::from_rgb(0x6E, 0xB4, 0xE8); // mnémonique
-const FALSE_COL: Color32 = Color32::from_rgb(0xD9, 0x5B, 0x5B); // condition fausse (rouge)
+// --- Palette ---
+const ACCENT: Color32 = Color32::from_rgb(0x4C, 0x8B, 0xF5); // bleu d'accent
+const HEADER: Color32 = Color32::from_rgb(0x8A, 0x9B, 0xB4); // titres de section
+const CHANGED: Color32 = Color32::from_rgb(0xF5, 0xA6, 0x23); // valeur modifiée
+const FLAG_ON: Color32 = Color32::from_rgb(0x5F, 0xBF, 0x69);
+const FLAG_OFF: Color32 = Color32::from_rgb(0x77, 0x77, 0x80);
+const RIP_ROW: Color32 = Color32::from_rgb(0x3A, 0x33, 0x1E);
+const SEL_ROW: Color32 = Color32::from_rgb(0x2E, 0x2E, 0x38);
+const ADDR_COL: Color32 = Color32::from_rgb(0x7F, 0x9C, 0xD1);
+const BYTES_COL: Color32 = Color32::from_rgb(0x80, 0x80, 0x88);
+const MNEMONIC: Color32 = Color32::from_rgb(0x6E, 0xB4, 0xE8);
+const FALSE_COL: Color32 = Color32::from_rgb(0xD9, 0x5B, 0x5B);
+
+// --- Coloration syntaxique NASM (style VSCode) ---
+const SYN_COMMENT: Color32 = Color32::from_rgb(0x6A, 0x99, 0x55);
+const SYN_MNEMONIC: Color32 = Color32::from_rgb(0x56, 0x9C, 0xD6);
+const SYN_REGISTER: Color32 = Color32::from_rgb(0x9C, 0xDC, 0xFE);
+const SYN_NUMBER: Color32 = Color32::from_rgb(0xB5, 0xCE, 0xA8);
+const SYN_DIRECTIVE: Color32 = Color32::from_rgb(0xC5, 0x86, 0xC0);
+const SYN_LABEL: Color32 = Color32::from_rgb(0xDC, 0xDC, 0xAA);
+const SYN_TEXT: Color32 = Color32::from_rgb(0xD4, 0xD4, 0xD4);
+
+#[derive(PartialEq, Clone, Copy)]
+enum Tab {
+    Editor,
+    Disasm,
+}
 
 pub struct App {
     src_path: PathBuf,
     out_dir: PathBuf,
+    /// Contenu de l'éditeur (source NASM en cours d'édition).
+    source: String,
+    /// Modifications non enregistrées.
+    dirty: bool,
     binary: Option<PathBuf>,
+
     dbg: Option<Debugger>,
-    /// Désassemblage de `.text`, calculé une fois au lancement.
     disasm: Vec<Insn>,
-    /// Instruction sélectionnée au clic (adresse) pour le panneau d'explication.
     selected: Option<u64>,
-    /// Étape affichée dans la timeline (index dans l'historique).
     view_index: usize,
-    /// Adresse de base de la fenêtre mémoire hexadécimale.
+
     mem_addr: u64,
     mem_input: String,
     console: String,
     status: String,
-    /// Thème appliqué une seule fois.
+
+    tab: Tab,
     styled: bool,
-    /// Affiche la boîte de dialogue « À propos ».
     show_about: bool,
+    // Navigateur de fichiers intégré.
+    show_open: bool,
+    browse_dir: PathBuf,
 }
 
 impl App {
     pub fn new() -> Self {
+        let src_path = PathBuf::from("examples/test.asm");
+        let source = std::fs::read_to_string(&src_path).unwrap_or_else(|_| {
+            "section .text\n    global _start\n_start:\n    mov rax, 60\n    xor rdi, rdi\n    syscall\n"
+                .to_string()
+        });
+        let browse_dir = src_path
+            .parent()
+            .map(Path::to_path_buf)
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("."));
         App {
-            src_path: PathBuf::from("examples/test.asm"),
+            src_path,
             out_dir: PathBuf::from("build"),
+            source,
+            dirty: false,
             binary: None,
             dbg: None,
             disasm: Vec::new(),
@@ -60,12 +95,15 @@ impl App {
             mem_input: String::new(),
             console: String::new(),
             status: "Prêt".to_string(),
+            tab: Tab::Editor,
             styled: false,
             show_about: false,
+            show_open: false,
+            browse_dir,
         }
     }
 
-    // ---------- Actions ----------
+    // ---------- Fichiers ----------
 
     fn log(&mut self, s: &str) {
         self.console.push_str(s);
@@ -74,7 +112,51 @@ impl App {
         }
     }
 
+    fn save_source(&mut self) -> bool {
+        match std::fs::write(&self.src_path, &self.source) {
+            Ok(_) => {
+                self.dirty = false;
+                true
+            }
+            Err(e) => {
+                self.log(&format!("Erreur d'enregistrement de {}: {e}", self.src_path.display()));
+                false
+            }
+        }
+    }
+
+    fn open_file(&mut self, path: PathBuf) {
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                self.source = content;
+                self.src_path = path;
+                self.dirty = false;
+                self.dbg = None;
+                self.disasm.clear();
+                self.binary = None;
+                self.tab = Tab::Editor;
+                self.status = format!("Ouvert : {}", self.src_path.display());
+            }
+            Err(e) => self.log(&format!("Impossible d'ouvrir {}: {e}", path.display())),
+        }
+    }
+
+    fn new_file(&mut self) {
+        self.source = "section .data\n\nsection .text\n    global _start\n_start:\n    mov rax, 60      ; sys_exit\n    xor rdi, rdi     ; code 0\n    syscall\n".to_string();
+        self.src_path = PathBuf::from("sans-titre.asm");
+        self.dirty = true;
+        self.dbg = None;
+        self.disasm.clear();
+        self.binary = None;
+        self.tab = Tab::Editor;
+        self.status = "Nouveau fichier".to_string();
+    }
+
+    // ---------- Build / Run ----------
+
+    /// Enregistre puis assemble (nasm) et lie (ld) le programme de l'utilisateur.
     fn build(&mut self) {
+        self.save_source();
         match assemble::assemble(&self.src_path, &self.out_dir) {
             Ok(out) => {
                 self.log(&out.log);
@@ -90,9 +172,7 @@ impl App {
     }
 
     fn launch(&mut self) {
-        if self.binary.is_none() {
-            self.build();
-        }
+        self.build();
         let Some(bin) = self.binary.clone() else {
             return;
         };
@@ -100,20 +180,19 @@ impl App {
             Ok(insns) => self.disasm = insns,
             Err(e) => self.log(&e),
         }
-        // Par défaut, la fenêtre mémoire pointe sur .data (ou .text à défaut).
         self.mem_addr = disasm::section_address(&bin, ".data")
             .or_else(|| disasm::section_address(&bin, ".text"))
             .unwrap_or(0);
         self.mem_input = format!("0x{:X}", self.mem_addr);
-
         self.selected = None;
         self.view_index = 0;
-        self.dbg = None; // Drop tue l'ancien processus tracé
+        self.dbg = None;
         match Debugger::launch(&bin) {
             Ok(dbg) => {
                 self.status = format!("Lancé — RIP @ 0x{:X}", dbg.regs().rip);
                 self.log("Running...");
                 self.dbg = Some(dbg);
+                self.tab = Tab::Disasm;
             }
             Err(e) => {
                 self.log(&e);
@@ -127,13 +206,10 @@ impl App {
         self.status = "Arrêté".to_string();
     }
 
-    /// Avance d'une instruction (seulement en tête de timeline) et journalise
-    /// les appels système rencontrés.
     fn step(&mut self) {
         if !self.can_step() {
             return;
         }
-        // Détecte un syscall sur le point de s'exécuter (RIP == instruction syscall).
         let pending = self.dbg.as_ref().and_then(|d| {
             let rip = d.regs().rip;
             let is_syscall = self
@@ -149,12 +225,9 @@ impl App {
                 return;
             }
         }
-        // La vue suit la tête.
         if let Some(d) = self.dbg.as_ref() {
             self.view_index = d.history.len() - 1;
         }
-
-        // Journalise le syscall (retour lu après exécution, sauf exit).
         if let Some((call, num)) = pending {
             if syscall::is_exit(num) {
                 self.log(&call);
@@ -162,23 +235,17 @@ impl App {
                 self.log(&format!("{call} = {}", d.regs().rax as i64));
             }
         }
-
-        // Statut.
         match self.dbg.as_ref().map(|d| d.state) {
             Some(RunState::Stopped) => {
                 let d = self.dbg.as_ref().unwrap();
                 self.status = format!("Step {} — RIP @ 0x{:X}", d.steps(), d.regs().rip);
             }
-            Some(RunState::Exited(code)) => {
-                self.status = format!("Terminé (exit {code})");
-            }
+            Some(RunState::Exited(code)) => self.status = format!("Terminé (exit {code})"),
             Some(RunState::Signaled) => self.status = "Terminé (signal)".to_string(),
             None => {}
         }
     }
 
-    /// Re-exécute depuis le début jusqu'à l'étape actuellement affichée, pour
-    /// « reprendre » l'exécution depuis un point passé (ptrace ne recule pas).
     fn resume_here(&mut self) {
         let Some(bin) = self.binary.clone() else { return };
         let target = self.view_index;
@@ -199,44 +266,32 @@ impl App {
         }
     }
 
-    // ---------- Accès à l'état affiché (via la timeline) ----------
+    // ---------- Accès à l'état affiché ----------
 
     fn snap(&self) -> Option<&Snapshot> {
         let d = self.dbg.as_ref()?;
-        let i = self.view_index.min(d.history.len().saturating_sub(1));
-        d.history.get(i)
+        d.history.get(self.view_index.min(d.history.len().saturating_sub(1)))
     }
-
     fn prev_snap(&self) -> Option<&Snapshot> {
         let d = self.dbg.as_ref()?;
         let i = self.view_index.min(d.history.len().saturating_sub(1));
         d.history.get(i.saturating_sub(1))
     }
-
     fn is_head_view(&self) -> bool {
-        match &self.dbg {
-            Some(d) => self.view_index >= d.history.len() - 1,
-            None => false,
-        }
+        matches!(&self.dbg, Some(d) if self.view_index >= d.history.len() - 1)
     }
-
     fn can_step(&self) -> bool {
         self.dbg.as_ref().is_some_and(|d| d.is_alive()) && self.is_head_view()
     }
-
-    /// Mémoire lisible seulement sur l'état vivant courant (non snapshotée).
     fn can_read_memory(&self) -> bool {
         self.is_head_view() && self.dbg.as_ref().is_some_and(|d| d.is_alive())
     }
-
     fn view_rip(&self) -> Option<u64> {
         self.snap().map(|s| s.regs.rip)
     }
-
     fn set_view(&mut self, idx: i64) {
         if let Some(d) = &self.dbg {
-            let last = (d.history.len() - 1) as i64;
-            self.view_index = idx.clamp(0, last) as usize;
+            self.view_index = idx.clamp(0, (d.history.len() - 1) as i64) as usize;
         }
     }
 }
@@ -244,10 +299,9 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.styled {
-            ctx.set_visuals(egui::Visuals::dark());
+            setup_style(ctx);
             self.styled = true;
         }
-
         self.handle_shortcuts(ctx);
 
         self.menu_bar(ctx);
@@ -259,41 +313,52 @@ impl eframe::App for App {
             .resizable(false)
             .default_width(250.0)
             .show(ctx, |ui| self.registers_ui(ui));
-
         egui::SidePanel::right("instruction_panel")
             .resizable(true)
             .default_width(320.0)
             .show(ctx, |ui| self.instruction_ui(ui));
-
         egui::SidePanel::right("stack_panel")
             .resizable(false)
             .default_width(300.0)
             .show(ctx, |ui| self.stack_ui(ui));
-
-        egui::CentralPanel::default().show(ctx, |ui| self.disasm_ui(ui));
+        egui::CentralPanel::default().show(ctx, |ui| self.center_ui(ui));
 
         self.about_window(ctx);
+        self.open_window(ctx);
     }
 }
 
 impl App {
-    // ---------- Raccourcis clavier ----------
+    // ---------- Raccourcis ----------
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::Key;
-        let (step, run, stop, build, first, prev, next, last) = ctx.input(|i| {
-            let ctrl = i.modifiers.ctrl;
+        // Ignore les raccourcis d'action quand l'éditeur a le focus (sauf Ctrl+*).
+        let (step, run, stop, build, save, open, new, first, prev, next, last) = ctx.input(|i| {
+            let c = i.modifiers.ctrl;
             (
                 i.key_pressed(Key::F10) || i.key_pressed(Key::F8),
                 i.key_pressed(Key::F5),
                 i.key_pressed(Key::Escape) || (i.modifiers.shift && i.key_pressed(Key::F5)),
-                ctrl && i.key_pressed(Key::B),
+                c && i.key_pressed(Key::B),
+                c && i.key_pressed(Key::S),
+                c && i.key_pressed(Key::O),
+                c && i.key_pressed(Key::N),
                 i.key_pressed(Key::Home),
                 i.key_pressed(Key::ArrowLeft),
                 i.key_pressed(Key::ArrowRight),
                 i.key_pressed(Key::End),
             )
         });
+        if save {
+            self.save_source();
+        }
+        if open {
+            self.show_open = true;
+        }
+        if new {
+            self.new_file();
+        }
         if build {
             self.build();
         }
@@ -306,7 +371,9 @@ impl App {
         if step {
             self.step();
         }
-        if self.dbg.is_some() {
+        // Timeline seulement si l'éditeur n'a pas le focus (évite le conflit ←/→).
+        let editing = ctx.memory(|m| m.focused().is_some());
+        if self.dbg.is_some() && !editing {
             if first {
                 self.set_view(0);
             }
@@ -317,14 +384,12 @@ impl App {
                 self.set_view(self.view_index as i64 + 1);
             }
             if last {
-                if let Some(d) = &self.dbg {
-                    self.view_index = d.history.len() - 1;
-                }
+                self.set_view(i64::MAX);
             }
         }
     }
 
-    // ---------- Boîte de dialogue « À propos » ----------
+    // ---------- Boîtes de dialogue ----------
 
     fn about_window(&mut self, ctx: &egui::Context) {
         if !self.show_about {
@@ -348,11 +413,7 @@ impl App {
                     .spacing([16.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Version");
-                        ui.label(
-                            RichText::new(env!("CARGO_PKG_VERSION"))
-                                .monospace()
-                                .strong(),
-                        );
+                        ui.label(RichText::new(env!("CARGO_PKG_VERSION")).monospace().strong());
                         ui.end_row();
                         ui.label("Build");
                         ui.label(RichText::new(env!("GIT_HASH")).monospace().strong());
@@ -377,20 +438,95 @@ impl App {
         }
     }
 
+    fn open_window(&mut self, ctx: &egui::Context) {
+        if !self.show_open {
+            return;
+        }
+        let mut open = true;
+        let mut cancel = false;
+        let mut chosen: Option<PathBuf> = None;
+        let mut new_dir: Option<PathBuf> = None;
+        egui::Window::new("Ouvrir un fichier .asm")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(460.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("📂");
+                    ui.monospace(self.browse_dir.display().to_string());
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("browser_scroll")
+                    .max_height(320.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if let Some(parent) = self.browse_dir.parent() {
+                            if ui.button("📁 ..").clicked() {
+                                new_dir = Some(parent.to_path_buf());
+                            }
+                        }
+                        let (dirs, files) = list_dir(&self.browse_dir);
+                        for d in dirs {
+                            let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            if ui.button(format!("📁 {name}")).clicked() {
+                                new_dir = Some(d);
+                            }
+                        }
+                        for f in files {
+                            let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            if ui
+                                .button(RichText::new(format!("📄 {name}")).color(MNEMONIC))
+                                .clicked()
+                            {
+                                chosen = Some(f);
+                            }
+                        }
+                    });
+                ui.separator();
+                if ui.button("Annuler").clicked() {
+                    cancel = true;
+                }
+            });
+        if let Some(d) = new_dir {
+            self.browse_dir = d;
+        }
+        if let Some(f) = chosen {
+            self.open_file(f);
+            self.show_open = false;
+        }
+        if !open || cancel {
+            self.show_open = false;
+        }
+    }
+
     // ---------- Menu ----------
 
     fn menu_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("Fichier", |ui| {
-                    ui.label(RichText::new(self.src_path.display().to_string()).weak());
+                    if ui.button("Nouveau            Ctrl+N").clicked() {
+                        self.new_file();
+                        ui.close_menu();
+                    }
+                    if ui.button("Ouvrir…            Ctrl+O").clicked() {
+                        self.show_open = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Enregistrer        Ctrl+S").clicked() {
+                        self.save_source();
+                        ui.close_menu();
+                    }
                     ui.separator();
                     if ui.button("Quitter").clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
                 ui.menu_button("Build", |ui| {
-                    if ui.button("Assembler        Ctrl+B").clicked() {
+                    if ui.button("Assembler + Lier   Ctrl+B").clicked() {
                         self.build();
                         ui.close_menu();
                     }
@@ -410,7 +546,7 @@ impl App {
                     }
                 });
                 ui.menu_button("Aide", |ui| {
-                    ui.label("Raccourcis").on_hover_ui(|ui| shortcuts_tooltip(ui));
+                    ui.label("Raccourcis").on_hover_ui(shortcuts_tooltip);
                     ui.separator();
                     if ui.button("À propos ASM Studio…").clicked() {
                         self.show_about = true;
@@ -425,30 +561,36 @@ impl App {
 
     fn toolbar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.add_space(3.0);
             ui.horizontal(|ui| {
-                if ui.button("▶ Lancer").on_hover_text("F5").clicked() {
+                if ui.button("▶  Lancer").on_hover_text("F5").clicked() {
                     self.launch();
                 }
                 let can_step = self.can_step();
                 if ui
-                    .add_enabled(can_step, egui::Button::new("⏭ Step"))
+                    .add_enabled(can_step, egui::Button::new("⏭  Step"))
                     .on_hover_text("F10 / F8")
                     .clicked()
                 {
                     self.step();
                 }
-                if ui.button("🔄 Restart").on_hover_text("F5").clicked() {
+                if ui.button("🔄  Restart").on_hover_text("F5").clicked() {
                     self.launch();
                 }
-                if ui.button("⏹ Stop").on_hover_text("Échap").clicked() {
+                if ui.button("⏹  Stop").on_hover_text("Échap").clicked() {
                     self.stop();
                 }
-                if ui.button("🔨 Build").on_hover_text("Ctrl+B").clicked() {
+                ui.separator();
+                if ui.button("🔨  Build").on_hover_text("Assembler + Lier (Ctrl+B)").clicked() {
                     self.build();
                 }
+                if ui.button("💾  Enregistrer").on_hover_text("Ctrl+S").clicked() {
+                    self.save_source();
+                }
                 ui.separator();
-                ui.label(&self.status);
+                ui.label(RichText::new(&self.status).color(HEADER));
             });
+            ui.add_space(3.0);
         });
     }
 
@@ -461,7 +603,7 @@ impl App {
                     Some(d) if d.is_alive() => {
                         ui.colored_label(FLAG_ON, "● Running");
                         ui.separator();
-                        ui.label(format!("PID: {}", d.pid()));
+                        ui.label(format!("PID {}", d.pid()));
                     }
                     Some(d) => {
                         let msg = match d.state {
@@ -469,37 +611,37 @@ impl App {
                             _ => "○ Terminé".to_string(),
                         };
                         ui.colored_label(FLAG_OFF, msg);
-                        ui.separator();
-                        ui.label(format!("PID: {}", d.pid()));
                     }
                     None => {
                         ui.colored_label(FLAG_OFF, "○ Prêt");
                     }
                 }
                 ui.separator();
-                ui.label("Arch: x86_64");
+                ui.label("x86_64");
                 ui.separator();
-                ui.label("Mode: 64-bit");
+                ui.label("64-bit");
                 ui.separator();
                 if let Some(s) = self.snap() {
-                    ui.label(format!("Stopped at: 0x{:X}", s.regs.rip));
+                    ui.label(format!("RIP 0x{:X}", s.regs.rip));
                     if let Some(next) = self.next_addr() {
                         ui.separator();
-                        ui.colored_label(CHANGED, format!("Next: 0x{next:X}"));
+                        ui.colored_label(CHANGED, format!("Next 0x{next:X}"));
                     }
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(self.src_path.display().to_string()).color(HEADER));
+                });
             });
         });
     }
 
-    /// Adresse de l'instruction qui suit RIP dans le désassemblage.
     fn next_addr(&self) -> Option<u64> {
         let rip = self.view_rip()?;
         let idx = self.disasm.iter().position(|i| i.address == rip)?;
         self.disasm.get(idx + 1).map(|i| i.address)
     }
 
-    // ---------- Bande basse : Mémoire | Timeline | Console ----------
+    // ---------- Bande basse ----------
 
     fn bottom_band(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("bottom_band")
@@ -516,10 +658,10 @@ impl App {
 
     fn memory_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("MEMORY").strong());
+            header_inline(ui, "MEMORY");
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.mem_input)
-                    .desired_width(130.0)
+                    .desired_width(120.0)
                     .font(egui::TextStyle::Monospace),
             );
             let go = ui.button("Aller").clicked()
@@ -531,44 +673,30 @@ impl App {
             }
         });
         ui.separator();
-
         if !self.can_read_memory() {
             ui.weak("Mémoire lisible sur l'état courant (revenez à la dernière étape).");
             return;
         }
         let dbg = self.dbg.as_ref().unwrap();
         egui::ScrollArea::vertical()
-            .max_height(150.0)
+            .id_salt("mem_scroll")
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for row in 0..8u64 {
                     let base = self.mem_addr.wrapping_add(row * 16);
                     let (hex, ascii) = match dbg.read_mem(base, 16) {
                         Ok(bytes) => {
-                            let hex = bytes
-                                .iter()
-                                .map(|b| format!("{b:02X}"))
-                                .collect::<Vec<_>>()
-                                .join(" ");
+                            let hex = bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
                             let ascii: String = bytes
                                 .iter()
-                                .map(|&b| {
-                                    if (0x20..0x7f).contains(&b) {
-                                        b as char
-                                    } else {
-                                        '.'
-                                    }
-                                })
+                                .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
                                 .collect();
                             (hex, ascii)
                         }
                         Err(_) => ("?? ".repeat(16).trim_end().to_string(), ".".repeat(16)),
                     };
                     ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!("0x{base:08X}"))
-                                .monospace()
-                                .color(ADDR_COL),
-                        );
+                        ui.label(RichText::new(format!("0x{base:08X}")).monospace().color(ADDR_COL));
                         ui.label(RichText::new(hex).monospace().color(BYTES_COL));
                         ui.label(RichText::new(ascii).monospace().weak());
                     });
@@ -577,13 +705,12 @@ impl App {
     }
 
     fn timeline_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("TIMELINE").strong());
+        header_inline(ui, "TIMELINE");
         ui.separator();
         let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
             ui.weak("—");
             return;
         };
-
         ui.horizontal(|ui| {
             if ui.button("⏮").on_hover_text("Début (Home)").clicked() {
                 self.set_view(0);
@@ -595,27 +722,19 @@ impl App {
                 self.set_view(self.view_index as i64 + 1);
             }
             if ui.button("⏭").on_hover_text("Fin (End)").clicked() {
-                self.view_index = last;
+                self.set_view(i64::MAX);
             }
         });
-
         let mut idx = self.view_index;
-        if ui
-            .add(egui::Slider::new(&mut idx, 0..=last).text("étape"))
-            .changed()
-        {
+        if ui.add(egui::Slider::new(&mut idx, 0..=last).text("étape")).changed() {
             self.view_index = idx;
         }
         ui.label(format!("Instruction {} / {last}", self.view_index));
-
         if let Some(s) = self.snap() {
             if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
-                ui.label(
-                    RichText::new(format!("{} {}", insn.mnemonic, insn.operands)).monospace(),
-                );
+                ui.label(RichText::new(format!("{} {}", insn.mnemonic, insn.operands)).monospace());
             }
         }
-
         if !self.is_head_view() {
             ui.add_space(4.0);
             if ui
@@ -630,19 +749,21 @@ impl App {
 
     fn console_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("CONSOLE").strong());
+            header_inline(ui, "CONSOLE");
             if ui.small_button("effacer").clicked() {
                 self.console.clear();
             }
         });
         ui.separator();
         egui::ScrollArea::vertical()
+            .id_salt("console_scroll")
             .stick_to_bottom(true)
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.add(
-                    egui::TextEdit::multiline(&mut self.console.as_str())
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY),
+                    egui::Label::new(RichText::new(&self.console).monospace())
+                        .selectable(true)
+                        .wrap(),
                 );
             });
     }
@@ -650,34 +771,27 @@ impl App {
     // ---------- Registres + Flags ----------
 
     fn registers_ui(&self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("REGISTERS").strong());
-        ui.separator();
+        header(ui, "REGISTERS");
         let (Some(snap), Some(prev)) = (self.snap(), self.prev_snap()) else {
             ui.label("Aucun programme lancé.");
             return;
         };
-
-        egui::Grid::new("regs_grid")
-            .num_columns(2)
-            .spacing([12.0, 4.0])
-            .show(ui, |ui| {
-                for ((name, val), (_, pval)) in snap.regs.named().iter().zip(prev.regs.named()) {
-                    ui.label(RichText::new(*name).monospace().strong());
-                    let mut value = RichText::new(format!("0x{val:016X}")).monospace();
-                    if *val != pval {
-                        value = value.color(CHANGED);
-                    }
-                    ui.label(value);
-                    ui.end_row();
+        egui::Grid::new("regs_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+            for ((name, val), (_, pval)) in snap.regs.named().iter().zip(prev.regs.named()) {
+                ui.label(RichText::new(*name).monospace().strong());
+                let mut value = RichText::new(format!("0x{val:016X}")).monospace();
+                if *val != pval {
+                    value = value.color(CHANGED);
                 }
-            });
-
-        ui.add_space(8.0);
-        ui.label(RichText::new("FLAGS").strong());
-        ui.separator();
-        let flags = crate::debugger::Flags::from_eflags(snap.regs.eflags);
-        let prevf = crate::debugger::Flags::from_eflags(prev.regs.eflags);
-        egui::Grid::new("flags_grid").num_columns(2).show(ui, |ui| {
+                ui.label(value);
+                ui.end_row();
+            }
+        });
+        ui.add_space(10.0);
+        header(ui, "FLAGS");
+        let flags = Flags::from_eflags(snap.regs.eflags);
+        let prevf = Flags::from_eflags(prev.regs.eflags);
+        egui::Grid::new("flags_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
             for ((name, val), (_, pval)) in flags.named().iter().zip(prevf.named()) {
                 let mut label = RichText::new(*name).monospace();
                 if *val != pval {
@@ -685,89 +799,101 @@ impl App {
                 }
                 ui.label(label);
                 let color = if *val { FLAG_ON } else { FLAG_OFF };
-                ui.label(
-                    RichText::new(if *val { "1" } else { "0" })
-                        .monospace()
-                        .color(color),
-                );
+                ui.label(RichText::new(if *val { "1" } else { "0" }).monospace().color(color));
                 ui.end_row();
             }
         });
     }
 
-    // ---------- Désassemblage ----------
+    // ---------- Centre : onglets Éditeur / Désassemblage ----------
+
+    fn center_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui.selectable_label(self.tab == Tab::Editor, "  Éditeur  ").clicked() {
+                self.tab = Tab::Editor;
+            }
+            if ui.selectable_label(self.tab == Tab::Disasm, "  Désassemblage  ").clicked() {
+                self.tab = Tab::Disasm;
+            }
+            ui.separator();
+            let name = self.src_path.file_name().unwrap_or_default().to_string_lossy();
+            let mark = if self.dirty { " ●" } else { "" };
+            ui.label(RichText::new(format!("{name}{mark}")).color(HEADER));
+        });
+        ui.separator();
+        match self.tab {
+            Tab::Editor => self.editor_ui(ui),
+            Tab::Disasm => self.disasm_ui(ui),
+        }
+    }
+
+    fn editor_ui(&mut self, ui: &mut egui::Ui) {
+        let mut layouter = |ui: &egui::Ui, text: &str, wrap: f32| {
+            let mut job = highlight_nasm(text);
+            job.wrap.max_width = wrap;
+            ui.fonts(|f| f.layout_job(job))
+        };
+        egui::ScrollArea::both().id_salt("editor_scroll").show(ui, |ui| {
+            let resp = ui.add(
+                egui::TextEdit::multiline(&mut self.source)
+                    .code_editor()
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(28)
+                    .lock_focus(true)
+                    .layouter(&mut layouter),
+            );
+            if resp.changed() {
+                self.dirty = true;
+            }
+        });
+    }
 
     fn disasm_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("DISASSEMBLY").strong());
-        ui.separator();
         if self.disasm.is_empty() {
-            ui.label("Cliquez sur « Lancer » pour désassembler et exécuter.");
+            ui.label("Cliquez sur « Lancer » pour assembler, lier et exécuter votre programme.");
             return;
         }
         let rip = self.view_rip();
         let mut clicked: Option<u64> = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("disasm_scroll").show(ui, |ui| {
             for insn in &self.disasm {
                 let is_current = Some(insn.address) == rip;
                 let is_selected = Some(insn.address) == self.selected;
-
                 let inner = ui.horizontal(|ui| {
                     if is_current {
                         ui.label(RichText::new("➤").color(CHANGED));
                     } else {
                         ui.label("    ");
                     }
-                    ui.label(
-                        RichText::new(format!("0x{:08X}", insn.address))
-                            .monospace()
-                            .color(ADDR_COL),
-                    );
-                    ui.label(
-                        RichText::new(format!("{:<20}", insn.bytes_hex()))
-                            .monospace()
-                            .color(BYTES_COL),
-                    );
-                    ui.label(
-                        RichText::new(format!("{:<7}", insn.mnemonic))
-                            .monospace()
-                            .color(MNEMONIC),
-                    );
+                    ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(ADDR_COL));
+                    ui.label(RichText::new(format!("{:<20}", insn.bytes_hex())).monospace().color(BYTES_COL));
+                    ui.label(RichText::new(format!("{:<7}", insn.mnemonic)).monospace().color(MNEMONIC));
                     ui.label(RichText::new(&insn.operands).monospace());
                 });
-
                 let row = inner.response.interact(egui::Sense::click());
                 if row.clicked() {
                     clicked = Some(insn.address);
                 }
                 if is_current {
-                    ui.painter()
-                        .rect_filled(row.rect.expand2(egui::vec2(0.0, 1.0)), 2.0, RIP_ROW);
+                    ui.painter().rect_filled(row.rect.expand2(egui::vec2(0.0, 1.0)), 3.0, RIP_ROW);
                 }
                 if is_selected && !is_current {
-                    ui.painter()
-                        .rect_filled(row.rect.expand2(egui::vec2(0.0, 1.0)), 2.0, SEL_ROW);
+                    ui.painter().rect_filled(row.rect.expand2(egui::vec2(0.0, 1.0)), 3.0, SEL_ROW);
                 }
                 if row.hovered() {
-                    ui.painter()
-                        .rect_stroke(row.rect, 2.0, egui::Stroke::new(1.0_f32, ADDR_COL));
+                    ui.painter().rect_stroke(row.rect, 3.0, egui::Stroke::new(1.0_f32, ADDR_COL));
                 }
             }
         });
         if let Some(addr) = clicked {
-            self.selected = if self.selected == Some(addr) {
-                None
-            } else {
-                Some(addr)
-            };
+            self.selected = if self.selected == Some(addr) { None } else { Some(addr) };
         }
     }
 
-    // ---------- Panneau INSTRUCTION (mode explication) ----------
+    // ---------- Panneau INSTRUCTION ----------
 
     fn instruction_ui(&self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("INSTRUCTION").strong());
-        ui.separator();
-
+        header(ui, "INSTRUCTION");
         let target = self.selected.or_else(|| self.view_rip());
         let Some(addr) = target else {
             ui.label("Lancez le programme, puis cliquez une instruction.");
@@ -777,22 +903,18 @@ impl App {
             ui.label("—");
             return;
         };
-        let flags = self
-            .snap()
-            .map(|s| crate::debugger::Flags::from_eflags(s.regs.eflags))
-            .unwrap_or_default();
-
+        let flags = self.snap().map(|s| Flags::from_eflags(s.regs.eflags)).unwrap_or_default();
         let e = explain::explain(&insn.mnemonic, &insn.operands, flags);
 
-        if self.selected.is_some() {
-            ui.label(
-                RichText::new("(sélection — reclic pour suivre RIP)")
-                    .small()
-                    .weak(),
-            );
-        } else {
-            ui.label(RichText::new("(instruction courante)").small().weak());
-        }
+        ui.label(
+            RichText::new(if self.selected.is_some() {
+                "(sélection — reclic pour suivre RIP)"
+            } else {
+                "(instruction courante)"
+            })
+            .small()
+            .weak(),
+        );
         ui.add_space(4.0);
         ui.label(RichText::new(&e.title).heading().color(MNEMONIC));
         ui.label(RichText::new(e.category).italics().weak());
@@ -804,20 +926,14 @@ impl App {
             ui.add_space(6.0);
             ui.label(RichText::new("Condition").strong());
             ui.label(RichText::new(cond).monospace());
-
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("État actuel :").strong());
                 for (name, val) in &e.relevant_flags {
                     let c = if *val { FLAG_ON } else { FLAG_OFF };
-                    ui.label(
-                        RichText::new(format!("{name} = {}", *val as u8))
-                            .monospace()
-                            .color(c),
-                    );
+                    ui.label(RichText::new(format!("{name} = {}", *val as u8)).monospace().color(c));
                 }
             });
-
             if let Some(taken) = e.taken {
                 ui.add_space(6.0);
                 let (txt, col) = if taken {
@@ -828,40 +944,27 @@ impl App {
                 ui.label(RichText::new(txt).color(col).strong());
             }
         }
-
         if !e.affects_flags.is_empty() {
             ui.add_space(6.0);
             ui.label(RichText::new("Flags positionnés").strong());
-            ui.label(
-                RichText::new(e.affects_flags.join("  "))
-                    .monospace()
-                    .color(CHANGED),
-            );
+            ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
         }
     }
 
     // ---------- Pile ----------
 
     fn stack_ui(&self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("STACK").strong());
-        ui.separator();
+        header(ui, "STACK");
         let Some(snap) = self.snap() else {
             ui.label("—");
             return;
         };
-        let rsp = snap.regs.rsp;
-        let rbp = snap.regs.rbp;
-        egui::Grid::new("stack_grid")
-            .num_columns(3)
-            .spacing([10.0, 3.0])
-            .show(ui, |ui| {
+        let (rsp, rbp) = (snap.regs.rsp, snap.regs.rbp);
+        egui::ScrollArea::vertical().id_salt("stack_scroll").show(ui, |ui| {
+            egui::Grid::new("stack_grid").num_columns(3).spacing([10.0, 3.0]).show(ui, |ui| {
                 for (i, val) in snap.stack.iter().enumerate() {
                     let addr = rsp.wrapping_add((i as u64) * 8);
-                    ui.label(
-                        RichText::new(format!("0x{addr:012X}"))
-                            .monospace()
-                            .color(ADDR_COL),
-                    );
+                    ui.label(RichText::new(format!("0x{addr:012X}")).monospace().color(ADDR_COL));
                     ui.label(RichText::new(format!("0x{val:016X}")).monospace());
                     let marker = if addr == rsp && addr == rbp {
                         "← RSP,RBP"
@@ -876,25 +979,60 @@ impl App {
                     ui.end_row();
                 }
             });
+        });
     }
 }
 
-/// Analyse une adresse hexadécimale saisie (« 0x401000 » ou « 401000 »).
+// ---------- Helpers ----------
+
+/// Titre de section sur sa propre ligne, style moderne.
+fn header(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(2.0);
+    ui.label(RichText::new(text).strong().color(HEADER).size(12.5));
+    ui.separator();
+}
+
+/// Titre de section « inline » (dans une ligne horizontale).
+fn header_inline(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).strong().color(HEADER).size(12.5));
+}
+
 fn parse_hex(s: &str) -> Option<u64> {
     let s = s.trim();
     let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
     u64::from_str_radix(s, 16).ok()
 }
 
-/// Infobulle listant les raccourcis clavier.
+/// Liste (dossiers, fichiers .asm) d'un répertoire, triés par nom.
+fn list_dir(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|e| e == "asm" || e == "s") {
+                files.push(p);
+            }
+        }
+    }
+    dirs.sort();
+    files.sort();
+    (dirs, files)
+}
+
 fn shortcuts_tooltip(ui: &mut egui::Ui) {
     let rows = [
         ("F5", "Lancer / Restart"),
-        ("F10 / F8", "Step (une instruction)"),
+        ("F10 / F8", "Step"),
         ("Échap / Maj+F5", "Stop"),
-        ("Ctrl+B", "Assembler (Build)"),
-        ("←  /  →", "Timeline : précédent / suivant"),
-        ("Home / End", "Timeline : début / fin"),
+        ("Ctrl+B", "Assembler + Lier"),
+        ("Ctrl+S", "Enregistrer"),
+        ("Ctrl+O", "Ouvrir"),
+        ("Ctrl+N", "Nouveau"),
+        ("← / →", "Timeline préc. / suiv."),
+        ("Home / End", "Timeline début / fin"),
     ];
     egui::Grid::new("shortcuts").num_columns(2).show(ui, |ui| {
         for (k, d) in rows {
@@ -903,4 +1041,126 @@ fn shortcuts_tooltip(ui: &mut egui::Ui) {
             ui.end_row();
         }
     });
+}
+
+/// Style global moderne (sombre, arrondis, espacements).
+fn setup_style(ctx: &egui::Context) {
+    use egui::{FontId, Rounding, TextStyle, vec2};
+    let mut style = (*ctx.style()).clone();
+    let mut v = egui::Visuals::dark();
+    v.panel_fill = Color32::from_rgb(0x1E, 0x1E, 0x22);
+    v.window_fill = Color32::from_rgb(0x25, 0x25, 0x2B);
+    v.extreme_bg_color = Color32::from_rgb(0x17, 0x17, 0x1B); // fond des zones de texte
+    v.faint_bg_color = Color32::from_rgb(0x28, 0x28, 0x30);
+    v.window_rounding = Rounding::same(8.0);
+    v.menu_rounding = Rounding::same(6.0);
+    v.selection.bg_fill = ACCENT.linear_multiply(0.45);
+    v.hyperlink_color = ACCENT;
+    for w in [
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+        &mut v.widgets.noninteractive,
+    ] {
+        w.rounding = Rounding::same(5.0);
+    }
+    style.visuals = v;
+    style.spacing.item_spacing = vec2(8.0, 6.0);
+    style.spacing.button_padding = vec2(9.0, 4.0);
+    style.text_styles.insert(TextStyle::Body, FontId::proportional(14.0));
+    style.text_styles.insert(TextStyle::Button, FontId::proportional(14.0));
+    style.text_styles.insert(TextStyle::Monospace, FontId::monospace(13.0));
+    style.text_styles.insert(TextStyle::Heading, FontId::proportional(18.0));
+    style.text_styles.insert(TextStyle::Small, FontId::proportional(11.0));
+    ctx.set_style(style);
+}
+
+/// Coloration syntaxique NASM → LayoutJob (comments, mnémoniques, registres…).
+fn highlight_nasm(text: &str) -> LayoutJob {
+    let font = egui::FontId::monospace(13.0);
+    let mut job = LayoutJob::default();
+    for line in text.split_inclusive('\n') {
+        let (code, comment) = match line.find(';') {
+            Some(i) => (&line[..i], &line[i..]),
+            None => (line, ""),
+        };
+        append_code(&mut job, code, &font);
+        if !comment.is_empty() {
+            append(&mut job, comment, SYN_COMMENT, &font);
+        }
+    }
+    job
+}
+
+fn append(job: &mut LayoutJob, text: &str, color: Color32, font: &egui::FontId) {
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: font.clone(),
+            color,
+            ..Default::default()
+        },
+    );
+}
+
+/// Découpe une portion de code (hors commentaire) en tokens colorés.
+fn append_code(job: &mut LayoutJob, code: &str, font: &egui::FontId) {
+    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '@';
+    let mut rest = code;
+    let mut mnem_pending = true;
+    while !rest.is_empty() {
+        let c = rest.chars().next().unwrap();
+        if is_ident(c) {
+            let end = rest.find(|ch: char| !is_ident(ch)).unwrap_or(rest.len());
+            let word = &rest[..end];
+            let after = &rest[end..];
+            let is_label = after.trim_start().starts_with(':');
+            let color = if is_number(word) {
+                SYN_NUMBER
+            } else if is_register(word) {
+                SYN_REGISTER
+            } else if is_directive(word) {
+                SYN_DIRECTIVE
+            } else if is_label {
+                SYN_LABEL
+            } else if mnem_pending {
+                mnem_pending = false;
+                SYN_MNEMONIC
+            } else {
+                SYN_TEXT
+            };
+            append(job, word, color, font);
+            rest = after;
+        } else {
+            let end = rest.find(is_ident).unwrap_or(rest.len());
+            append(job, &rest[..end], SYN_TEXT, font);
+            rest = &rest[end..];
+        }
+    }
+}
+
+fn is_number(w: &str) -> bool {
+    w.chars().next().is_some_and(|c| c.is_ascii_digit())
+}
+
+fn is_register(w: &str) -> bool {
+    const REGS: &[&str] = &[
+        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip", "r8", "r9", "r10", "r11",
+        "r12", "r13", "r14", "r15", "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "r8d",
+        "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d", "ax", "bx", "cx", "dx", "si", "di",
+        "bp", "sp", "al", "bl", "cl", "dl", "ah", "bh", "ch", "dh", "sil", "dil",
+    ];
+    let l = w.to_ascii_lowercase();
+    REGS.contains(&l.as_str())
+}
+
+fn is_directive(w: &str) -> bool {
+    const DIRS: &[&str] = &[
+        "section", "global", "extern", "db", "dw", "dd", "dq", "dt", "resb", "resw", "resd", "resq",
+        "equ", "times", "align", "default", "bits", "byte", "word", "dword", "qword",
+    ];
+    let l = w.to_ascii_lowercase();
+    DIRS.contains(&l.as_str())
 }
