@@ -42,6 +42,8 @@ pub struct App {
     status: String,
     /// Thème appliqué une seule fois.
     styled: bool,
+    /// Affiche la boîte de dialogue « À propos ».
+    show_about: bool,
 }
 
 impl App {
@@ -59,6 +61,7 @@ impl App {
             console: String::new(),
             status: "Prêt".to_string(),
             styled: false,
+            show_about: false,
         }
     }
 
@@ -268,6 +271,8 @@ impl eframe::App for App {
             .show(ctx, |ui| self.stack_ui(ui));
 
         egui::CentralPanel::default().show(ctx, |ui| self.disasm_ui(ui));
+
+        self.about_window(ctx);
     }
 }
 
@@ -319,6 +324,59 @@ impl App {
         }
     }
 
+    // ---------- Boîte de dialogue « À propos » ----------
+
+    fn about_window(&mut self, ctx: &egui::Context) {
+        if !self.show_about {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("À propos")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.heading(RichText::new("ASM Studio").color(MNEMONIC));
+                    ui.label("IDE pédagogique NASM x86-64");
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                egui::Grid::new("about_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("Version");
+                        ui.label(
+                            RichText::new(env!("CARGO_PKG_VERSION"))
+                                .monospace()
+                                .strong(),
+                        );
+                        ui.end_row();
+                        ui.label("Build");
+                        ui.label(RichText::new(env!("GIT_HASH")).monospace().strong());
+                        ui.end_row();
+                        ui.label("Date");
+                        ui.label(RichText::new(env!("BUILD_DATE")).monospace());
+                        ui.end_row();
+                        ui.label("Licence");
+                        ui.label("MIT");
+                        ui.end_row();
+                    });
+                ui.separator();
+                ui.add_space(6.0);
+                ui.vertical_centered(|ui| {
+                    if ui.button("Fermer").clicked() {
+                        self.show_about = false;
+                    }
+                });
+            });
+        if !open {
+            self.show_about = false;
+        }
+    }
+
     // ---------- Menu ----------
 
     fn menu_bar(&mut self, ctx: &egui::Context) {
@@ -354,9 +412,10 @@ impl App {
                 ui.menu_button("Aide", |ui| {
                     ui.label("Raccourcis").on_hover_ui(|ui| shortcuts_tooltip(ui));
                     ui.separator();
-                    // Info visible tant que la souris reste sur l'entrée (survol).
-                    ui.label(RichText::new("À propos ASM Studio").color(MNEMONIC))
-                        .on_hover_ui(|ui| about_tooltip(ui));
+                    if ui.button("À propos ASM Studio…").clicked() {
+                        self.show_about = true;
+                        ui.close_menu();
+                    }
                 });
             });
         });
@@ -825,18 +884,6 @@ fn parse_hex(s: &str) -> Option<u64> {
     let s = s.trim();
     let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
     u64::from_str_radix(s, 16).ok()
-}
-
-/// Contenu de l'infobulle « À propos » (visible au survol).
-fn about_tooltip(ui: &mut egui::Ui) {
-    ui.strong("ASM Studio");
-    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-    ui.label("Licence : MIT");
-    ui.separator();
-    ui.label(format!("Build : {} ({})", env!("GIT_HASH"), env!("BUILD_DATE")));
-    ui.label("Rust edition 2024");
-    ui.separator();
-    ui.weak("IDE pédagogique NASM x86-64");
 }
 
 /// Infobulle listant les raccourcis clavier.

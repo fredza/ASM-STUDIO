@@ -23,6 +23,8 @@ fn main() {
         .unwrap_or_else(|| "?".to_string());
     println!("cargo:rustc-env=BUILD_DATE={date}");
 
-    // Recompile la crate si le commit change (met le hash à jour).
+    // Recompile la crate quand le commit change (met le hash à jour).
+    // .git/HEAD change au checkout de branche ; .git/logs/HEAD à chaque commit.
     println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/logs/HEAD");
 }
