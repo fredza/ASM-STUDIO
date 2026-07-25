@@ -445,7 +445,8 @@ impl App {
                         ui.label(RichText::new(env!("BUILD_DATE")).monospace());
                         ui.end_row();
                         ui.label("Licence");
-                        ui.label("MIT");
+                        ui.hyperlink_to("MIT (explication)", "https://opensource.org/license/mit")
+                            .on_hover_text("Ouvrir le texte officiel de la licence MIT");
                         ui.end_row();
                     });
                 ui.separator();
@@ -724,6 +725,15 @@ impl App {
                 {
                     self.launch();
                 }
+                // Précédent : recule d'une étape dans la timeline enregistrée.
+                let can_prev = self.dbg.is_some() && self.view_index > 0;
+                if ui
+                    .add_enabled(can_prev, egui::Button::new("◀  Précédent"))
+                    .on_hover_text("Étape précédente (←)")
+                    .clicked()
+                {
+                    self.set_view(self.view_index as i64 - 1);
+                }
                 let can_step = self.can_step();
                 if ui
                     .add_enabled(can_step, egui::Button::new("⏭  Step"))
@@ -873,32 +883,48 @@ impl App {
             ui.weak("—");
             return;
         };
-        ui.horizontal(|ui| {
-            if ui.button("⏮").on_hover_text("Début (Home)").clicked() {
-                self.set_view(0);
-            }
-            if ui.button("◀").on_hover_text("Précédent (←)").clicked() {
-                self.set_view(self.view_index as i64 - 1);
-            }
-            if ui.button("▶").on_hover_text("Suivant (→)").clicked() {
-                self.set_view(self.view_index as i64 + 1);
-            }
-            if ui.button("⏭").on_hover_text("Fin (End)").clicked() {
-                self.set_view(i64::MAX);
-            }
+
+        // Contrôles centrés (début / précédent / suivant / fin).
+        ui.vertical_centered(|ui| {
+            ui.horizontal(|ui| {
+                if ui.button("⏮").on_hover_text("Début (Home)").clicked() {
+                    self.set_view(0);
+                }
+                if ui.button("◀").on_hover_text("Précédent (←)").clicked() {
+                    self.set_view(self.view_index as i64 - 1);
+                }
+                ui.label(RichText::new(format!("{} / {last}", self.view_index)).monospace().strong());
+                if ui.button("▶").on_hover_text("Suivant (→)").clicked() {
+                    self.set_view(self.view_index as i64 + 1);
+                }
+                if ui.button("⏭").on_hover_text("Fin (End)").clicked() {
+                    self.set_view(i64::MAX);
+                }
+            });
         });
+
+        // Slider sur toute la largeur disponible du panneau.
         let mut idx = self.view_index;
-        if ui.add(egui::Slider::new(&mut idx, 0..=last).text("étape")).changed() {
+        ui.spacing_mut().slider_width = (ui.available_width() - 16.0).max(60.0);
+        if ui
+            .add(egui::Slider::new(&mut idx, 0..=last).show_value(false))
+            .changed()
+        {
             self.view_index = idx;
         }
-        ui.label(format!("Instruction {} / {last}", self.view_index));
+
+        // Instruction de l'étape affichée.
         if let Some(s) = self.snap() {
             if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
-                ui.label(RichText::new(format!("{} {}", insn.mnemonic, insn.operands)).monospace());
+                ui.label(
+                    RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
+                        .monospace()
+                        .color(MNEMONIC),
+                );
             }
         }
+
         if !self.is_head_view() {
-            ui.add_space(4.0);
             if ui
                 .button("⟳ Reprendre ici")
                 .on_hover_text("Ré-exécute jusqu'à cette étape pour continuer")
