@@ -62,7 +62,8 @@ pub struct App {
     status: String,
 
     tab: Tab,
-    styled: bool,
+    theme_pref: egui::ThemePreference,
+    show_settings: bool,
     show_about: bool,
     show_shortcuts: bool,
     // Navigateur de fichiers intégré (Ouvrir / Enregistrer sous).
@@ -96,7 +97,8 @@ impl App {
             console: String::new(),
             status: "Prêt".to_string(),
             tab: Tab::Editor,
-            styled: false,
+            theme_pref: egui::ThemePreference::Dark,
+            show_settings: false,
             show_about: false,
             show_shortcuts: false,
             show_open: false,
@@ -319,15 +321,13 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !self.styled {
-            setup_style(ctx);
-            self.styled = true;
-        }
+        self.apply_theme(ctx);
         self.handle_shortcuts(ctx);
 
         self.menu_bar(ctx);
         self.toolbar(ctx);
         self.status_bar(ctx);
+        self.timeline_panel(ctx);
         self.bottom_band(ctx);
 
         egui::SidePanel::left("regs_panel")
@@ -346,6 +346,7 @@ impl eframe::App for App {
 
         self.about_window(ctx);
         self.shortcuts_window(ctx);
+        self.settings_window(ctx);
         self.open_window(ctx);
         self.saveas_window(ctx);
     }
@@ -459,6 +460,83 @@ impl App {
             });
         if !open {
             self.show_about = false;
+        }
+    }
+
+    /// Applique le thème choisi (Système / Sombre / Clair) + le style moderne.
+    fn apply_theme(&self, ctx: &egui::Context) {
+        use egui::{FontId, Rounding, Theme, ThemePreference, TextStyle, vec2};
+        let dark = match self.theme_pref {
+            ThemePreference::Dark => true,
+            ThemePreference::Light => false,
+            ThemePreference::System => {
+                ctx.input(|i| i.raw.system_theme) != Some(Theme::Light)
+            }
+        };
+        let mut style = (*ctx.style()).clone();
+        let mut v = if dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
+        v.window_rounding = Rounding::same(8.0);
+        v.menu_rounding = Rounding::same(6.0);
+        v.selection.bg_fill = ACCENT.linear_multiply(0.45);
+        v.hyperlink_color = ACCENT;
+        for w in [
+            &mut v.widgets.inactive,
+            &mut v.widgets.hovered,
+            &mut v.widgets.active,
+            &mut v.widgets.open,
+            &mut v.widgets.noninteractive,
+        ] {
+            w.rounding = Rounding::same(5.0);
+        }
+        if dark {
+            v.panel_fill = Color32::from_rgb(0x1E, 0x1E, 0x22);
+            v.window_fill = Color32::from_rgb(0x25, 0x25, 0x2B);
+            v.extreme_bg_color = Color32::from_rgb(0x17, 0x17, 0x1B);
+            v.faint_bg_color = Color32::from_rgb(0x28, 0x28, 0x30);
+        }
+        style.visuals = v;
+        style.spacing.item_spacing = vec2(8.0, 6.0);
+        style.spacing.button_padding = vec2(9.0, 4.0);
+        style.text_styles.insert(TextStyle::Body, FontId::proportional(14.0));
+        style.text_styles.insert(TextStyle::Button, FontId::proportional(14.0));
+        style.text_styles.insert(TextStyle::Monospace, FontId::monospace(13.0));
+        style.text_styles.insert(TextStyle::Heading, FontId::proportional(18.0));
+        style.text_styles.insert(TextStyle::Small, FontId::proportional(11.0));
+        ctx.set_style(style);
+    }
+
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        if !self.show_settings {
+            return;
+        }
+        use egui::ThemePreference;
+        let mut open = true;
+        egui::Window::new("Réglages")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(RichText::new("Thème").strong());
+                ui.add_space(4.0);
+                ui.radio_value(&mut self.theme_pref, ThemePreference::System, "Système (suit l'OS)");
+                ui.radio_value(&mut self.theme_pref, ThemePreference::Dark, "Sombre");
+                ui.radio_value(&mut self.theme_pref, ThemePreference::Light, "Clair");
+                ui.add_space(4.0);
+                ui.weak("Note : la coloration du code est optimisée pour le thème sombre.");
+                ui.separator();
+                ui.vertical_centered(|ui| {
+                    if ui.button("Fermer").clicked() {
+                        self.show_settings = false;
+                    }
+                });
+            });
+        if !open {
+            self.show_settings = false;
         }
     }
 
@@ -695,6 +773,10 @@ impl App {
                     }
                 });
                 ui.menu_button("Aide", |ui| {
+                    if ui.button("Réglages…").clicked() {
+                        self.show_settings = true;
+                        ui.close_menu();
+                    }
                     if ui.button("Raccourcis clavier…").clicked() {
                         self.show_shortcuts = true;
                         ui.close_menu();
@@ -820,12 +902,71 @@ impl App {
             .resizable(true)
             .default_height(210.0)
             .show(ctx, |ui| {
-                ui.columns(3, |c| {
+                ui.columns(2, |c| {
                     self.memory_ui(&mut c[0]);
-                    self.timeline_ui(&mut c[1]);
-                    self.console_ui(&mut c[2]);
+                    self.console_ui(&mut c[1]);
                 });
             });
+    }
+
+    /// Barre timeline pleine largeur (au-dessus de la barre d'état).
+    fn timeline_panel(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("timeline_panel").show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                header_inline(ui, "TIMELINE");
+                ui.separator();
+                let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
+                    ui.weak("— lancez un programme pour enregistrer la timeline");
+                    return;
+                };
+                if ui.button("⏮").on_hover_text("Début (Home)").clicked() {
+                    self.set_view(0);
+                }
+                if ui.button("◀").on_hover_text("Précédent (←)").clicked() {
+                    self.set_view(self.view_index as i64 - 1);
+                }
+                if ui.button("▶").on_hover_text("Suivant (→)").clicked() {
+                    self.set_view(self.view_index as i64 + 1);
+                }
+                if ui.button("⏭").on_hover_text("Fin (End)").clicked() {
+                    self.set_view(i64::MAX);
+                }
+                ui.label(RichText::new(format!("{} / {last}", self.view_index)).monospace().strong());
+
+                if !self.is_head_view()
+                    && ui
+                        .button("⟳ Reprendre ici")
+                        .on_hover_text("Ré-exécute jusqu'à cette étape pour continuer")
+                        .clicked()
+                {
+                    self.resume_here();
+                }
+
+                // Instruction de l'étape (à droite).
+                if let Some(s) = self.snap() {
+                    if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
+                                .monospace()
+                                .color(MNEMONIC),
+                        );
+                    }
+                }
+
+                // Slider occupant tout l'espace restant.
+                let mut idx = self.view_index;
+                ui.spacing_mut().slider_width = (ui.available_width() - 24.0).max(80.0);
+                if ui
+                    .add(egui::Slider::new(&mut idx, 0..=last).show_value(false))
+                    .changed()
+                {
+                    self.view_index = idx;
+                }
+            });
+            ui.add_space(2.0);
+        });
     }
 
     fn memory_ui(&mut self, ui: &mut egui::Ui) {
@@ -874,65 +1015,6 @@ impl App {
                     });
                 }
             });
-    }
-
-    fn timeline_ui(&mut self, ui: &mut egui::Ui) {
-        header_inline(ui, "TIMELINE");
-        ui.separator();
-        let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
-            ui.weak("—");
-            return;
-        };
-
-        // Contrôles centrés (début / précédent / suivant / fin).
-        ui.vertical_centered(|ui| {
-            ui.horizontal(|ui| {
-                if ui.button("⏮").on_hover_text("Début (Home)").clicked() {
-                    self.set_view(0);
-                }
-                if ui.button("◀").on_hover_text("Précédent (←)").clicked() {
-                    self.set_view(self.view_index as i64 - 1);
-                }
-                ui.label(RichText::new(format!("{} / {last}", self.view_index)).monospace().strong());
-                if ui.button("▶").on_hover_text("Suivant (→)").clicked() {
-                    self.set_view(self.view_index as i64 + 1);
-                }
-                if ui.button("⏭").on_hover_text("Fin (End)").clicked() {
-                    self.set_view(i64::MAX);
-                }
-            });
-        });
-
-        // Slider sur toute la largeur disponible du panneau.
-        let mut idx = self.view_index;
-        ui.spacing_mut().slider_width = (ui.available_width() - 16.0).max(60.0);
-        if ui
-            .add(egui::Slider::new(&mut idx, 0..=last).show_value(false))
-            .changed()
-        {
-            self.view_index = idx;
-        }
-
-        // Instruction de l'étape affichée.
-        if let Some(s) = self.snap() {
-            if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
-                ui.label(
-                    RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
-                        .monospace()
-                        .color(MNEMONIC),
-                );
-            }
-        }
-
-        if !self.is_head_view() {
-            if ui
-                .button("⟳ Reprendre ici")
-                .on_hover_text("Ré-exécute jusqu'à cette étape pour continuer")
-                .clicked()
-            {
-                self.resume_here();
-            }
-        }
     }
 
     fn console_ui(&mut self, ui: &mut egui::Ui) {
@@ -1047,6 +1129,9 @@ impl App {
             for insn in &self.disasm {
                 let is_current = Some(insn.address) == rip;
                 let is_selected = Some(insn.address) == self.selected;
+                // Forme de fond réservée AVANT le contenu => dessinée derrière le
+                // texte (sinon le rectangle masquerait l'instruction).
+                let bg = ui.painter().add(egui::Shape::Noop);
                 let inner = ui.horizontal(|ui| {
                     if is_current {
                         ui.label(RichText::new("➤").color(CHANGED));
@@ -1062,14 +1147,18 @@ impl App {
                 if row.clicked() {
                     clicked = Some(insn.address);
                 }
-                if is_current {
-                    ui.painter().rect_filled(row.rect.expand2(egui::vec2(0.0, 1.0)), 3.0, RIP_ROW);
-                }
-                if is_selected && !is_current {
-                    ui.painter().rect_filled(row.rect.expand2(egui::vec2(0.0, 1.0)), 3.0, SEL_ROW);
-                }
-                if row.hovered() {
-                    ui.painter().rect_stroke(row.rect, 3.0, egui::Stroke::new(1.0_f32, ADDR_COL));
+                let fill = if is_current {
+                    Some(RIP_ROW)
+                } else if is_selected {
+                    Some(SEL_ROW)
+                } else if row.hovered() {
+                    Some(SEL_ROW.linear_multiply(0.5))
+                } else {
+                    None
+                };
+                if let Some(color) = fill {
+                    let rect = row.rect.expand2(egui::vec2(0.0, 2.0));
+                    ui.painter().set(bg, egui::Shape::rect_filled(rect, 3.0, color));
                 }
             }
         });
@@ -1229,39 +1318,6 @@ fn abs_dir_of(path: &Path) -> PathBuf {
     abs.parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("/"))
-}
-
-/// Style global moderne (sombre, arrondis, espacements).
-fn setup_style(ctx: &egui::Context) {
-    use egui::{FontId, Rounding, TextStyle, vec2};
-    let mut style = (*ctx.style()).clone();
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = Color32::from_rgb(0x1E, 0x1E, 0x22);
-    v.window_fill = Color32::from_rgb(0x25, 0x25, 0x2B);
-    v.extreme_bg_color = Color32::from_rgb(0x17, 0x17, 0x1B); // fond des zones de texte
-    v.faint_bg_color = Color32::from_rgb(0x28, 0x28, 0x30);
-    v.window_rounding = Rounding::same(8.0);
-    v.menu_rounding = Rounding::same(6.0);
-    v.selection.bg_fill = ACCENT.linear_multiply(0.45);
-    v.hyperlink_color = ACCENT;
-    for w in [
-        &mut v.widgets.inactive,
-        &mut v.widgets.hovered,
-        &mut v.widgets.active,
-        &mut v.widgets.open,
-        &mut v.widgets.noninteractive,
-    ] {
-        w.rounding = Rounding::same(5.0);
-    }
-    style.visuals = v;
-    style.spacing.item_spacing = vec2(8.0, 6.0);
-    style.spacing.button_padding = vec2(9.0, 4.0);
-    style.text_styles.insert(TextStyle::Body, FontId::proportional(14.0));
-    style.text_styles.insert(TextStyle::Button, FontId::proportional(14.0));
-    style.text_styles.insert(TextStyle::Monospace, FontId::monospace(13.0));
-    style.text_styles.insert(TextStyle::Heading, FontId::proportional(18.0));
-    style.text_styles.insert(TextStyle::Small, FontId::proportional(11.0));
-    ctx.set_style(style);
 }
 
 /// Coloration syntaxique NASM → LayoutJob (comments, mnémoniques, registres…).
