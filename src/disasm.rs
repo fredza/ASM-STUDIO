@@ -6,6 +6,7 @@ use capstone::prelude::*;
 use object::{Object, ObjectSection};
 
 /// Une instruction machine décodée, prête à l'affichage.
+#[derive(Clone)]
 pub struct Insn {
     pub address: u64,
     pub bytes: Vec<u8>,
