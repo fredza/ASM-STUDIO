@@ -64,8 +64,12 @@ pub struct App {
     tab: Tab,
     styled: bool,
     show_about: bool,
-    // Navigateur de fichiers intégré.
+    show_shortcuts: bool,
+    // Navigateur de fichiers intégré (Ouvrir / Enregistrer sous).
     show_open: bool,
+    show_saveas: bool,
+    saveas_name: String,
+    /// Répertoire courant du navigateur (toujours absolu).
     browse_dir: PathBuf,
 }
 
@@ -76,11 +80,7 @@ impl App {
             "section .text\n    global _start\n_start:\n    mov rax, 60\n    xor rdi, rdi\n    syscall\n"
                 .to_string()
         });
-        let browse_dir = src_path
-            .parent()
-            .map(Path::to_path_buf)
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| PathBuf::from("."));
+        let browse_dir = abs_dir_of(&src_path);
         App {
             src_path,
             out_dir: PathBuf::from("build"),
@@ -98,7 +98,10 @@ impl App {
             tab: Tab::Editor,
             styled: false,
             show_about: false,
+            show_shortcuts: false,
             show_open: false,
+            show_saveas: false,
+            saveas_name: String::new(),
             browse_dir,
         }
     }
@@ -116,6 +119,7 @@ impl App {
         match std::fs::write(&self.src_path, &self.source) {
             Ok(_) => {
                 self.dirty = false;
+                self.status = format!("Enregistré : {}", self.src_path.display());
                 true
             }
             Err(e) => {
@@ -123,6 +127,23 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Ouvre la boîte « Enregistrer sous » pré-remplie avec le fichier courant.
+    fn open_saveas(&mut self) {
+        self.browse_dir = abs_dir_of(&self.src_path);
+        self.saveas_name = self
+            .src_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "programme.asm".to_string());
+        self.show_saveas = true;
+    }
+
+    /// Ouvre le navigateur « Ouvrir » sur le dossier du fichier courant.
+    fn open_browser(&mut self) {
+        self.browse_dir = abs_dir_of(&self.src_path);
+        self.show_open = true;
     }
 
     fn open_file(&mut self, path: PathBuf) {
@@ -324,7 +345,9 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| self.center_ui(ui));
 
         self.about_window(ctx);
+        self.shortcuts_window(ctx);
         self.open_window(ctx);
+        self.saveas_window(ctx);
     }
 }
 
@@ -354,7 +377,7 @@ impl App {
             self.save_source();
         }
         if open {
-            self.show_open = true;
+            self.open_browser();
         }
         if new {
             self.new_file();
@@ -438,6 +461,123 @@ impl App {
         }
     }
 
+    fn shortcuts_window(&mut self, ctx: &egui::Context) {
+        if !self.show_shortcuts {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Raccourcis clavier")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                let rows = [
+                    ("F5", "Lancer / Restart"),
+                    ("F10 / F8", "Step (une instruction)"),
+                    ("Échap / Maj+F5", "Stop"),
+                    ("Ctrl+B", "Assembler + Lier"),
+                    ("Ctrl+S", "Enregistrer"),
+                    ("Ctrl+O", "Ouvrir"),
+                    ("Ctrl+N", "Nouveau"),
+                    ("← / →", "Timeline : précédent / suivant"),
+                    ("Home / End", "Timeline : début / fin"),
+                ];
+                egui::Grid::new("shortcuts_grid")
+                    .num_columns(2)
+                    .spacing([24.0, 6.0])
+                    .show(ui, |ui| {
+                        for (k, d) in rows {
+                            ui.label(RichText::new(k).monospace().strong().color(MNEMONIC));
+                            ui.label(d);
+                            ui.end_row();
+                        }
+                    });
+                ui.separator();
+                ui.vertical_centered(|ui| {
+                    if ui.button("Fermer").clicked() {
+                        self.show_shortcuts = false;
+                    }
+                });
+            });
+        if !open {
+            self.show_shortcuts = false;
+        }
+    }
+
+    fn saveas_window(&mut self, ctx: &egui::Context) {
+        if !self.show_saveas {
+            return;
+        }
+        let mut open = true;
+        let mut confirm = false;
+        let mut cancel = false;
+        let mut new_dir: Option<PathBuf> = None;
+        egui::Window::new("Enregistrer sous")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(460.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("📂");
+                    ui.monospace(self.browse_dir.display().to_string());
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("saveas_scroll")
+                    .max_height(240.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if let Some(parent) = self.browse_dir.parent() {
+                            if ui.button("📁 ..").clicked() {
+                                new_dir = Some(parent.to_path_buf());
+                            }
+                        }
+                        let (dirs, files) = list_dir(&self.browse_dir);
+                        for d in dirs {
+                            let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            if ui.button(format!("📁 {name}")).clicked() {
+                                new_dir = Some(d);
+                            }
+                        }
+                        for f in files {
+                            let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            // Clic sur un fichier existant => reprend son nom (écrasement).
+                            if ui.button(RichText::new(format!("📄 {name}")).color(HEADER)).clicked() {
+                                self.saveas_name = name;
+                            }
+                        }
+                    });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Nom :");
+                    ui.add(egui::TextEdit::singleline(&mut self.saveas_name).desired_width(220.0));
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("💾 Enregistrer").clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("Annuler").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if let Some(d) = new_dir {
+            self.browse_dir = d;
+        }
+        if confirm && !self.saveas_name.trim().is_empty() {
+            self.src_path = self.browse_dir.join(self.saveas_name.trim());
+            self.save_source();
+            self.show_saveas = false;
+        }
+        if cancel || !open {
+            self.show_saveas = false;
+        }
+    }
+
     fn open_window(&mut self, ctx: &egui::Context) {
         if !self.show_open {
             return;
@@ -513,11 +653,15 @@ impl App {
                         ui.close_menu();
                     }
                     if ui.button("Ouvrir…            Ctrl+O").clicked() {
-                        self.show_open = true;
+                        self.open_browser();
                         ui.close_menu();
                     }
                     if ui.button("Enregistrer        Ctrl+S").clicked() {
                         self.save_source();
+                        ui.close_menu();
+                    }
+                    if ui.button("Enregistrer sous…").clicked() {
+                        self.open_saveas();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -528,6 +672,10 @@ impl App {
                 ui.menu_button("Build", |ui| {
                     if ui.button("Assembler + Lier   Ctrl+B").clicked() {
                         self.build();
+                        ui.close_menu();
+                    }
+                    if ui.button("Exécuter (Lancer)  F5").clicked() {
+                        self.launch();
                         ui.close_menu();
                     }
                 });
@@ -546,7 +694,10 @@ impl App {
                     }
                 });
                 ui.menu_button("Aide", |ui| {
-                    ui.label("Raccourcis").on_hover_ui(shortcuts_tooltip);
+                    if ui.button("Raccourcis clavier…").clicked() {
+                        self.show_shortcuts = true;
+                        ui.close_menu();
+                    }
                     ui.separator();
                     if ui.button("À propos ASM Studio…").clicked() {
                         self.show_about = true;
@@ -563,7 +714,14 @@ impl App {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.add_space(3.0);
             ui.horizontal(|ui| {
-                if ui.button("▶  Lancer").on_hover_text("F5").clicked() {
+                // Running = un programme est en cours (tracé et vivant).
+                let running = self.dbg.as_ref().is_some_and(|d| d.is_alive());
+
+                // Lancer : vert + actif quand rien ne tourne ; rouge + inactif sinon.
+                if bordered_button(ui, "▶  Lancer", !running)
+                    .on_hover_text("F5")
+                    .clicked()
+                {
                     self.launch();
                 }
                 let can_step = self.can_step();
@@ -577,7 +735,11 @@ impl App {
                 if ui.button("🔄  Restart").on_hover_text("F5").clicked() {
                     self.launch();
                 }
-                if ui.button("⏹  Stop").on_hover_text("Échap").clicked() {
+                // Stop : vert + actif quand un programme tourne ; rouge + inactif sinon.
+                if bordered_button(ui, "⏹  Stop", running)
+                    .on_hover_text("Échap")
+                    .clicked()
+                {
                     self.stop();
                 }
                 ui.separator();
@@ -1022,25 +1184,25 @@ fn list_dir(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     (dirs, files)
 }
 
-fn shortcuts_tooltip(ui: &mut egui::Ui) {
-    let rows = [
-        ("F5", "Lancer / Restart"),
-        ("F10 / F8", "Step"),
-        ("Échap / Maj+F5", "Stop"),
-        ("Ctrl+B", "Assembler + Lier"),
-        ("Ctrl+S", "Enregistrer"),
-        ("Ctrl+O", "Ouvrir"),
-        ("Ctrl+N", "Nouveau"),
-        ("← / →", "Timeline préc. / suiv."),
-        ("Home / End", "Timeline début / fin"),
-    ];
-    egui::Grid::new("shortcuts").num_columns(2).show(ui, |ui| {
-        for (k, d) in rows {
-            ui.label(RichText::new(k).monospace().strong());
-            ui.label(d);
-            ui.end_row();
-        }
-    });
+/// Bouton avec bordure verte (actif/disponible) ou rouge (inactif).
+fn bordered_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    let color = if enabled { FLAG_ON } else { FALSE_COL };
+    let btn = egui::Button::new(label).stroke(egui::Stroke::new(1.5_f32, color));
+    ui.add_enabled(enabled, btn)
+}
+
+/// Répertoire absolu contenant `path` (remonte à `current_dir` si besoin).
+fn abs_dir_of(path: &Path) -> PathBuf {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    abs.parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// Style global moderne (sombre, arrondis, espacements).
@@ -1163,4 +1325,36 @@ fn is_directive(w: &str) -> bool {
     ];
     let l = w.to_ascii_lowercase();
     DIRS.contains(&l.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abs_dir_is_absolute_and_navigable() {
+        // À partir d'un chemin relatif, on obtient un dossier absolu dont on
+        // peut remonter le parent (ce qui faisait échouer le navigateur avant).
+        let dir = abs_dir_of(Path::new("examples/test.asm"));
+        assert!(dir.is_absolute(), "le dossier doit être absolu");
+        assert!(dir.ends_with("examples"));
+        assert!(dir.parent().is_some(), "on doit pouvoir remonter (..)");
+    }
+
+    #[test]
+    fn list_dir_finds_asm_example() {
+        let (_dirs, files) = list_dir(&abs_dir_of(Path::new("examples/test.asm")));
+        assert!(
+            files.iter().any(|f| f.file_name().unwrap() == "test.asm"),
+            "test.asm doit apparaître dans le navigateur"
+        );
+    }
+
+    #[test]
+    fn syntax_highlight_covers_whole_line() {
+        // Chaque caractère doit être stylé (aucune perte de texte à l'affichage).
+        let src = "  mov rax, 5   ; commentaire\n";
+        let job = highlight_nasm(src);
+        assert_eq!(job.text, src);
+    }
 }
