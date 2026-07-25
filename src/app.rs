@@ -29,6 +29,31 @@ const FALSE_COL: Color32 = Color32::from_rgb(0xD9, 0x5B, 0x5B);
 
 // Couleur de la gouttière de numéros de ligne.
 const GUTTER: Color32 = Color32::from_rgb(0x60, 0x66, 0x70);
+// Animation « CPU vivant ».
+const FLASH_DUR: f64 = 0.7; // durée du fondu (secondes)
+const FLASH_BRIGHT: Color32 = Color32::from_rgb(0xFF, 0xF2, 0x9A); // pic de pulsation
+const PUSH_COL: Color32 = Color32::from_rgb(0x5F, 0xBF, 0x69);
+const POP_COL: Color32 = Color32::from_rgb(0xE0, 0x8A, 0x3C);
+
+/// Interpolation linéaire entre deux couleurs (t ∈ [0,1]).
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+}
+
+/// Couleur d'une valeur modifiée, pulsant du clair vers `CHANGED` selon `flash`.
+fn changed_color(flash: Option<f32>) -> Color32 {
+    changed_color2(flash, CHANGED)
+}
+
+/// Comme [`changed_color`] mais vers une couleur de base arbitraire.
+fn changed_color2(flash: Option<f32>, base: Color32) -> Color32 {
+    match flash {
+        Some(p) => lerp_color(FLASH_BRIGHT, base, p),
+        None => base,
+    }
+}
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
@@ -71,8 +96,14 @@ pub struct App {
     tab: Tab,
     stack_tab: StackTab,
     show_tooltips: bool,
+    /// Animations « CPU vivant » (pulsation des valeurs modifiées au Step).
+    animate: bool,
     /// Rend `asmstd.inc` disponible partout (ajoute son dossier aux includes nasm).
     use_asmstd: bool,
+    /// Instant (temps egui) du dernier Step, pour animer le fondu.
+    flash_time: f64,
+    /// Un Step vient d'avoir lieu : mémorise l'instant au prochain frame.
+    pending_flash: bool,
     theme_pref: egui::ThemePreference,
     show_settings: bool,
     show_about: bool,
@@ -114,7 +145,10 @@ impl App {
             tab: Tab::Editor,
             stack_tab: StackTab::Stack,
             show_tooltips: true,
+            animate: true,
             use_asmstd: false,
+            flash_time: 0.0,
+            pending_flash: false,
             theme_pref: egui::ThemePreference::Dark,
             show_settings: false,
             show_about: false,
@@ -147,6 +181,7 @@ impl App {
                 }
                 "tooltips" => self.show_tooltips = v == "true",
                 "asmstd" => self.use_asmstd = v == "true",
+                "animate" => self.animate = v == "true",
                 _ => {}
             }
         }
@@ -164,8 +199,8 @@ impl App {
             _ => "dark",
         };
         let content = format!(
-            "theme={theme}\ntooltips={}\nasmstd={}\n",
-            self.show_tooltips, self.use_asmstd
+            "theme={theme}\ntooltips={}\nasmstd={}\nanimate={}\n",
+            self.show_tooltips, self.use_asmstd, self.animate
         );
         let _ = std::fs::write(&path, content);
     }
@@ -342,6 +377,7 @@ impl App {
         if let Some(d) = self.dbg.as_ref() {
             self.view_index = d.history.len() - 1;
         }
+        self.pending_flash = true; // déclenche l'animation « CPU vivant »
         if let Some((call, num)) = pending {
             if syscall::is_exit(num) {
                 self.log(&call);
@@ -381,6 +417,21 @@ impl App {
     }
 
     // ---------- Accès à l'état affiché ----------
+
+    /// Progression de l'animation « CPU vivant » : `Some(0.0..=1.0)` pendant la
+    /// pulsation (0 = juste après le Step, 1 = fin), `None` sinon. Demande un
+    /// repaint tant que ça anime.
+    fn flash_progress(&self, ui: &egui::Ui) -> Option<f32> {
+        if !self.animate {
+            return None;
+        }
+        let elapsed = ui.input(|i| i.time) - self.flash_time;
+        if elapsed < 0.0 || elapsed >= FLASH_DUR {
+            return None;
+        }
+        ui.ctx().request_repaint();
+        Some((elapsed / FLASH_DUR) as f32)
+    }
 
     fn snap(&self) -> Option<&Snapshot> {
         let d = self.dbg.as_ref()?;
@@ -422,6 +473,10 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_theme(ctx);
+        if self.pending_flash {
+            self.flash_time = ctx.input(|i| i.time);
+            self.pending_flash = false;
+        }
         self.handle_shortcuts(ctx);
 
         self.menu_bar(ctx);
@@ -643,6 +698,12 @@ impl App {
                     .checkbox(
                         &mut self.show_tooltips,
                         "Afficher les infobulles des raccourcis (au survol des boutons)",
+                    )
+                    .changed();
+                changed |= ui
+                    .checkbox(
+                        &mut self.animate,
+                        "Animations « CPU vivant » (pulsation des valeurs modifiées)",
                     )
                     .changed();
                 ui.separator();
@@ -1230,6 +1291,7 @@ impl App {
         if editable {
             ui.label(RichText::new("clic sur une valeur pour l'éditer").small().weak());
         }
+        let flash = self.flash_progress(ui); // pulsation « CPU vivant »
         let mut commit: Option<(&'static str, u64)> = None;
         let mut stop_edit = false;
 
@@ -1260,7 +1322,7 @@ impl App {
                         } else {
                             let mut t = RichText::new(format!("0x{val:016X}")).monospace();
                             if val != pval {
-                                t = t.color(CHANGED);
+                                t = t.color(changed_color(flash));
                             }
                             let sense = if editable {
                                 egui::Sense::click()
@@ -1288,12 +1350,19 @@ impl App {
                 let prevf = Flags::from_eflags(pef);
                 egui::Grid::new("flags_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                     for ((name, val), (_, pval)) in flags.named().iter().zip(prevf.named()) {
+                        let changed = *val != pval;
                         let mut label = RichText::new(*name).monospace();
-                        if *val != pval {
-                            label = label.color(CHANGED);
+                        if changed {
+                            label = label.color(changed_color(flash));
                         }
                         ui.label(label);
-                        let color = if *val { FLAG_ON } else { FLAG_OFF };
+                        let color = if changed {
+                            changed_color(flash)
+                        } else if *val {
+                            FLAG_ON
+                        } else {
+                            FLAG_OFF
+                        };
                         ui.label(RichText::new(if *val { "1" } else { "0" }).monospace().color(color));
                         ui.end_row();
                     }
@@ -1530,13 +1599,33 @@ impl App {
             ui.label("—");
             return;
         };
+        let flash = self.flash_progress(ui);
         let (rsp, rbp) = (snap.regs.rsp, snap.regs.rbp);
+
+        // Badge PUSH / POP d'après la variation de RSP par rapport à l'étape précédente.
+        if let Some(prev) = self.prev_snap() {
+            let prsp = prev.regs.rsp;
+            if rsp < prsp {
+                ui.label(RichText::new("⬇ PUSH").strong().color(changed_color2(flash, PUSH_COL)));
+            } else if rsp > prsp {
+                ui.label(RichText::new("⬆ POP").strong().color(changed_color2(flash, POP_COL)));
+            } else {
+                ui.label("");
+            }
+        }
+
+        let prev_stack = self.prev_snap().map(|p| p.stack.clone()).unwrap_or_default();
         egui::ScrollArea::vertical().id_salt("stack_scroll").show(ui, |ui| {
             egui::Grid::new("stack_grid").num_columns(3).spacing([10.0, 3.0]).show(ui, |ui| {
                 for (i, val) in snap.stack.iter().enumerate() {
                     let addr = rsp.wrapping_add((i as u64) * 8);
+                    let changed = prev_stack.get(i) != Some(val);
                     ui.label(RichText::new(format!("0x{addr:012X}")).monospace().color(ADDR_COL));
-                    ui.label(RichText::new(format!("0x{val:016X}")).monospace());
+                    let mut vt = RichText::new(format!("0x{val:016X}")).monospace();
+                    if changed {
+                        vt = vt.color(changed_color(flash));
+                    }
+                    ui.label(vt);
                     let marker = if addr == rsp && addr == rbp {
                         "← RSP,RBP"
                     } else if addr == rsp {
