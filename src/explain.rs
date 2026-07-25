@@ -201,6 +201,25 @@ pub fn explain(mnemonic: &str, operands: &str, flags: Flags) -> Explanation {
     }
 }
 
+/// Estimation (très approximative) du coût en cycles d'une instruction, pour le
+/// mode microscope. Ordres de grandeur pédagogiques, pas des valeurs exactes
+/// (elles dépendent de la microarchitecture, du cache, des dépendances…).
+pub fn cycles_estimate(mnemonic: &str) -> &'static str {
+    match mnemonic.to_lowercase().as_str() {
+        "nop" => "~0–1",
+        "mov" | "movabs" | "lea" | "xor" | "or" | "and" | "add" | "sub" | "cmp" | "test"
+        | "inc" | "dec" | "neg" | "not" | "shl" | "sal" | "shr" | "sar" => "~1",
+        "push" | "pop" | "jmp" => "~1–2",
+        "je" | "jne" | "jz" | "jnz" | "jg" | "jge" | "jl" | "jle" | "ja" | "jae" | "jb" | "jbe"
+        | "js" | "jns" | "jo" | "jno" | "jp" | "jnp" => "~1–2 (0 si bien prédit)",
+        "call" | "ret" => "~1–3",
+        "imul" | "mul" => "~3–5",
+        "div" | "idiv" => "~20–40",
+        "syscall" => "~100+ (bascule noyau)",
+        _ => "≈ variable",
+    }
+}
+
 /// Titre lisible d'un saut conditionnel.
 fn jcc_title(m: &str) -> &'static str {
     match m {

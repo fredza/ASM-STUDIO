@@ -82,6 +82,8 @@ pub struct App {
     /// Mapping adresse → ligne source (1-based) pour le suivi dans l'éditeur.
     src_map: HashMap<u64, usize>,
     selected: Option<u64>,
+    /// Instruction ouverte dans le mode « microscope » (fenêtre dédiée).
+    microscope: Option<u64>,
     view_index: usize,
 
     mem_addr: u64,
@@ -139,6 +141,7 @@ impl App {
             disasm: Vec::new(),
             src_map: HashMap::new(),
             selected: None,
+            microscope: None,
             view_index: 0,
             mem_addr: 0,
             mem_input: String::new(),
@@ -470,6 +473,15 @@ impl App {
         let rip = self.view_rip()?;
         self.src_map.get(&rip).map(|l| l.saturating_sub(1))
     }
+
+    /// États (avant, après) de l'exécution de l'instruction à `addr`, retrouvés
+    /// dans l'historique. `after` est `None` si l'instruction n'a pas encore été
+    /// exécutée (ou est la dernière étape). Utilisé par le mode microscope.
+    fn microscope_states(&self, addr: u64) -> Option<(&Snapshot, Option<&Snapshot>)> {
+        let d = self.dbg.as_ref()?;
+        let i = d.history.iter().position(|s| s.regs.rip == addr)?;
+        Some((&d.history[i], d.history.get(i + 1)))
+    }
     fn set_view(&mut self, idx: i64) {
         if let Some(d) = &self.dbg {
             self.view_index = idx.clamp(0, (d.history.len() - 1) as i64) as usize;
@@ -518,6 +530,7 @@ impl eframe::App for App {
         self.about_window(ctx);
         self.shortcuts_window(ctx);
         self.settings_window(ctx);
+        self.microscope_window(ctx);
         self.open_window(ctx);
         self.saveas_window(ctx);
     }
@@ -585,6 +598,174 @@ impl App {
     }
 
     // ---------- Boîtes de dialogue ----------
+
+    /// Mode « microscope » : tout ce qui se passe pour UNE instruction.
+    fn microscope_window(&mut self, ctx: &egui::Context) {
+        let Some(addr) = self.microscope else { return };
+        let Some(insn) = self.disasm.iter().find(|i| i.address == addr).cloned() else {
+            self.microscope = None;
+            return;
+        };
+        let flags_now = self.snap().map(|s| Flags::from_eflags(s.regs.eflags)).unwrap_or_default();
+        let e = explain::explain(&insn.mnemonic, &insn.operands, flags_now);
+        let cycles = explain::cycles_estimate(&insn.mnemonic);
+
+        // Données dynamiques (avant/après) clonées => pas d'emprunt de self dans la closure.
+        let dynamics = self.microscope_states(addr).map(|(b, a)| {
+            (
+                b.regs.clone(),
+                b.stack.clone(),
+                a.map(|s| (s.regs.clone(), s.stack.clone())),
+            )
+        });
+
+        let mut open = true;
+        let mut close = false;
+        egui::Window::new(format!("🔬 Microscope — {} {}", insn.mnemonic, insn.operands))
+            .collapsible(false)
+            .resizable(true)
+            .default_width(580.0)
+            .default_height(560.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().id_salt("microscope_scroll").show(ui, |ui| {
+                    // --- Identité de l'instruction ---
+                    egui::Grid::new("micro_id").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+                        ui.label(RichText::new("Adresse").strong());
+                        ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(ADDR_COL));
+                        ui.end_row();
+                        ui.label(RichText::new("Octets machine").strong());
+                        ui.label(RichText::new(insn.bytes_hex()).monospace().color(BYTES_COL));
+                        ui.end_row();
+                        ui.label(RichText::new("Décodage").strong());
+                        ui.label(
+                            RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
+                                .monospace()
+                                .color(MNEMONIC),
+                        );
+                        ui.end_row();
+                        ui.label(RichText::new("Catégorie").strong());
+                        ui.label(e.category);
+                        ui.end_row();
+                        ui.label(RichText::new("Cycles estimés").strong());
+                        ui.label(RichText::new(cycles).color(CHANGED))
+                            .on_hover_text("Ordre de grandeur pédagogique, pas une mesure exacte.");
+                        ui.end_row();
+                    });
+
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Que fait cette instruction ?").strong().color(HEADER));
+                    ui.label(&e.description);
+
+                    ui.add_space(8.0);
+                    ui.separator();
+
+                    match &dynamics {
+                        Some((before, _bstack, Some((after, _astack)))) => {
+                            // ΔRSP + écriture/lecture pile.
+                            let d = after.rsp as i128 - before.rsp as i128;
+                            if d != 0 {
+                                ui.label(RichText::new("Pile (RSP)").strong().color(HEADER));
+                                if d < 0 {
+                                    ui.colored_label(
+                                        PUSH_COL,
+                                        format!(
+                                            "RSP : 0x{:X} → 0x{:X}  (−{} octets, PUSH)",
+                                            before.rsp, after.rsp, -d
+                                        ),
+                                    );
+                                } else {
+                                    ui.colored_label(
+                                        POP_COL,
+                                        format!(
+                                            "RSP : 0x{:X} → 0x{:X}  (+{} octets, POP)",
+                                            before.rsp, after.rsp, d
+                                        ),
+                                    );
+                                }
+                                ui.add_space(6.0);
+                            }
+
+                            // Registres modifiés.
+                            ui.label(RichText::new("Registres modifiés").strong().color(HEADER));
+                            let mut any = false;
+                            egui::Grid::new("micro_regs").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+                                for ((n, ov), (_, nv)) in
+                                    before.named().iter().zip(after.named())
+                                {
+                                    if *ov != nv {
+                                        any = true;
+                                        ui.label(RichText::new(*n).monospace().strong());
+                                        ui.label(RichText::new(format!("0x{ov:016X}")).monospace().weak());
+                                        ui.label("→");
+                                        ui.label(RichText::new(format!("0x{nv:016X}")).monospace().color(CHANGED));
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                            if !any {
+                                ui.weak("aucun registre modifié.");
+                            }
+
+                            ui.add_space(6.0);
+                            // Flags modifiés.
+                            ui.label(RichText::new("Flags").strong().color(HEADER));
+                            let (fb, fa) = (Flags::from_eflags(before.eflags), Flags::from_eflags(after.eflags));
+                            let mut fchanged = false;
+                            ui.horizontal_wrapped(|ui| {
+                                for ((n, ov), (_, nv)) in fb.named().iter().zip(fa.named()) {
+                                    if *ov != nv {
+                                        fchanged = true;
+                                        ui.label(
+                                            RichText::new(format!("{n}: {}→{}", *ov as u8, nv as u8))
+                                                .monospace()
+                                                .color(CHANGED),
+                                        );
+                                    }
+                                }
+                            });
+                            if !fchanged {
+                                ui.weak("aucun flag modifié.");
+                            }
+
+                            ui.add_space(8.0);
+                            // Schéma pile avant / après.
+                            ui.label(RichText::new("Pile — avant / après").strong().color(HEADER));
+                            ui.columns(2, |c| {
+                                micro_stack(&mut c[0], "avant", before.rsp, _bstack);
+                                micro_stack(&mut c[1], "après", after.rsp, _astack);
+                            });
+                        }
+                        Some((_before, _bstack, None)) => {
+                            ui.weak(
+                                "Instruction à exécuter à l'étape courante — avancez d'un pas (Step) \
+                                 pour voir ses effets dynamiques.",
+                            );
+                            micro_static_flags(ui, &e);
+                        }
+                        None => {
+                            ui.weak(
+                                "Cette instruction n'a pas encore été exécutée dans l'historique \
+                                 (effets dynamiques indisponibles).",
+                            );
+                            micro_static_flags(ui, &e);
+                        }
+                    }
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.vertical_centered(|ui| {
+                        if ui.button("Fermer").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if !open || close {
+            self.microscope = None;
+        }
+    }
 
     fn about_window(&mut self, ctx: &egui::Context) {
         if !self.show_about {
@@ -1580,29 +1761,38 @@ impl App {
 
     // ---------- Panneau INSTRUCTION ----------
 
-    fn instruction_ui(&self, ui: &mut egui::Ui) {
+    fn instruction_ui(&mut self, ui: &mut egui::Ui) {
         header(ui, "INSTRUCTION");
         let target = self.selected.or_else(|| self.view_rip());
         let Some(addr) = target else {
             ui.label("Lancez le programme, puis cliquez une instruction.");
             return;
         };
-        let Some(insn) = self.disasm.iter().find(|i| i.address == addr) else {
+        let Some(insn) = self.disasm.iter().find(|i| i.address == addr).cloned() else {
             ui.label("—");
             return;
         };
         let flags = self.snap().map(|s| Flags::from_eflags(s.regs.eflags)).unwrap_or_default();
         let e = explain::explain(&insn.mnemonic, &insn.operands, flags);
 
-        ui.label(
-            RichText::new(if self.selected.is_some() {
-                "(sélection — reclic pour suivre RIP)"
-            } else {
-                "(instruction courante)"
-            })
-            .small()
-            .weak(),
-        );
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(if self.selected.is_some() {
+                    "(sélection)"
+                } else {
+                    "(instruction courante)"
+                })
+                .small()
+                .weak(),
+            );
+            if ui
+                .button("🔬 Microscope")
+                .on_hover_text("Tout voir sur cette seule instruction")
+                .clicked()
+            {
+                self.microscope = Some(addr);
+            }
+        });
         ui.add_space(4.0);
         ui.label(RichText::new(&e.title).heading().color(MNEMONIC));
         ui.label(RichText::new(e.category).italics().weak());
@@ -1765,6 +1955,38 @@ fn header(ui: &mut egui::Ui, text: &str) {
 /// Titre de section « inline » (dans une ligne horizontale).
 fn header_inline(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).strong().color(HEADER).size(12.5));
+}
+
+/// Petite colonne de pile (microscope) : adresse + valeur, à partir de `rsp`.
+fn micro_stack(ui: &mut egui::Ui, label: &str, rsp: u64, stack: &[u64]) {
+    ui.label(RichText::new(label).italics().weak());
+    egui::Grid::new(format!("micro_stack_{label}"))
+        .num_columns(2)
+        .spacing([8.0, 2.0])
+        .show(ui, |ui| {
+            for (i, val) in stack.iter().take(6).enumerate() {
+                let addr = rsp.wrapping_add((i as u64) * 8);
+                let mark = if i == 0 { "→" } else { " " };
+                ui.label(
+                    RichText::new(format!("{mark} 0x{addr:012X}"))
+                        .monospace()
+                        .color(ADDR_COL),
+                );
+                ui.label(RichText::new(format!("0x{val:016X}")).monospace());
+                ui.end_row();
+            }
+        });
+}
+
+/// Flags positionnés (info statique) quand l'instruction n'a pas d'avant/après.
+fn micro_static_flags(ui: &mut egui::Ui, e: &explain::Explanation) {
+    ui.add_space(4.0);
+    if e.affects_flags.is_empty() {
+        ui.weak("Cette instruction ne modifie aucun flag.");
+    } else {
+        ui.label(RichText::new("Flags positionnés").strong().color(HEADER));
+        ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
+    }
 }
 
 fn parse_hex(s: &str) -> Option<u64> {
