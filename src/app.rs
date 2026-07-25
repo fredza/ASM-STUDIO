@@ -68,6 +68,13 @@ enum StackTab {
     Heap,
 }
 
+/// Un appel système exécuté, pour le panneau SYSCALLS.
+struct SyscallLog {
+    call: String,
+    number: u64,
+    ret: Option<i64>,
+}
+
 pub struct App {
     src_path: PathBuf,
     out_dir: PathBuf,
@@ -84,6 +91,12 @@ pub struct App {
     selected: Option<u64>,
     /// Instruction ouverte dans le mode « microscope » (fenêtre dédiée).
     microscope: Option<u64>,
+    /// Appels système exécutés (panneau SYSCALLS).
+    syscalls: Vec<SyscallLog>,
+    /// Adresses des frames actives (panneau CALL STACK), suivi call/ret.
+    call_stack: Vec<u64>,
+    /// Dossier affiché dans l'explorateur de fichiers (panneau de gauche).
+    explorer_dir: PathBuf,
     view_index: usize,
 
     mem_addr: u64,
@@ -142,6 +155,9 @@ impl App {
             src_map: HashMap::new(),
             selected: None,
             microscope: None,
+            syscalls: Vec::new(),
+            call_stack: Vec::new(),
+            explorer_dir: browse_dir.clone(),
             view_index: 0,
             mem_addr: 0,
             mem_input: String::new(),
@@ -348,6 +364,8 @@ impl App {
             .unwrap_or(0);
         self.mem_input = format!("0x{:X}", self.mem_addr);
         self.selected = None;
+        self.syscalls.clear();
+        self.call_stack.clear();
         self.view_index = 0;
         self.dbg = None;
         match Debugger::launch(&bin) {
@@ -372,14 +390,19 @@ impl App {
         if !self.can_step() {
             return;
         }
-        let pending = self.dbg.as_ref().and_then(|d| {
-            let rip = d.regs().rip;
-            let is_syscall = self
-                .disasm
-                .iter()
-                .any(|i| i.address == rip && i.mnemonic == "syscall");
-            is_syscall.then(|| (syscall::format_call(d.regs()), d.regs().rax))
-        });
+        // Instruction sur le point de s'exécuter (RIP) : syscall + mnémonique.
+        let (pending, exec_mnemonic) = self
+            .dbg
+            .as_ref()
+            .map(|d| {
+                let rip = d.regs().rip;
+                let insn = self.disasm.iter().find(|i| i.address == rip);
+                let mnem = insn.map(|i| i.mnemonic.clone());
+                let pending = (mnem.as_deref() == Some("syscall"))
+                    .then(|| (syscall::format_call(d.regs()), d.regs().rax));
+                (pending, mnem)
+            })
+            .unwrap_or((None, None));
 
         if let Some(d) = self.dbg.as_mut() {
             if let Err(e) = d.step() {
@@ -391,11 +414,26 @@ impl App {
             self.view_index = d.history.len() - 1;
         }
         self.pending_flash = true; // déclenche l'animation « CPU vivant »
+
+        // Suivi de la pile d'appels (call → push frame, ret → pop).
+        if let Some(d) = self.dbg.as_ref().filter(|d| d.is_alive()) {
+            match exec_mnemonic.as_deref() {
+                Some("call") => self.call_stack.push(d.regs().rip),
+                Some("ret") => {
+                    self.call_stack.pop();
+                }
+                _ => {}
+            }
+        }
+
         if let Some((call, num)) = pending {
             if syscall::is_exit(num) {
                 self.log(&call);
+                self.syscalls.push(SyscallLog { call, number: num, ret: None });
             } else if let Some(d) = self.dbg.as_ref() {
-                self.log(&format!("{call} = {}", d.regs().rax as i64));
+                let ret = d.regs().rax as i64;
+                self.log(&format!("{call} = {ret}"));
+                self.syscalls.push(SyscallLog { call, number: num, ret: Some(ret) });
             }
         }
         match self.dbg.as_ref().map(|d| d.state) {
@@ -510,21 +548,54 @@ impl eframe::App for App {
         self.menu_bar(ctx);
         self.toolbar(ctx);
         self.status_bar(ctx);
-        self.timeline_panel(ctx);
-        self.bottom_band(ctx);
 
-        egui::SidePanel::left("regs_panel")
-            .resizable(false)
-            .default_width(250.0)
-            .show(ctx, |ui| self.registers_ui(ui));
+        // Bande basse : MEMORY | TIMELINE | CONSOLE.
+        egui::TopBottomPanel::bottom("bottom_band")
+            .resizable(true)
+            .default_height(190.0)
+            .show(ctx, |ui| {
+                let h = ui.available_height();
+                let cw = ((ui.available_width() - 20.0) / 3.0).max(60.0);
+                ui.horizontal_top(|ui| {
+                    col(ui, cw, h, |ui| self.memory_ui(ui));
+                    ui.separator();
+                    col(ui, cw, h, |ui| self.timeline_col_ui(ui));
+                    ui.separator();
+                    col(ui, ui.available_width(), h, |ui| self.console_ui(ui));
+                });
+            });
+
+        // Bande centrale : REGISTERS | FLAGS | STACK | CALL STACK | DISASSEMBLY | SYSCALLS.
+        egui::TopBottomPanel::bottom("mid_band")
+            .resizable(true)
+            .default_height(220.0)
+            .show(ctx, |ui| {
+                let h = ui.available_height();
+                let cw = ((ui.available_width() - 50.0) / 6.0).max(90.0);
+                ui.horizontal_top(|ui| {
+                    col(ui, cw * 1.3, h, |ui| self.registers_ui(ui));
+                    ui.separator();
+                    col(ui, cw * 0.6, h, |ui| self.flags_ui(ui));
+                    ui.separator();
+                    col(ui, cw * 1.2, h, |ui| self.stack_ui(ui));
+                    ui.separator();
+                    col(ui, cw * 0.9, h, |ui| self.callstack_ui(ui));
+                    ui.separator();
+                    col(ui, cw * 1.1, h, |ui| self.disasm_around_ui(ui));
+                    ui.separator();
+                    col(ui, ui.available_width(), h, |ui| self.syscalls_ui(ui));
+                });
+            });
+
+        // Explorateur à gauche, INSTRUCTION à droite, éditeur au centre.
+        egui::SidePanel::left("explorer_panel")
+            .resizable(true)
+            .default_width(180.0)
+            .show(ctx, |ui| self.explorer_ui(ui));
         egui::SidePanel::right("instruction_panel")
             .resizable(true)
             .default_width(320.0)
             .show(ctx, |ui| self.instruction_ui(ui));
-        egui::SidePanel::right("stack_panel")
-            .resizable(false)
-            .default_width(300.0)
-            .show(ctx, |ui| self.stack_ui(ui));
         egui::CentralPanel::default().show(ctx, |ui| self.center_ui(ui));
 
         self.about_window(ctx);
@@ -1293,93 +1364,48 @@ impl App {
 
     // ---------- Bande basse ----------
 
-    fn bottom_band(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("bottom_band")
-            .resizable(true)
-            .default_height(210.0)
-            .show(ctx, |ui| {
-                // Mémoire | (séparateur vertical) | Console.
-                ui.horizontal_top(|ui| {
-                    let h = ui.available_height();
-                    let half = (ui.available_width() - 12.0) * 0.5;
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(half, h),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| self.memory_ui(ui),
-                    );
-                    ui.separator();
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(ui.available_width(), h),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| self.console_ui(ui),
-                    );
-                });
-            });
-    }
-
-    /// Barre timeline pleine largeur (au-dessus de la barre d'état).
-    fn timeline_panel(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("timeline_panel").show(ctx, |ui| {
-            ui.add_space(2.0);
-            let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
-                ui.horizontal(|ui| {
-                    header_inline(ui, "TIMELINE");
-                    ui.separator();
-                    ui.weak("— lancez un programme pour enregistrer la timeline");
-                });
-                ui.add_space(2.0);
-                return;
-            };
-
-            // Ligne 1 : contrôles + libellés (largeur variable, sans le slider).
-            ui.horizontal(|ui| {
-                header_inline(ui, "TIMELINE");
-                ui.separator();
-                if self.tip(ui.button("⏮"), "Début (Home)").clicked() {
-                    self.set_view(0);
-                }
-                if self.tip(ui.button("◀"), "Précédent (←)").clicked() {
-                    self.set_view(self.view_index as i64 - 1);
-                }
-                if self.tip(ui.button("▶"), "Suivant (→)").clicked() {
-                    self.set_view(self.view_index as i64 + 1);
-                }
-                if self.tip(ui.button("⏭"), "Fin (End)").clicked() {
-                    self.set_view(i64::MAX);
-                }
-                ui.label(RichText::new(format!("{} / {last}", self.view_index)).monospace().strong());
-                if !self.is_head_view()
-                    && self
-                        .tip(ui.button("⟳ Reprendre ici"), "Ré-exécute jusqu'à cette étape pour continuer")
-                        .clicked()
-                {
-                    self.resume_here();
-                }
-                if let Some(s) = self.snap() {
-                    if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
-                        ui.separator();
-                        ui.label(
-                            RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
-                                .monospace()
-                                .color(MNEMONIC),
-                        );
-                    }
-                }
-            });
-
-            // Ligne 2 : slider seul, largeur STABLE (= largeur du panneau).
-            // (Le mettre sur la même ligne que des libellés variables faisait
-            //  « sauter » le curseur : rétroaction largeur ↔ contenu.)
-            let mut idx = self.view_index;
-            ui.spacing_mut().slider_width = (ui.available_width() - 16.0).max(80.0);
-            if ui
-                .add(egui::Slider::new(&mut idx, 0..=last).show_value(false))
-                .changed()
-            {
-                self.view_index = idx;
+    /// Timeline en colonne (bande basse), style mockup.
+    fn timeline_col_ui(&mut self, ui: &mut egui::Ui) {
+        header(ui, "TIMELINE");
+        let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
+            ui.weak("— lancez un programme");
+            return;
+        };
+        ui.horizontal(|ui| {
+            if self.tip(ui.button("⏮"), "Début (Home)").clicked() {
+                self.set_view(0);
             }
-            ui.add_space(2.0);
+            if self.tip(ui.button("◀"), "Précédent (←)").clicked() {
+                self.set_view(self.view_index as i64 - 1);
+            }
+            if self.tip(ui.button("▶"), "Suivant (→)").clicked() {
+                self.set_view(self.view_index as i64 + 1);
+            }
+            if self.tip(ui.button("⏭"), "Fin (End)").clicked() {
+                self.set_view(i64::MAX);
+            }
+            ui.label(RichText::new(format!("{} / {last}", self.view_index)).monospace().strong());
         });
+        // Slider pleine largeur de la colonne (largeur stable).
+        let mut idx = self.view_index;
+        ui.spacing_mut().slider_width = (ui.available_width() - 16.0).max(80.0);
+        if ui.add(egui::Slider::new(&mut idx, 0..=last).show_value(false)).changed() {
+            self.view_index = idx;
+        }
+        if let Some(s) = self.snap() {
+            if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
+                ui.label(
+                    RichText::new(format!("Instruction {}/{last} : {} {}", self.view_index, insn.mnemonic, insn.operands))
+                        .monospace()
+                        .color(MNEMONIC),
+                );
+            }
+        }
+        if !self.is_head_view()
+            && self.tip(ui.button("⟳ Reprendre ici"), "Ré-exécute jusqu'à cette étape").clicked()
+        {
+            self.resume_here();
+        }
     }
 
     fn memory_ui(&mut self, ui: &mut egui::Ui) {
@@ -1573,35 +1599,6 @@ impl App {
                         ui.end_row();
                     }
                 });
-
-                ui.add_space(10.0);
-                header(ui, "FLAGS");
-                let (ef, pef) = rows
-                    .iter()
-                    .find(|(n, _, _)| *n == "EFLAGS")
-                    .map(|(_, v, p)| (*v, *p))
-                    .unwrap_or((0, 0));
-                let flags = Flags::from_eflags(ef);
-                let prevf = Flags::from_eflags(pef);
-                egui::Grid::new("flags_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                    for ((name, val), (_, pval)) in flags.named().iter().zip(prevf.named()) {
-                        let changed = *val != pval;
-                        let mut label = RichText::new(*name).monospace();
-                        if changed {
-                            label = label.color(changed_color(flash));
-                        }
-                        ui.label(label);
-                        let color = if changed {
-                            changed_color(flash)
-                        } else if *val {
-                            FLAG_ON
-                        } else {
-                            FLAG_OFF
-                        };
-                        ui.label(RichText::new(if *val { "1" } else { "0" }).monospace().color(color));
-                        ui.end_row();
-                    }
-                });
             });
 
         // Applique l'édition après le rendu (évite l'emprunt simultané de dbg).
@@ -1614,6 +1611,168 @@ impl App {
         } else if stop_edit {
             self.edit_reg = None;
         }
+    }
+
+    fn flags_ui(&self, ui: &mut egui::Ui) {
+        header(ui, "FLAGS");
+        let (Some(snap), Some(prev)) = (self.snap(), self.prev_snap()) else {
+            ui.weak("—");
+            return;
+        };
+        let flash = self.flash_progress(ui);
+        let flags = Flags::from_eflags(snap.regs.eflags);
+        let prevf = Flags::from_eflags(prev.regs.eflags);
+        egui::ScrollArea::vertical().id_salt("flags_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            egui::Grid::new("flags_grid").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+                for ((name, val), (_, pval)) in flags.named().iter().zip(prevf.named()) {
+                    let changed = *val != pval;
+                    let mut label = RichText::new(*name).monospace();
+                    if changed {
+                        label = label.color(changed_color(flash));
+                    }
+                    ui.label(label);
+                    let color = if changed {
+                        changed_color(flash)
+                    } else if *val {
+                        FLAG_ON
+                    } else {
+                        FLAG_OFF
+                    };
+                    ui.label(RichText::new(if *val { "1" } else { "0" }).monospace().color(color));
+                    ui.end_row();
+                }
+            });
+        });
+    }
+
+    // ---------- Explorateur de fichiers (panneau de gauche) ----------
+
+    fn explorer_ui(&mut self, ui: &mut egui::Ui) {
+        header(ui, "EXPLORER");
+        ui.label(
+            RichText::new(
+                self.explorer_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| self.explorer_dir.display().to_string()),
+            )
+            .small()
+            .weak(),
+        );
+        ui.separator();
+        let mut new_dir = None;
+        let mut open_file = None;
+        egui::ScrollArea::vertical().id_salt("explorer_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            let w = ui.available_width();
+            if let Some(parent) = self.explorer_dir.parent() {
+                if ui.add_sized([w, 22.0], egui::SelectableLabel::new(false, "📁  ..")).clicked() {
+                    new_dir = Some(parent.to_path_buf());
+                }
+            }
+            let (dirs, files) = list_dir(&self.explorer_dir);
+            for d in dirs {
+                let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if ui.add_sized([w, 22.0], egui::SelectableLabel::new(false, format!("📁  {name}"))).clicked() {
+                    new_dir = Some(d);
+                }
+            }
+            for f in files {
+                let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let is_cur = f == self.src_path;
+                let txt = RichText::new(format!("📄  {name}")).color(if is_cur { CHANGED } else { MNEMONIC });
+                if ui.add_sized([w, 22.0], egui::SelectableLabel::new(is_cur, txt)).clicked() {
+                    open_file = Some(f);
+                }
+            }
+        });
+        if let Some(d) = new_dir {
+            self.explorer_dir = d;
+        }
+        if let Some(f) = open_file {
+            self.open_file(f);
+        }
+    }
+
+    // ---------- Call stack ----------
+
+    fn callstack_ui(&self, ui: &mut egui::Ui) {
+        header(ui, "CALL STACK");
+        if self.dbg.is_none() {
+            ui.weak("—");
+            return;
+        }
+        egui::ScrollArea::vertical().id_salt("callstack_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            // Frame courante en haut (RIP), puis les retours empilés.
+            let mut depth = self.call_stack.len();
+            if let Some(rip) = self.view_rip() {
+                ui.label(RichText::new(format!("#{depth}  0x{rip:08X}  (courant)")).monospace().color(CHANGED));
+            }
+            for addr in self.call_stack.iter().rev() {
+                depth = depth.saturating_sub(1);
+                ui.label(RichText::new(format!("#{depth}  0x{addr:08X}")).monospace().color(ADDR_COL));
+            }
+            if self.call_stack.is_empty() {
+                ui.weak("(aucun appel en cours)");
+            }
+        });
+    }
+
+    // ---------- Syscalls ----------
+
+    fn syscalls_ui(&self, ui: &mut egui::Ui) {
+        header(ui, "SYSCALLS");
+        egui::ScrollArea::vertical().id_salt("syscalls_scroll").stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
+            if self.syscalls.is_empty() {
+                ui.weak("(aucun appel système)");
+            }
+            for s in &self.syscalls {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{}", s.number)).monospace().weak());
+                    ui.label(RichText::new(&s.call).monospace().color(MNEMONIC));
+                });
+                match s.ret {
+                    Some(r) if r < 0 => {
+                        ui.label(RichText::new(format!("   = {r}  (errno)")).monospace().color(FALSE_COL));
+                    }
+                    Some(r) => {
+                        ui.label(RichText::new(format!("   = {r}")).monospace().color(FLAG_ON));
+                    }
+                    None => {
+                        ui.label(RichText::new("   (ne revient pas)").monospace().weak());
+                    }
+                }
+            }
+        });
+    }
+
+    // ---------- Désassemblage compact autour de RIP ----------
+
+    fn disasm_around_ui(&self, ui: &mut egui::Ui) {
+        header(ui, "DISASSEMBLY");
+        let rip = self.view_rip();
+        if self.disasm.is_empty() {
+            ui.weak("—");
+            return;
+        }
+        let center = rip
+            .and_then(|r| self.disasm.iter().position(|i| i.address == r))
+            .unwrap_or(0);
+        let start = center.saturating_sub(4);
+        let end = (center + 6).min(self.disasm.len());
+        egui::ScrollArea::vertical().id_salt("disasm_around_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            for insn in &self.disasm[start..end] {
+                let cur = Some(insn.address) == rip;
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(if cur { "➤" } else { "  " }).color(CHANGED));
+                    ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(ADDR_COL));
+                    ui.label(
+                        RichText::new(format!("{:<6} {}", insn.mnemonic, insn.operands))
+                            .monospace()
+                            .color(if cur { MNEMONIC } else { Color32::GRAY }),
+                    );
+                });
+            }
+        });
     }
 
     // ---------- Centre : onglets Éditeur / Désassemblage ----------
@@ -1955,6 +2114,15 @@ fn header(ui: &mut egui::Ui, text: &str) {
 /// Titre de section « inline » (dans une ligne horizontale).
 fn header_inline(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).strong().color(HEADER).size(12.5));
+}
+
+/// Alloue une colonne de largeur `w` et hauteur `h` puis y rend `add`.
+fn col(ui: &mut egui::Ui, w: f32, h: f32, add: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(w, h),
+        egui::Layout::top_down(egui::Align::Min),
+        add,
+    );
 }
 
 /// Petite colonne de pile (microscope) : adresse + valeur, à partir de `rsp`.
