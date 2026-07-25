@@ -13,7 +13,14 @@ pub struct BuildOutput {
     pub log: String,
 }
 
-pub fn assemble(src: &Path, out_dir: &Path) -> Result<BuildOutput, String> {
+/// Assemble (nasm) puis lie (ld) `src`, en ajoutant des répertoires de recherche
+/// `%include` (`nasm -i`) : par ex. le dossier du fichier et celui d'`asmstd.inc`.
+/// Passer `&[]` pour n'ajouter aucun chemin d'include.
+pub fn assemble_with_includes(
+    src: &Path,
+    out_dir: &Path,
+    includes: &[PathBuf],
+) -> Result<BuildOutput, String> {
     std::fs::create_dir_all(out_dir).map_err(|e| format!("création de {}: {e}", out_dir.display()))?;
 
     let stem = src
@@ -26,15 +33,22 @@ pub fn assemble(src: &Path, out_dir: &Path) -> Result<BuildOutput, String> {
     let binary = out_dir.join(stem);
     let mut log = String::new();
 
-    // 1) nasm -f elf64 src -o obj -l listing
+    // 1) nasm -f elf64 [-i dir/...] src -o obj -l listing
+    // nasm attend le chemin collé à l'option et terminé par un séparateur.
+    let inc_args: Vec<String> = includes
+        .iter()
+        .map(|d| format!("-i{}/", d.display()))
+        .collect();
     log.push_str(&format!(
-        "$ nasm -f elf64 {} -o {} -l {}\n",
+        "$ nasm -f elf64 {}{} -o {} -l {}\n",
+        inc_args.iter().map(|a| format!("{a} ")).collect::<String>(),
         src.display(),
         obj.display(),
         listing.display()
     ));
     let nasm = Command::new("nasm")
         .args(["-f", "elf64"])
+        .args(&inc_args)
         .arg(src)
         .arg("-o")
         .arg(&obj)
@@ -62,4 +76,21 @@ pub fn assemble(src: &Path, out_dir: &Path) -> Result<BuildOutput, String> {
 
     log.push_str("Build OK\n");
     Ok(BuildOutput { binary, log })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// La bibliothèque asmstd doit s'assembler via `%include` (dossier examples).
+    #[test]
+    fn asmstd_include_resolves() {
+        let out = assemble_with_includes(
+            Path::new("examples/hello_asmstd.asm"),
+            Path::new("build/test-asmstd"),
+            &[PathBuf::from("examples")],
+        )
+        .expect("hello_asmstd.asm doit s'assembler avec asmstd.inc");
+        assert!(out.binary.exists(), "le binaire doit être produit");
+    }
 }

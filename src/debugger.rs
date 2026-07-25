@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn step_through_example_sets_flags() {
         // Dossier dédié : évite toute collision avec les autres tests parallèles.
-        let out = assemble::assemble(Path::new("examples/test.asm"), Path::new("build/test-dbg"))
+        let out = assemble::assemble_with_includes(Path::new("examples/test.asm"), Path::new("build/test-dbg"), &[])
             .expect("assemblage");
         let mut dbg = Debugger::launch(&out.binary).expect("launch");
 
@@ -347,7 +347,7 @@ mod tests {
     /// capture bien la valeur empilée par `push rax`.
     #[test]
     fn history_records_snapshots_and_stack() {
-        let out = assemble::assemble(Path::new("examples/test.asm"), Path::new("build/test-hist"))
+        let out = assemble::assemble_with_includes(Path::new("examples/test.asm"), Path::new("build/test-hist"), &[])
             .expect("assemblage");
         let mut dbg = Debugger::launch(&out.binary).expect("launch");
 
@@ -367,7 +367,7 @@ mod tests {
     /// Après un brk qui agrandit le tas, le segment [heap] doit être détecté.
     #[test]
     fn heap_range_detected_after_brk() {
-        let out = assemble::assemble(Path::new("examples/heap.asm"), Path::new("build/test-heap"))
+        let out = assemble::assemble_with_includes(Path::new("examples/heap.asm"), Path::new("build/test-heap"), &[])
             .expect("assemblage");
         let mut dbg = Debugger::launch(&out.binary).expect("launch");
 

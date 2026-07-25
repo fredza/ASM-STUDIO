@@ -66,6 +66,8 @@ pub struct App {
     tab: Tab,
     stack_tab: StackTab,
     show_tooltips: bool,
+    /// Rend `asmstd.inc` disponible partout (ajoute son dossier aux includes nasm).
+    use_asmstd: bool,
     theme_pref: egui::ThemePreference,
     show_settings: bool,
     show_about: bool,
@@ -86,7 +88,7 @@ impl App {
                 .to_string()
         });
         let browse_dir = abs_dir_of(&src_path);
-        App {
+        let mut app = App {
             src_path,
             out_dir: PathBuf::from("build"),
             source,
@@ -104,6 +106,7 @@ impl App {
             tab: Tab::Editor,
             stack_tab: StackTab::Stack,
             show_tooltips: true,
+            use_asmstd: false,
             theme_pref: egui::ThemePreference::Dark,
             show_settings: false,
             show_about: false,
@@ -112,7 +115,51 @@ impl App {
             show_saveas: false,
             saveas_name: String::new(),
             browse_dir,
+        };
+        app.load_settings();
+        app
+    }
+
+    // ---------- Persistance des réglages ----------
+
+    fn load_settings(&mut self) {
+        use egui::ThemePreference;
+        let Some(path) = settings_path() else { return };
+        let Ok(content) = std::fs::read_to_string(&path) else { return };
+        for line in content.lines() {
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let v = v.trim();
+            match k.trim() {
+                "theme" => {
+                    self.theme_pref = match v {
+                        "system" => ThemePreference::System,
+                        "light" => ThemePreference::Light,
+                        _ => ThemePreference::Dark,
+                    }
+                }
+                "tooltips" => self.show_tooltips = v == "true",
+                "asmstd" => self.use_asmstd = v == "true",
+                _ => {}
+            }
         }
+    }
+
+    fn save_settings(&self) {
+        use egui::ThemePreference;
+        let Some(path) = settings_path() else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let theme = match self.theme_pref {
+            ThemePreference::System => "system",
+            ThemePreference::Light => "light",
+            _ => "dark",
+        };
+        let content = format!(
+            "theme={theme}\ntooltips={}\nasmstd={}\n",
+            self.show_tooltips, self.use_asmstd
+        );
+        let _ = std::fs::write(&path, content);
     }
 
     // ---------- Fichiers ----------
@@ -125,6 +172,15 @@ impl App {
     }
 
     fn save_source(&mut self) -> bool {
+        // Crée le dossier cible s'il n'existe pas (ex. `examples/` absent).
+        if let Some(parent) = self.src_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    self.log(&format!("Impossible de créer {}: {e}", parent.display()));
+                    return false;
+                }
+            }
+        }
         match std::fs::write(&self.src_path, &self.source) {
             Ok(_) => {
                 self.dirty = false;
@@ -184,10 +240,30 @@ impl App {
 
     // ---------- Build / Run ----------
 
+    /// Répertoires de recherche `%include` pour nasm : dossier du fichier, et
+    /// (si activé) dossier d'`asmstd.inc`.
+    fn include_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(p) = self.src_path.parent() {
+            if !p.as_os_str().is_empty() {
+                dirs.push(p.to_path_buf());
+            }
+        }
+        if self.use_asmstd {
+            if let Some(d) = asmstd_dir() {
+                if !dirs.contains(&d) {
+                    dirs.push(d);
+                }
+            }
+        }
+        dirs
+    }
+
     /// Enregistre puis assemble (nasm) et lie (ld) le programme de l'utilisateur.
     fn build(&mut self) {
         self.save_source();
-        match assemble::assemble(&self.src_path, &self.out_dir) {
+        let includes = self.include_dirs();
+        match assemble::assemble_with_includes(&self.src_path, &self.out_dir, &includes) {
             Ok(out) => {
                 self.log(&out.log);
                 self.binary = Some(out.binary);
@@ -531,6 +607,7 @@ impl App {
         }
         use egui::ThemePreference;
         let mut open = true;
+        let mut changed = false;
         egui::Window::new("Réglages")
             .collapsible(false)
             .resizable(false)
@@ -539,25 +616,53 @@ impl App {
             .show(ctx, |ui| {
                 ui.label(RichText::new("Thème").strong());
                 ui.add_space(4.0);
-                ui.radio_value(&mut self.theme_pref, ThemePreference::System, "Système (suit l'OS)");
-                ui.radio_value(&mut self.theme_pref, ThemePreference::Dark, "Sombre");
-                ui.radio_value(&mut self.theme_pref, ThemePreference::Light, "Clair");
+                changed |= ui
+                    .radio_value(&mut self.theme_pref, ThemePreference::System, "Système (suit l'OS)")
+                    .changed();
+                changed |= ui
+                    .radio_value(&mut self.theme_pref, ThemePreference::Dark, "Sombre")
+                    .changed();
+                changed |= ui
+                    .radio_value(&mut self.theme_pref, ThemePreference::Light, "Clair")
+                    .changed();
                 ui.add_space(4.0);
                 ui.weak("Note : la coloration du code est optimisée pour le thème sombre.");
                 ui.separator();
+
                 ui.label(RichText::new("Interface").strong());
                 ui.add_space(4.0);
-                ui.checkbox(
-                    &mut self.show_tooltips,
-                    "Afficher les infobulles des raccourcis (au survol des boutons)",
-                );
+                changed |= ui
+                    .checkbox(
+                        &mut self.show_tooltips,
+                        "Afficher les infobulles des raccourcis (au survol des boutons)",
+                    )
+                    .changed();
                 ui.separator();
+
+                ui.label(RichText::new("Bibliothèque asmstd").strong());
+                ui.add_space(4.0);
+                changed |= ui
+                    .checkbox(
+                        &mut self.use_asmstd,
+                        "Activer asmstd (call asm.write, asm.exit, asm.mkdir…)",
+                    )
+                    .on_hover_text(
+                        "Rend asmstd.inc disponible pour %include depuis n'importe quel fichier.\n\
+                         Masque les numéros de syscalls derrière des noms lisibles.",
+                    )
+                    .changed();
+                ui.weak("Dans le code : %include \"asmstd.inc\" puis call asm.write");
+                ui.separator();
+
                 ui.vertical_centered(|ui| {
                     if ui.button("Fermer").clicked() {
                         self.show_settings = false;
                     }
                 });
             });
+        if changed {
+            self.save_settings();
+        }
         if !open {
             self.show_settings = false;
         }
@@ -607,6 +712,58 @@ impl App {
         }
     }
 
+    /// Navigateur de fichiers modernisé (barre de chemin + liste en lignes
+    /// pleine largeur). Renvoie (dossier à ouvrir, fichier choisi).
+    fn file_browser(&self, ui: &mut egui::Ui, scroll_id: &str) -> (Option<PathBuf>, Option<PathBuf>) {
+        let mut new_dir = None;
+        let mut picked = None;
+
+        // Barre de chemin.
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("📂");
+                    ui.monospace(self.browse_dir.display().to_string());
+                });
+            });
+        ui.add_space(6.0);
+
+        // Liste (dossiers puis fichiers .asm), lignes pleine largeur.
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt(scroll_id)
+                .max_height(300.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let w = ui.available_width();
+                    let row = |ui: &mut egui::Ui, text: egui::WidgetText| {
+                        ui.add_sized([w, 24.0], egui::SelectableLabel::new(false, text))
+                    };
+                    if let Some(parent) = self.browse_dir.parent() {
+                        if row(ui, "📁  ..".into()).clicked() {
+                            new_dir = Some(parent.to_path_buf());
+                        }
+                    }
+                    let (dirs, files) = list_dir(&self.browse_dir);
+                    for d in dirs {
+                        let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        if row(ui, format!("📁  {name}").into()).clicked() {
+                            new_dir = Some(d);
+                        }
+                    }
+                    for f in files {
+                        let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+                        let text = RichText::new(format!("📄  {name}")).color(MNEMONIC);
+                        if row(ui, text.into()).clicked() {
+                            picked = Some(f);
+                        }
+                    }
+                });
+        });
+        (new_dir, picked)
+    }
+
     fn saveas_window(&mut self, ctx: &egui::Context) {
         if !self.show_saveas {
             return;
@@ -614,52 +771,28 @@ impl App {
         let mut open = true;
         let mut confirm = false;
         let mut cancel = false;
-        let mut new_dir: Option<PathBuf> = None;
+        let mut new_dir = None;
+        let mut picked = None;
         egui::Window::new("Enregistrer sous")
             .collapsible(false)
             .resizable(true)
-            .default_width(460.0)
+            .default_width(500.0)
+            .default_height(440.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("📂");
-                    ui.monospace(self.browse_dir.display().to_string());
-                });
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("saveas_scroll")
-                    .max_height(240.0)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if let Some(parent) = self.browse_dir.parent() {
-                            if ui.button("📁 ..").clicked() {
-                                new_dir = Some(parent.to_path_buf());
-                            }
-                        }
-                        let (dirs, files) = list_dir(&self.browse_dir);
-                        for d in dirs {
-                            let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
-                            if ui.button(format!("📁 {name}")).clicked() {
-                                new_dir = Some(d);
-                            }
-                        }
-                        for f in files {
-                            let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
-                            // Clic sur un fichier existant => reprend son nom (écrasement).
-                            if ui.button(RichText::new(format!("📄 {name}")).color(HEADER)).clicked() {
-                                self.saveas_name = name;
-                            }
-                        }
-                    });
-                ui.separator();
+                let (nd, pk) = self.file_browser(ui, "saveas_scroll");
+                new_dir = nd;
+                picked = pk;
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label("Nom :");
-                    ui.add(egui::TextEdit::singleline(&mut self.saveas_name).desired_width(220.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.saveas_name).desired_width(260.0));
                 });
-                ui.add_space(4.0);
+                ui.add_space(6.0);
+                ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("💾 Enregistrer").clicked() {
+                    if ui.button("💾  Enregistrer").clicked() {
                         confirm = true;
                     }
                     if ui.button("Annuler").clicked() {
@@ -669,6 +802,10 @@ impl App {
             });
         if let Some(d) = new_dir {
             self.browse_dir = d;
+        }
+        // Clic sur un fichier existant => reprend son nom (écrasement).
+        if let Some(f) = picked {
+            self.saveas_name = f.file_name().unwrap_or_default().to_string_lossy().into_owned();
         }
         if confirm && !self.saveas_name.trim().is_empty() {
             self.src_path = self.browse_dir.join(self.saveas_name.trim());
@@ -686,51 +823,26 @@ impl App {
         }
         let mut open = true;
         let mut cancel = false;
-        let mut chosen: Option<PathBuf> = None;
-        let mut new_dir: Option<PathBuf> = None;
+        let mut new_dir = None;
+        let mut chosen = None;
         egui::Window::new("Ouvrir un fichier .asm")
             .collapsible(false)
             .resizable(true)
-            .default_width(460.0)
+            .default_width(500.0)
+            .default_height(440.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
+                let (nd, pk) = self.file_browser(ui, "open_scroll");
+                new_dir = nd;
+                chosen = pk;
+                ui.add_space(8.0);
+                ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("📂");
-                    ui.monospace(self.browse_dir.display().to_string());
+                    if ui.button("Annuler").clicked() {
+                        cancel = true;
+                    }
                 });
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("browser_scroll")
-                    .max_height(320.0)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if let Some(parent) = self.browse_dir.parent() {
-                            if ui.button("📁 ..").clicked() {
-                                new_dir = Some(parent.to_path_buf());
-                            }
-                        }
-                        let (dirs, files) = list_dir(&self.browse_dir);
-                        for d in dirs {
-                            let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
-                            if ui.button(format!("📁 {name}")).clicked() {
-                                new_dir = Some(d);
-                            }
-                        }
-                        for f in files {
-                            let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
-                            if ui
-                                .button(RichText::new(format!("📄 {name}")).color(MNEMONIC))
-                                .clicked()
-                            {
-                                chosen = Some(f);
-                            }
-                        }
-                    });
-                ui.separator();
-                if ui.button("Annuler").clicked() {
-                    cancel = true;
-                }
             });
         if let Some(d) = new_dir {
             self.browse_dir = d;
@@ -1429,6 +1541,20 @@ fn bordered_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Respo
     let color = if enabled { FLAG_ON } else { FALSE_COL };
     let btn = egui::Button::new(label).stroke(egui::Stroke::new(1.5_f32, color));
     ui.add_enabled(enabled, btn)
+}
+
+/// Chemin du fichier de réglages persistants (XDG : ~/.config/asm_studio/settings.conf).
+fn settings_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("asm_studio").join("settings.conf"))
+}
+
+/// Répertoire contenant l'`asmstd.inc` fourni, s'il est trouvable.
+fn asmstd_dir() -> Option<PathBuf> {
+    let dir = PathBuf::from("examples");
+    dir.join("asmstd.inc").exists().then_some(dir)
 }
 
 /// Répertoire absolu contenant `path` (remonte à `current_dir` si besoin).
