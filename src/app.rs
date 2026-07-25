@@ -54,6 +54,8 @@ pub struct App {
     mem_input: String,
     console: String,
     status: String,
+    /// Décalage vertical de l'éditeur (pour synchroniser la gouttière).
+    editor_scroll_y: f32,
 
     tab: Tab,
     theme_pref: egui::ThemePreference,
@@ -90,6 +92,7 @@ impl App {
             mem_input: String::new(),
             console: String::new(),
             status: "Prêt".to_string(),
+            editor_scroll_y: 0.0,
             tab: Tab::Editor,
             theme_pref: egui::ThemePreference::Dark,
             show_settings: false,
@@ -896,9 +899,21 @@ impl App {
             .resizable(true)
             .default_height(210.0)
             .show(ctx, |ui| {
-                ui.columns(2, |c| {
-                    self.memory_ui(&mut c[0]);
-                    self.console_ui(&mut c[1]);
+                // Mémoire | (séparateur vertical) | Console.
+                ui.horizontal_top(|ui| {
+                    let h = ui.available_height();
+                    let half = (ui.available_width() - 12.0) * 0.5;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(half, h),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| self.memory_ui(ui),
+                    );
+                    ui.separator();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), h),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| self.console_ui(ui),
+                    );
                 });
             });
     }
@@ -907,13 +922,20 @@ impl App {
     fn timeline_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("timeline_panel").show(ctx, |ui| {
             ui.add_space(2.0);
+            let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
+                ui.horizontal(|ui| {
+                    header_inline(ui, "TIMELINE");
+                    ui.separator();
+                    ui.weak("— lancez un programme pour enregistrer la timeline");
+                });
+                ui.add_space(2.0);
+                return;
+            };
+
+            // Ligne 1 : contrôles + libellés (largeur variable, sans le slider).
             ui.horizontal(|ui| {
                 header_inline(ui, "TIMELINE");
                 ui.separator();
-                let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
-                    ui.weak("— lancez un programme pour enregistrer la timeline");
-                    return;
-                };
                 if ui.button("⏮").on_hover_text("Début (Home)").clicked() {
                     self.set_view(0);
                 }
@@ -927,7 +949,6 @@ impl App {
                     self.set_view(i64::MAX);
                 }
                 ui.label(RichText::new(format!("{} / {last}", self.view_index)).monospace().strong());
-
                 if !self.is_head_view()
                     && ui
                         .button("⟳ Reprendre ici")
@@ -936,8 +957,6 @@ impl App {
                 {
                     self.resume_here();
                 }
-
-                // Instruction de l'étape (à droite).
                 if let Some(s) = self.snap() {
                     if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
                         ui.separator();
@@ -948,17 +967,19 @@ impl App {
                         );
                     }
                 }
-
-                // Slider occupant tout l'espace restant.
-                let mut idx = self.view_index;
-                ui.spacing_mut().slider_width = (ui.available_width() - 24.0).max(80.0);
-                if ui
-                    .add(egui::Slider::new(&mut idx, 0..=last).show_value(false))
-                    .changed()
-                {
-                    self.view_index = idx;
-                }
             });
+
+            // Ligne 2 : slider seul, largeur STABLE (= largeur du panneau).
+            // (Le mettre sur la même ligne que des libellés variables faisait
+            //  « sauter » le curseur : rétroaction largeur ↔ contenu.)
+            let mut idx = self.view_index;
+            ui.spacing_mut().slider_width = (ui.available_width() - 16.0).max(80.0);
+            if ui
+                .add(egui::Slider::new(&mut idx, 0..=last).show_value(false))
+                .changed()
+            {
+                self.view_index = idx;
+            }
             ui.add_space(2.0);
         });
     }
@@ -1105,31 +1126,52 @@ impl App {
             .collect::<Vec<_>>()
             .join("\n");
 
-        egui::ScrollArea::vertical().id_salt("editor_scroll").show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(gutter)
-                            .monospace()
-                            .size(syntax::FONT_SIZE)
-                            .color(GUTTER),
-                    )
-                    .selectable(false),
-                );
-                ui.separator();
-                let resp = ui.add(
-                    egui::TextEdit::multiline(&mut self.source)
-                        .frame(false)
-                        .code_editor()
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(28)
-                        .lock_focus(true)
-                        .layouter(&mut layouter),
-                );
-                if resp.changed() {
-                    self.dirty = true;
-                }
-            });
+        // Largeur du contenu = ligne la plus longue (pour le scroll horizontal).
+        let font = egui::FontId::monospace(syntax::FONT_SIZE);
+        let char_w = ui.fonts(|f| f.glyph_width(&font, 'M'));
+        let max_cols = self.source.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+        let content_w = (max_cols as f32 + 2.0) * char_w;
+
+        ui.horizontal_top(|ui| {
+            // Gouttière : défilement vertical synchronisé, sans barre ni scroll direct.
+            egui::ScrollArea::vertical()
+                .id_salt("gutter_scroll")
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .enable_scrolling(false)
+                .auto_shrink([true, false])
+                .vertical_scroll_offset(self.editor_scroll_y)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(gutter)
+                                .monospace()
+                                .size(syntax::FONT_SIZE)
+                                .color(GUTTER),
+                        )
+                        .selectable(false),
+                    );
+                });
+            ui.separator();
+            // Éditeur : défilement vertical + horizontal ; la gouttière reste fixe.
+            let out = egui::ScrollArea::both()
+                .id_salt("editor_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::multiline(&mut self.source)
+                            .frame(false)
+                            .code_editor()
+                            .desired_width(content_w.max(ui.available_width()))
+                            .desired_rows(28)
+                            .lock_focus(true)
+                            .layouter(&mut layouter),
+                    );
+                    if resp.changed() {
+                        self.dirty = true;
+                    }
+                });
+            // Synchronise la gouttière sur le défilement vertical de l'éditeur.
+            self.editor_scroll_y = out.state.offset.y;
         });
     }
 
@@ -1358,4 +1400,42 @@ mod tests {
         );
     }
 
+    /// Vérifie que la logique timeline (head-follow + clamp min/max) est correcte,
+    /// indépendamment du rendu egui.
+    #[test]
+    fn timeline_view_index_clamps_and_follows_head() {
+        let mut app = App::new();
+        // Fichier/dossier de sortie dédiés pour ne pas courir avec les autres tests.
+        app.src_path = PathBuf::from("build/tl-test.asm");
+        app.out_dir = PathBuf::from("build/tl");
+        app.source = "section .text\n global _start\n_start:\n mov rax,5\n mov rbx,8\n \
+                       cmp rax,rbx\n mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+
+        app.launch();
+        assert!(app.dbg.is_some(), "le programme doit être lancé");
+        assert_eq!(app.view_index, 0, "au lancement, on est à l'étape 0");
+
+        // Quelques pas : la vue doit suivre la tête.
+        for _ in 0..4 {
+            app.step();
+        }
+        let last = app.dbg.as_ref().unwrap().history.len() - 1;
+        assert_eq!(app.view_index, last, "la vue suit la tête après Step");
+
+        // Bornes : min = 0, max = last.
+        app.set_view(0);
+        assert_eq!(app.view_index, 0);
+        app.set_view(-10);
+        assert_eq!(app.view_index, 0, "borne min respectée");
+        app.set_view(100_000);
+        assert_eq!(app.view_index, last, "borne max respectée");
+
+        // Scrubbing : l'état affiché change bien selon l'index.
+        app.set_view(1);
+        let rip1 = app.snap().unwrap().regs.rip;
+        app.set_view(2);
+        let rip2 = app.snap().unwrap().regs.rip;
+        assert_ne!(rip1, rip2, "changer d'étape doit changer l'état affiché (RIP)");
+    }
 }
