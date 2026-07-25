@@ -19,37 +19,45 @@ const TEXT: Color32 = Color32::from_rgb(0xD4, 0xD4, 0xD4);
 
 /// Taille de police de l'éditeur (partagée avec la gouttière de numéros).
 pub const FONT_SIZE: f32 = 13.0;
+/// Fond de la ligne courante (RIP) pendant le débogage.
+const CURRENT_LINE_BG: Color32 = Color32::from_rgb(0x3A, 0x33, 0x1E);
 
-/// Construit le `LayoutJob` coloré du source complet.
+/// Construit le `LayoutJob` coloré du source complet. `hl_line` (0-based) est la
+/// ligne à surligner (ligne courante du débogage), ou `None`.
 /// Le retour à la ligne est désactivé pour rester aligné aux numéros de ligne.
-pub fn highlight(text: &str) -> LayoutJob {
+pub fn highlight(text: &str, hl_line: Option<usize>) -> LayoutJob {
     let font = FontId::monospace(FONT_SIZE);
     let mut job = LayoutJob::default();
     job.wrap.max_width = f32::INFINITY;
-    for line in text.split_inclusive('\n') {
-        highlight_line(&mut job, line, &font);
+    for (i, line) in text.split_inclusive('\n').enumerate() {
+        let bg = if Some(i) == hl_line {
+            CURRENT_LINE_BG
+        } else {
+            Color32::TRANSPARENT
+        };
+        highlight_line(&mut job, line, &font, bg);
     }
     job
 }
 
-fn highlight_line(job: &mut LayoutJob, line: &str, font: &FontId) {
+fn highlight_line(job: &mut LayoutJob, line: &str, font: &FontId, bg: Color32) {
     let mut rest = line;
     let mut mnem_pending = true;
     while !rest.is_empty() {
         let c = rest.chars().next().unwrap();
         if c == ';' {
             // Commentaire jusqu'à la fin de la ligne.
-            push(job, rest, COMMENT, font);
+            push(job, rest, COMMENT, font, bg);
             break;
         } else if c == '"' || c == '\'' {
             let end = string_end(rest, c);
-            push(job, &rest[..end], STRING, font);
+            push(job, &rest[..end], STRING, font, bg);
             rest = &rest[end..];
         } else if is_ident(c) {
             let end = rest.find(|ch: char| !is_ident(ch)).unwrap_or(rest.len());
             let word = &rest[..end];
             let after = &rest[end..];
-            push(job, word, classify(word, after, &mut mnem_pending), font);
+            push(job, word, classify(word, after, &mut mnem_pending), font, bg);
             rest = after;
         } else {
             // Suite de séparateurs (espaces, virgules, crochets, opérateurs).
@@ -57,7 +65,7 @@ fn highlight_line(job: &mut LayoutJob, line: &str, font: &FontId) {
                 .find(|ch: char| ch == ';' || ch == '"' || ch == '\'' || is_ident(ch))
                 .unwrap_or(rest.len())
                 .max(c.len_utf8());
-            push(job, &rest[..end], TEXT, font);
+            push(job, &rest[..end], TEXT, font, bg);
             rest = &rest[end..];
         }
     }
@@ -94,13 +102,14 @@ fn classify(word: &str, after: &str, mnem_pending: &mut bool) -> Color32 {
     }
 }
 
-fn push(job: &mut LayoutJob, text: &str, color: Color32, font: &FontId) {
+fn push(job: &mut LayoutJob, text: &str, color: Color32, font: &FontId, bg: Color32) {
     job.append(
         text,
         0.0,
         TextFormat {
             font_id: font.clone(),
             color,
+            background: bg,
             ..Default::default()
         },
     );
@@ -143,14 +152,14 @@ mod tests {
     fn covers_whole_line_without_loss() {
         // Chaque caractère doit être stylé (aucune perte de texte à l'affichage).
         let src = "  mov rax, 5   ; commentaire\n";
-        let job = highlight(src);
+        let job = highlight(src, None);
         assert_eq!(job.text, src);
     }
 
     #[test]
     fn semicolon_inside_string_is_not_a_comment() {
         let src = "    db \"a;b\", 10\n";
-        let job = highlight(src);
+        let job = highlight(src, None);
         // Tout le texte est présent et la ligne reste intègre.
         assert_eq!(job.text, src);
         // La chaîne "a;b" est colorée en STRING (une section contient a;b).

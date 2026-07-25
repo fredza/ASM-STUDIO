@@ -5,6 +5,7 @@
 //! Instruction + Pile à droite, éditeur/désassemblage au centre (onglets).
 //! L'état affiché est lu dans l'historique du debugger à `view_index`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Color32, RichText};
@@ -12,7 +13,7 @@ use eframe::egui::{self, Color32, RichText};
 use crate::assemble;
 use crate::debugger::{Debugger, Flags, RunState, Snapshot};
 use crate::disasm::{self, Insn};
-use crate::{explain, syntax, syscall};
+use crate::{explain, srcmap, syntax, syscall};
 
 // --- Palette ---
 const ACCENT: Color32 = Color32::from_rgb(0x4C, 0x8B, 0xF5); // bleu d'accent
@@ -78,6 +79,8 @@ pub struct App {
 
     dbg: Option<Debugger>,
     disasm: Vec<Insn>,
+    /// Mapping adresse → ligne source (1-based) pour le suivi dans l'éditeur.
+    src_map: HashMap<u64, usize>,
     selected: Option<u64>,
     view_index: usize,
 
@@ -88,6 +91,8 @@ pub struct App {
     /// Registre en cours d'édition (laboratoire mémoire) et son tampon de saisie.
     edit_reg: Option<&'static str>,
     edit_buf: String,
+    /// Demande de focus au premier frame d'édition d'un registre.
+    edit_focus: bool,
     console: String,
     status: String,
     /// Décalage vertical de l'éditeur (pour synchroniser la gouttière).
@@ -132,6 +137,7 @@ impl App {
             binary: None,
             dbg: None,
             disasm: Vec::new(),
+            src_map: HashMap::new(),
             selected: None,
             view_index: 0,
             mem_addr: 0,
@@ -139,6 +145,7 @@ impl App {
             mem_poke: String::new(),
             edit_reg: None,
             edit_buf: String::new(),
+            edit_focus: false,
             console: String::new(),
             status: "Prêt".to_string(),
             editor_scroll_y: 0.0,
@@ -309,6 +316,10 @@ impl App {
         match assemble::assemble_with_includes(&self.src_path, &self.out_dir, &includes) {
             Ok(out) => {
                 self.log(&out.log);
+                // Mapping adresse → ligne source (suivi dans l'éditeur).
+                self.src_map = disasm::section_address(&out.binary, ".text")
+                    .map(|base| srcmap::parse(&out.listing, base))
+                    .unwrap_or_default();
                 self.binary = Some(out.binary);
                 self.status = "Build OK".to_string();
             }
@@ -341,7 +352,6 @@ impl App {
                 self.status = format!("Lancé — RIP @ 0x{:X}", dbg.regs().rip);
                 self.log("Running...");
                 self.dbg = Some(dbg);
-                self.tab = Tab::Disasm;
             }
             Err(e) => {
                 self.log(&e);
@@ -453,6 +463,12 @@ impl App {
     }
     fn view_rip(&self) -> Option<u64> {
         self.snap().map(|s| s.regs.rip)
+    }
+
+    /// Ligne source (0-based) correspondant à RIP courant, pour l'éditeur.
+    fn current_source_line(&self) -> Option<usize> {
+        let rip = self.view_rip()?;
+        self.src_map.get(&rip).map(|l| l.saturating_sub(1))
     }
     fn set_view(&mut self, idx: i64) {
         if let Some(d) = &self.dbg {
@@ -1188,22 +1204,40 @@ impl App {
     fn memory_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             header_inline(ui, "MEMORY");
+            ui.label("aller @");
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.mem_input)
-                    .desired_width(120.0)
-                    .font(egui::TextStyle::Monospace),
+                    .desired_width(170.0)
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("0x402000"),
             );
             let go = ui.button("Aller").clicked()
                 || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
             if go {
-                if let Some(a) = parse_hex(&self.mem_input) {
-                    self.mem_addr = a;
+                match parse_hex(&self.mem_input) {
+                    Some(a) => {
+                        self.mem_addr = a;
+                        self.status = format!("Mémoire @ 0x{a:X}");
+                    }
+                    None => self.status = "Adresse hexa invalide".to_string(),
+                }
+            }
+            // Raccourcis vers les régions utiles.
+            if let Some(d) = self.dbg.as_ref().filter(|d| d.is_alive()) {
+                if ui.small_button("pile").on_hover_text("Aller à RSP").clicked() {
+                    self.mem_addr = d.regs().rsp;
+                    self.mem_input = format!("0x{:X}", self.mem_addr);
                 }
             }
         });
         ui.separator();
         if !self.can_read_memory() {
-            ui.weak("Mémoire lisible sur l'état courant (revenez à la dernière étape).");
+            let msg = match self.dbg.as_ref().map(|d| d.is_alive()) {
+                Some(false) => "Programme terminé — relancez pour explorer la mémoire.",
+                Some(true) => "Revenez à la dernière étape de la timeline pour lire la mémoire.",
+                None => "Lancez un programme pour explorer la mémoire.",
+            };
+            ui.weak(msg);
             return;
         }
 
@@ -1304,19 +1338,36 @@ impl App {
                         let (name, val, pval) = (*name, *val, *pval);
                         ui.label(RichText::new(name).monospace().strong());
                         if self.edit_reg == Some(name) {
-                            let resp = ui.add(
-                                egui::TextEdit::singleline(&mut self.edit_buf)
-                                    .desired_width(150.0)
-                                    .font(egui::TextStyle::Monospace),
-                            );
-                            resp.request_focus();
-                            if resp.lost_focus() {
-                                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                if enter {
-                                    if let Some(v) = parse_hex(&self.edit_buf) {
-                                        commit = Some((name, v));
-                                    }
+                            // Édition : champ hexa + ✓ (valider) / ✗ (annuler).
+                            // On ne capture PAS self dans la closure (emprunts disjoints).
+                            let focus_now = std::mem::take(&mut self.edit_focus);
+                            let buf = &mut self.edit_buf;
+                            let mut committed: Option<u64> = None;
+                            let mut ended = false;
+                            ui.horizontal(|ui| {
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(buf)
+                                        .desired_width(120.0)
+                                        .font(egui::TextStyle::Monospace)
+                                        .hint_text("hex"),
+                                );
+                                if focus_now {
+                                    resp.request_focus();
                                 }
+                                let enter =
+                                    resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if ui.small_button("✓").clicked() || enter {
+                                    committed = parse_hex(buf);
+                                    ended = true;
+                                }
+                                if ui.small_button("✗").clicked() {
+                                    ended = true;
+                                }
+                            });
+                            if let Some(v) = committed {
+                                commit = Some((name, v));
+                            }
+                            if ended {
                                 stop_edit = true;
                             }
                         } else {
@@ -1324,15 +1375,18 @@ impl App {
                             if val != pval {
                                 t = t.color(changed_color(flash));
                             }
-                            let sense = if editable {
-                                egui::Sense::click()
+                            if editable {
+                                // Bouton sans cadre : clic fiable pour éditer.
+                                let resp = ui
+                                    .add(egui::Button::new(t).frame(false))
+                                    .on_hover_text("Cliquer pour modifier");
+                                if resp.clicked() {
+                                    self.edit_reg = Some(name);
+                                    self.edit_buf = format!("{val:X}");
+                                    self.edit_focus = true;
+                                }
                             } else {
-                                egui::Sense::hover()
-                            };
-                            let resp = ui.add(egui::Label::new(t).sense(sense));
-                            if editable && resp.on_hover_text("Cliquer pour modifier").clicked() {
-                                self.edit_reg = Some(name);
-                                self.edit_buf = format!("{val:X}");
+                                ui.label(t);
                             }
                         }
                         ui.end_row();
@@ -1404,22 +1458,38 @@ impl App {
     }
 
     fn editor_ui(&mut self, ui: &mut egui::Ui) {
+        // Ligne source courante (RIP) à surligner pendant le débogage.
+        let hl = self.current_source_line();
+
         // Coloration syntaxique NASM (retour à la ligne désactivé => aligné aux numéros).
         let mut layouter = |ui: &egui::Ui, text: &str, _wrap: f32| {
-            ui.fonts(|f| f.layout_job(syntax::highlight(text)))
+            ui.fonts(|f| f.layout_job(syntax::highlight(text, hl)))
         };
 
-        // Gouttière : numéros de ligne alignés à droite.
+        // Gouttière : numéros de ligne (▶ + accent sur la ligne courante).
         let line_count = self.source.matches('\n').count() + 1;
         let width = line_count.to_string().len();
-        let gutter: String = (1..=line_count)
-            .map(|i| format!("{i:>width$}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let gfont = egui::FontId::monospace(syntax::FONT_SIZE);
+        let mut gutter_job = egui::text::LayoutJob::default();
+        for i in 1..=line_count {
+            if i > 1 {
+                gutter_job.append("\n", 0.0, egui::TextFormat::default());
+            }
+            let is_cur = hl == Some(i - 1);
+            let (marker, color) = if is_cur { ("▶", ACCENT) } else { (" ", GUTTER) };
+            gutter_job.append(
+                &format!("{marker}{i:>width$}"),
+                0.0,
+                egui::TextFormat {
+                    font_id: gfont.clone(),
+                    color,
+                    ..Default::default()
+                },
+            );
+        }
 
         // Largeur du contenu = ligne la plus longue (pour le scroll horizontal).
-        let font = egui::FontId::monospace(syntax::FONT_SIZE);
-        let char_w = ui.fonts(|f| f.glyph_width(&font, 'M'));
+        let char_w = ui.fonts(|f| f.glyph_width(&gfont, 'M'));
         let max_cols = self.source.lines().map(|l| l.chars().count()).max().unwrap_or(0);
         let content_w = (max_cols as f32 + 2.0) * char_w;
 
@@ -1432,15 +1502,8 @@ impl App {
                 .auto_shrink([true, false])
                 .vertical_scroll_offset(self.editor_scroll_y)
                 .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(gutter)
-                                .monospace()
-                                .size(syntax::FONT_SIZE)
-                                .color(GUTTER),
-                        )
-                        .selectable(false),
-                    );
+                    let galley = ui.fonts(|f| f.layout_job(gutter_job));
+                    ui.add(egui::Label::new(galley).selectable(false));
                 });
             ui.separator();
             // Éditeur : défilement vertical + horizontal ; la gouttière reste fixe.
