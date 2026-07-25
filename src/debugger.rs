@@ -239,6 +239,22 @@ impl Debugger {
     pub fn read_mem(&self, addr: u64, len: usize) -> Result<Vec<u8>, String> {
         read_mem_pid(self.child, addr, len)
     }
+
+    /// Bornes (début, fin) du segment `[heap]` d'après `/proc/<pid>/maps`,
+    /// ou `None` si le programme n'a pas encore de tas.
+    pub fn heap_range(&self) -> Option<(u64, u64)> {
+        let maps = std::fs::read_to_string(format!("/proc/{}/maps", self.child.as_raw())).ok()?;
+        for line in maps.lines() {
+            if line.trim_end().ends_with("[heap]") {
+                let (start, end) = line.split_whitespace().next()?.split_once('-')?;
+                return Some((
+                    u64::from_str_radix(start, 16).ok()?,
+                    u64::from_str_radix(end, 16).ok()?,
+                ));
+            }
+        }
+        None
+    }
 }
 
 impl Drop for Debugger {
@@ -346,5 +362,23 @@ mod tests {
 
         // Le snapshot de tête reflète bien les registres courants.
         assert_eq!(dbg.head().regs.rip, dbg.regs().rip);
+    }
+
+    /// Après un brk qui agrandit le tas, le segment [heap] doit être détecté.
+    #[test]
+    fn heap_range_detected_after_brk() {
+        let out = assemble::assemble(Path::new("examples/heap.asm"), Path::new("build/test-heap"))
+            .expect("assemblage");
+        let mut dbg = Debugger::launch(&out.binary).expect("launch");
+
+        assert!(dbg.heap_range().is_none(), "pas de tas au démarrage");
+
+        // 7 instructions jusqu'au second brk inclus (mov/xor/syscall/mov/add/mov/syscall).
+        for _ in 0..7 {
+            dbg.step().expect("step");
+        }
+        assert!(dbg.is_alive(), "le programme doit encore tourner");
+        let (start, end) = dbg.heap_range().expect("le tas doit exister après brk");
+        assert!(end > start, "le tas doit avoir une taille non nulle");
     }
 }
