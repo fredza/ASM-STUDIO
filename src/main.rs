@@ -3,6 +3,7 @@ mod assemble;
 mod debugger;
 mod disasm;
 mod explain;
+mod syntax;
 mod syscall;
 
 fn main() -> eframe::Result {

@@ -7,12 +7,12 @@
 
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Color32, RichText, text::LayoutJob};
+use eframe::egui::{self, Color32, RichText};
 
 use crate::assemble;
 use crate::debugger::{Debugger, Flags, RunState, Snapshot};
 use crate::disasm::{self, Insn};
-use crate::{explain, syscall};
+use crate::{explain, syntax, syscall};
 
 // --- Palette ---
 const ACCENT: Color32 = Color32::from_rgb(0x4C, 0x8B, 0xF5); // bleu d'accent
@@ -27,14 +27,8 @@ const BYTES_COL: Color32 = Color32::from_rgb(0x80, 0x80, 0x88);
 const MNEMONIC: Color32 = Color32::from_rgb(0x6E, 0xB4, 0xE8);
 const FALSE_COL: Color32 = Color32::from_rgb(0xD9, 0x5B, 0x5B);
 
-// --- Coloration syntaxique NASM (style VSCode) ---
-const SYN_COMMENT: Color32 = Color32::from_rgb(0x6A, 0x99, 0x55);
-const SYN_MNEMONIC: Color32 = Color32::from_rgb(0x56, 0x9C, 0xD6);
-const SYN_REGISTER: Color32 = Color32::from_rgb(0x9C, 0xDC, 0xFE);
-const SYN_NUMBER: Color32 = Color32::from_rgb(0xB5, 0xCE, 0xA8);
-const SYN_DIRECTIVE: Color32 = Color32::from_rgb(0xC5, 0x86, 0xC0);
-const SYN_LABEL: Color32 = Color32::from_rgb(0xDC, 0xDC, 0xAA);
-const SYN_TEXT: Color32 = Color32::from_rgb(0xD4, 0xD4, 0xD4);
+// Couleur de la gouttière de numéros de ligne.
+const GUTTER: Color32 = Color32::from_rgb(0x60, 0x66, 0x70);
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
@@ -1098,23 +1092,44 @@ impl App {
     }
 
     fn editor_ui(&mut self, ui: &mut egui::Ui) {
-        let mut layouter = |ui: &egui::Ui, text: &str, wrap: f32| {
-            let mut job = highlight_nasm(text);
-            job.wrap.max_width = wrap;
-            ui.fonts(|f| f.layout_job(job))
+        // Coloration syntaxique NASM (retour à la ligne désactivé => aligné aux numéros).
+        let mut layouter = |ui: &egui::Ui, text: &str, _wrap: f32| {
+            ui.fonts(|f| f.layout_job(syntax::highlight(text)))
         };
-        egui::ScrollArea::both().id_salt("editor_scroll").show(ui, |ui| {
-            let resp = ui.add(
-                egui::TextEdit::multiline(&mut self.source)
-                    .code_editor()
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(28)
-                    .lock_focus(true)
-                    .layouter(&mut layouter),
-            );
-            if resp.changed() {
-                self.dirty = true;
-            }
+
+        // Gouttière : numéros de ligne alignés à droite.
+        let line_count = self.source.matches('\n').count() + 1;
+        let width = line_count.to_string().len();
+        let gutter: String = (1..=line_count)
+            .map(|i| format!("{i:>width$}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        egui::ScrollArea::vertical().id_salt("editor_scroll").show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(gutter)
+                            .monospace()
+                            .size(syntax::FONT_SIZE)
+                            .color(GUTTER),
+                    )
+                    .selectable(false),
+                );
+                ui.separator();
+                let resp = ui.add(
+                    egui::TextEdit::multiline(&mut self.source)
+                        .frame(false)
+                        .code_editor()
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(28)
+                        .lock_focus(true)
+                        .layouter(&mut layouter),
+                );
+                if resp.changed() {
+                    self.dirty = true;
+                }
+            });
         });
     }
 
@@ -1320,95 +1335,6 @@ fn abs_dir_of(path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Coloration syntaxique NASM → LayoutJob (comments, mnémoniques, registres…).
-fn highlight_nasm(text: &str) -> LayoutJob {
-    let font = egui::FontId::monospace(13.0);
-    let mut job = LayoutJob::default();
-    for line in text.split_inclusive('\n') {
-        let (code, comment) = match line.find(';') {
-            Some(i) => (&line[..i], &line[i..]),
-            None => (line, ""),
-        };
-        append_code(&mut job, code, &font);
-        if !comment.is_empty() {
-            append(&mut job, comment, SYN_COMMENT, &font);
-        }
-    }
-    job
-}
-
-fn append(job: &mut LayoutJob, text: &str, color: Color32, font: &egui::FontId) {
-    job.append(
-        text,
-        0.0,
-        egui::TextFormat {
-            font_id: font.clone(),
-            color,
-            ..Default::default()
-        },
-    );
-}
-
-/// Découpe une portion de code (hors commentaire) en tokens colorés.
-fn append_code(job: &mut LayoutJob, code: &str, font: &egui::FontId) {
-    let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '@';
-    let mut rest = code;
-    let mut mnem_pending = true;
-    while !rest.is_empty() {
-        let c = rest.chars().next().unwrap();
-        if is_ident(c) {
-            let end = rest.find(|ch: char| !is_ident(ch)).unwrap_or(rest.len());
-            let word = &rest[..end];
-            let after = &rest[end..];
-            let is_label = after.trim_start().starts_with(':');
-            let color = if is_number(word) {
-                SYN_NUMBER
-            } else if is_register(word) {
-                SYN_REGISTER
-            } else if is_directive(word) {
-                SYN_DIRECTIVE
-            } else if is_label {
-                SYN_LABEL
-            } else if mnem_pending {
-                mnem_pending = false;
-                SYN_MNEMONIC
-            } else {
-                SYN_TEXT
-            };
-            append(job, word, color, font);
-            rest = after;
-        } else {
-            let end = rest.find(is_ident).unwrap_or(rest.len());
-            append(job, &rest[..end], SYN_TEXT, font);
-            rest = &rest[end..];
-        }
-    }
-}
-
-fn is_number(w: &str) -> bool {
-    w.chars().next().is_some_and(|c| c.is_ascii_digit())
-}
-
-fn is_register(w: &str) -> bool {
-    const REGS: &[&str] = &[
-        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip", "r8", "r9", "r10", "r11",
-        "r12", "r13", "r14", "r15", "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "r8d",
-        "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d", "ax", "bx", "cx", "dx", "si", "di",
-        "bp", "sp", "al", "bl", "cl", "dl", "ah", "bh", "ch", "dh", "sil", "dil",
-    ];
-    let l = w.to_ascii_lowercase();
-    REGS.contains(&l.as_str())
-}
-
-fn is_directive(w: &str) -> bool {
-    const DIRS: &[&str] = &[
-        "section", "global", "extern", "db", "dw", "dd", "dq", "dt", "resb", "resw", "resd", "resq",
-        "equ", "times", "align", "default", "bits", "byte", "word", "dword", "qword",
-    ];
-    let l = w.to_ascii_lowercase();
-    DIRS.contains(&l.as_str())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1432,11 +1358,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn syntax_highlight_covers_whole_line() {
-        // Chaque caractère doit être stylé (aucune perte de texte à l'affichage).
-        let src = "  mov rax, 5   ; commentaire\n";
-        let job = highlight_nasm(src);
-        assert_eq!(job.text, src);
-    }
 }
