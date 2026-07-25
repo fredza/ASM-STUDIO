@@ -240,6 +240,57 @@ impl Debugger {
         read_mem_pid(self.child, addr, len)
     }
 
+    /// Modifie un registre (processus arrêté requis), puis met à jour le
+    /// snapshot courant. Utilisé par le « laboratoire mémoire ».
+    pub fn set_register(&mut self, name: &str, value: u64) -> Result<(), String> {
+        if self.state != RunState::Stopped {
+            return Err("le processus n'est pas arrêté".to_string());
+        }
+        let mut r = ptrace::getregs(self.child).map_err(|e| format!("getregs: {e}"))?;
+        match name {
+            "RAX" => r.rax = value,
+            "RBX" => r.rbx = value,
+            "RCX" => r.rcx = value,
+            "RDX" => r.rdx = value,
+            "RSI" => r.rsi = value,
+            "RDI" => r.rdi = value,
+            "RBP" => r.rbp = value,
+            "RSP" => r.rsp = value,
+            "R8" => r.r8 = value,
+            "R9" => r.r9 = value,
+            "R10" => r.r10 = value,
+            "R11" => r.r11 = value,
+            "R12" => r.r12 = value,
+            "R13" => r.r13 = value,
+            "R14" => r.r14 = value,
+            "R15" => r.r15 = value,
+            "RIP" => r.rip = value,
+            "EFLAGS" => r.eflags = value,
+            _ => return Err(format!("registre inconnu: {name}")),
+        }
+        ptrace::setregs(self.child, r).map_err(|e| format!("setregs: {e}"))?;
+        self.refresh_head()
+    }
+
+    /// Écrit des octets en mémoire (processus arrêté), puis met à jour le snapshot.
+    pub fn write_mem(&mut self, addr: u64, bytes: &[u8]) -> Result<(), String> {
+        if self.state != RunState::Stopped {
+            return Err("le processus n'est pas arrêté".to_string());
+        }
+        write_mem_pid(self.child, addr, bytes)?;
+        self.refresh_head()
+    }
+
+    /// Recharge le snapshot de tête depuis le processus (après une édition).
+    fn refresh_head(&mut self) -> Result<(), String> {
+        let regs = read_regs(self.child)?;
+        let snap = snapshot_of(self.child, &regs);
+        if let Some(h) = self.history.last_mut() {
+            *h = snap;
+        }
+        Ok(())
+    }
+
     /// Bornes (début, fin) du segment `[heap]` d'après `/proc/<pid>/maps`,
     /// ou `None` si le programme n'a pas encore de tas.
     pub fn heap_range(&self) -> Option<(u64, u64)> {
@@ -283,6 +334,21 @@ fn read_mem_pid(pid: Pid, addr: u64, len: usize) -> Result<Vec<u8>, String> {
     f.read_exact_at(&mut buf, addr)
         .map_err(|e| format!("read @0x{addr:X}: {e}"))?;
     Ok(buf)
+}
+
+/// Écrit `bytes` à `addr` dans l'espace mémoire du processus `pid`.
+fn write_mem_pid(pid: Pid, addr: u64, bytes: &[u8]) -> Result<(), String> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::FileExt;
+
+    let path = format!("/proc/{}/mem", pid.as_raw());
+    let f = OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("open {path}: {e}"))?;
+    f.write_all_at(bytes, addr)
+        .map_err(|e| format!("write @0x{addr:X}: {e}"))?;
+    Ok(())
 }
 
 /// Lit `count` mots de 64 bits à partir de `addr` (little-endian).
@@ -380,5 +446,28 @@ mod tests {
         assert!(dbg.is_alive(), "le programme doit encore tourner");
         let (start, end) = dbg.heap_range().expect("le tas doit exister après brk");
         assert!(end > start, "le tas doit avoir une taille non nulle");
+    }
+
+    /// Laboratoire mémoire : éditer un registre et écrire en mémoire.
+    #[test]
+    fn edit_register_and_memory() {
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/test.asm"),
+            Path::new("build/test-lab"),
+            &[],
+        )
+        .expect("assemblage");
+        let mut dbg = Debugger::launch(&out.binary).expect("launch");
+
+        dbg.set_register("RAX", 0xDEAD_BEEF).expect("set RAX");
+        assert_eq!(dbg.regs().rax, 0xDEAD_BEEF, "RAX doit refléter l'édition");
+
+        let rsp = dbg.regs().rsp;
+        dbg.write_mem(rsp, &[0x11, 0x22, 0x33, 0x44]).expect("write mem");
+        assert_eq!(
+            dbg.read_mem(rsp, 4).expect("read mem"),
+            vec![0x11, 0x22, 0x33, 0x44],
+            "la mémoire écrite doit être relue à l'identique"
+        );
     }
 }

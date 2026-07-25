@@ -58,6 +58,11 @@ pub struct App {
 
     mem_addr: u64,
     mem_input: String,
+    /// Octets hexa à écrire en mémoire (laboratoire mémoire).
+    mem_poke: String,
+    /// Registre en cours d'édition (laboratoire mémoire) et son tampon de saisie.
+    edit_reg: Option<&'static str>,
+    edit_buf: String,
     console: String,
     status: String,
     /// Décalage vertical de l'éditeur (pour synchroniser la gouttière).
@@ -100,6 +105,9 @@ impl App {
             view_index: 0,
             mem_addr: 0,
             mem_input: String::new(),
+            mem_poke: String::new(),
+            edit_reg: None,
+            edit_buf: String::new(),
             console: String::new(),
             status: "Prêt".to_string(),
             editor_scroll_y: 0.0,
@@ -1137,6 +1145,36 @@ impl App {
             ui.weak("Mémoire lisible sur l'état courant (revenez à la dernière étape).");
             return;
         }
+
+        // Laboratoire mémoire : écrire des octets à l'adresse de base affichée.
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("✎ écrire @ base :").small());
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.mem_poke)
+                    .desired_width(150.0)
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("48 65 6C…"),
+            );
+            let write = ui.button("Écrire").clicked()
+                || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            if write {
+                match parse_hex_bytes(&self.mem_poke) {
+                    Some(bytes) if !bytes.is_empty() => {
+                        let addr = self.mem_addr;
+                        match self.dbg.as_mut().unwrap().write_mem(addr, &bytes) {
+                            Ok(_) => {
+                                self.status = format!("{} octet(s) écrit(s) @ 0x{addr:X}", bytes.len());
+                                self.mem_poke.clear();
+                            }
+                            Err(e) => self.log(&e),
+                        }
+                    }
+                    _ => self.status = "Octets hexa invalides (ex. « 48 65 6C »)".to_string(),
+                }
+            }
+        });
+        ui.separator();
+
         let dbg = self.dbg.as_ref().unwrap();
         egui::ScrollArea::both()
             .id_salt("mem_scroll")
@@ -1167,32 +1205,87 @@ impl App {
 
     // ---------- Registres + Flags ----------
 
-    fn registers_ui(&self, ui: &mut egui::Ui) {
+    /// (nom, valeur, valeur précédente) des registres à afficher.
+    fn reg_rows(&self) -> Option<Vec<(&'static str, u64, u64)>> {
+        let snap = self.snap()?;
+        let prev = self.prev_snap()?;
+        Some(
+            snap.regs
+                .named()
+                .iter()
+                .zip(prev.regs.named())
+                .map(|((n, v), (_, p))| (*n, *v, p))
+                .collect(),
+        )
+    }
+
+    fn registers_ui(&mut self, ui: &mut egui::Ui) {
         header(ui, "REGISTERS");
-        let (Some(snap), Some(prev)) = (self.snap(), self.prev_snap()) else {
+        let Some(rows) = self.reg_rows() else {
             ui.label("Aucun programme lancé.");
             return;
         };
-        // Défilement vertical + horizontal si le contenu dépasse le panneau.
+        // Édition possible seulement en pause, à la dernière étape.
+        let editable = self.can_step();
+        if editable {
+            ui.label(RichText::new("clic sur une valeur pour l'éditer").small().weak());
+        }
+        let mut commit: Option<(&'static str, u64)> = None;
+        let mut stop_edit = false;
+
         egui::ScrollArea::both()
             .id_salt("regs_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("regs_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                    for ((name, val), (_, pval)) in snap.regs.named().iter().zip(prev.regs.named()) {
-                        ui.label(RichText::new(*name).monospace().strong());
-                        let mut value = RichText::new(format!("0x{val:016X}")).monospace();
-                        if *val != pval {
-                            value = value.color(CHANGED);
+                    for (name, val, pval) in &rows {
+                        let (name, val, pval) = (*name, *val, *pval);
+                        ui.label(RichText::new(name).monospace().strong());
+                        if self.edit_reg == Some(name) {
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut self.edit_buf)
+                                    .desired_width(150.0)
+                                    .font(egui::TextStyle::Monospace),
+                            );
+                            resp.request_focus();
+                            if resp.lost_focus() {
+                                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if enter {
+                                    if let Some(v) = parse_hex(&self.edit_buf) {
+                                        commit = Some((name, v));
+                                    }
+                                }
+                                stop_edit = true;
+                            }
+                        } else {
+                            let mut t = RichText::new(format!("0x{val:016X}")).monospace();
+                            if val != pval {
+                                t = t.color(CHANGED);
+                            }
+                            let sense = if editable {
+                                egui::Sense::click()
+                            } else {
+                                egui::Sense::hover()
+                            };
+                            let resp = ui.add(egui::Label::new(t).sense(sense));
+                            if editable && resp.on_hover_text("Cliquer pour modifier").clicked() {
+                                self.edit_reg = Some(name);
+                                self.edit_buf = format!("{val:X}");
+                            }
                         }
-                        ui.label(value);
                         ui.end_row();
                     }
                 });
+
                 ui.add_space(10.0);
                 header(ui, "FLAGS");
-                let flags = Flags::from_eflags(snap.regs.eflags);
-                let prevf = Flags::from_eflags(prev.regs.eflags);
+                let (ef, pef) = rows
+                    .iter()
+                    .find(|(n, _, _)| *n == "EFLAGS")
+                    .map(|(_, v, p)| (*v, *p))
+                    .unwrap_or((0, 0));
+                let flags = Flags::from_eflags(ef);
+                let prevf = Flags::from_eflags(pef);
                 egui::Grid::new("flags_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                     for ((name, val), (_, pval)) in flags.named().iter().zip(prevf.named()) {
                         let mut label = RichText::new(*name).monospace();
@@ -1206,6 +1299,17 @@ impl App {
                     }
                 });
             });
+
+        // Applique l'édition après le rendu (évite l'emprunt simultané de dbg).
+        if let Some((name, v)) = commit {
+            self.edit_reg = None;
+            match self.dbg.as_mut().unwrap().set_register(name, v) {
+                Ok(_) => self.status = format!("{name} = 0x{v:X}"),
+                Err(e) => self.log(&e),
+            }
+        } else if stop_edit {
+            self.edit_reg = None;
+        }
     }
 
     // ---------- Centre : onglets Éditeur / Désassemblage ----------
@@ -1517,6 +1621,18 @@ fn parse_hex(s: &str) -> Option<u64> {
     u64::from_str_radix(s, 16).ok()
 }
 
+/// Analyse une suite d'octets hexadécimaux (« 48 65 6C » ou « 48656C »).
+fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
+    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if cleaned.is_empty() || cleaned.len() % 2 != 0 {
+        return None;
+    }
+    (0..cleaned.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).ok())
+        .collect()
+}
+
 /// Liste (dossiers, fichiers .asm) d'un répertoire, triés par nom.
 fn list_dir(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut dirs = Vec::new();
@@ -1592,6 +1708,14 @@ mod tests {
             files.iter().any(|f| f.file_name().unwrap() == "test.asm"),
             "test.asm doit apparaître dans le navigateur"
         );
+    }
+
+    #[test]
+    fn parse_hex_bytes_accepts_spaced_and_contiguous() {
+        assert_eq!(parse_hex_bytes("48 65 6C"), Some(vec![0x48, 0x65, 0x6C]));
+        assert_eq!(parse_hex_bytes("48656C"), Some(vec![0x48, 0x65, 0x6C]));
+        assert_eq!(parse_hex_bytes("4"), None, "longueur impaire invalide");
+        assert_eq!(parse_hex_bytes("zz"), None, "non-hexa invalide");
     }
 
     /// Vérifie que la logique timeline (head-follow + clamp min/max) est correcte,
