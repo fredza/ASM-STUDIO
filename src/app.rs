@@ -339,17 +339,17 @@ impl App {
             && !parent.as_os_str().is_empty()
             && let Err(e) = std::fs::create_dir_all(parent)
         {
-            self.log(&format!("Impossible de créer {}: {e}", parent.display()));
+            self.log(&format!("{} {}: {e}", i18n::tr(self.lang, "Impossible de créer", "Cannot create"), parent.display()));
             return false;
         }
         match std::fs::write(&self.src_path, &self.source) {
             Ok(_) => {
                 self.dirty = false;
-                self.status = format!("Enregistré : {}", self.src_path.display());
+                self.status = format!("{} {}", i18n::tr(self.lang, "Enregistré :", "Saved:"), self.src_path.display());
                 true
             }
             Err(e) => {
-                self.log(&format!("Erreur d'enregistrement de {}: {e}", self.src_path.display()));
+                self.log(&format!("{} {}: {e}", i18n::tr(self.lang, "Erreur d'enregistrement de", "Error saving"), self.src_path.display()));
                 false
             }
         }
@@ -406,9 +406,9 @@ impl App {
                 self.disasm.clear();
                 self.binary = None;
                 self.tab = Tab::Editor;
-                self.status = format!("Ouvert : {}", self.src_path.display());
+                self.status = format!("{} {}", i18n::tr(self.lang, "Ouvert :", "Opened:"), self.src_path.display());
             }
-            Err(e) => self.log(&format!("Impossible d'ouvrir {}: {e}", path.display())),
+            Err(e) => self.log(&format!("{} {}: {e}", i18n::tr(self.lang, "Impossible d'ouvrir", "Cannot open"), path.display())),
         }
     }
 
@@ -421,7 +421,7 @@ impl App {
         self.disasm.clear();
         self.binary = None;
         self.tab = Tab::Editor;
-        self.status = "Nouveau fichier".to_string();
+        self.status = i18n::tr(self.lang, "Nouveau fichier", "New file").to_string();
     }
 
     // ---------- Build / Run ----------
@@ -464,7 +464,7 @@ impl App {
             Err(e) => {
                 self.log(&e);
                 self.binary = None;
-                self.status = "Échec build".to_string();
+                self.status = i18n::tr(self.lang, "Échec build", "Build failed").to_string();
             }
         }
     }
@@ -489,20 +489,20 @@ impl App {
         self.dbg = None;
         match Debugger::launch(&bin) {
             Ok(dbg) => {
-                self.status = format!("Lancé — RIP @ 0x{:X}", dbg.regs().rip);
+                self.status = format!("{} 0x{:X}", i18n::tr(self.lang, "Lancé — RIP @", "Started — RIP @"), dbg.regs().rip);
                 self.log("Running...");
                 self.dbg = Some(dbg);
             }
             Err(e) => {
                 self.log(&e);
-                self.status = "Échec lancement".to_string();
+                self.status = i18n::tr(self.lang, "Échec lancement", "Launch failed").to_string();
             }
         }
     }
 
     fn stop(&mut self) {
         self.dbg = None;
-        self.status = "Arrêté".to_string();
+        self.status = i18n::tr(self.lang, "Arrêté", "Stopped").to_string();
     }
 
     fn step(&mut self) {
@@ -541,10 +541,10 @@ impl App {
         match self.dbg.as_ref().map(|d| d.state) {
             Some(RunState::Stopped) => {
                 let d = self.dbg.as_ref().unwrap();
-                self.status = format!("Step {} — RIP @ 0x{:X}", d.steps(), d.regs().rip);
+                self.status = format!("{} {} — RIP @ 0x{:X}", i18n::tr(self.lang, "Étape", "Step"), d.steps(), d.regs().rip);
             }
-            Some(RunState::Exited(code)) => self.status = format!("Terminé (exit {code})"),
-            Some(RunState::Signaled) => self.status = "Terminé (signal)".to_string(),
+            Some(RunState::Exited(code)) => self.status = format!("{} (exit {code})", i18n::tr(self.lang, "Terminé", "Terminated")),
+            Some(RunState::Signaled) => self.status = i18n::tr(self.lang, "Terminé (signal)", "Terminated (signal)").to_string(),
             None => {}
         }
     }
@@ -561,7 +561,7 @@ impl App {
                     let _ = d.step();
                 }
                 self.view_index = d.history.len() - 1;
-                self.status = format!("Repris à l'étape {}", self.view_index);
+                self.status = format!("{} {}", i18n::tr(self.lang, "Repris à l'étape", "Resumed at step"), self.view_index);
                 self.selected = None;
                 self.dbg = Some(d);
                 self.rebuild_trace(); // resynchronise call stack + syscalls
