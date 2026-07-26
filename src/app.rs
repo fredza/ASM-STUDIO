@@ -79,18 +79,50 @@ struct Icons {
     registers: egui::TextureHandle,
     stack: egui::TextureHandle,
     heap: egui::TextureHandle,
+    // Icônes complémentaires (même thème, générées) — boutons et panneaux.
+    stop: egui::TextureHandle,
+    pause: egui::TextureHandle,
+    next: egui::TextureHandle,
+    restart: egui::TextureHandle,
+    attach: egui::TextureHandle,
+    settings: egui::TextureHandle,
+    memory: egui::TextureHandle,
+    timeline: egui::TextureHandle,
+    console: egui::TextureHandle,
+    syscalls: egui::TextureHandle,
+    callstack: egui::TextureHandle,
+    explorer: egui::TextureHandle,
+    instruction: egui::TextureHandle,
 }
 
 impl Icons {
     fn load(ctx: &egui::Context) -> Self {
+        macro_rules! ic {
+            ($name:literal) => {
+                load_texture(ctx, $name, include_bytes!(concat!("../assets/icons/", $name, ".png")))
+            };
+        }
         Icons {
-            editor: load_texture(ctx, "editor", include_bytes!("../assets/icons/editor.png")),
-            assembler: load_texture(ctx, "assembler", include_bytes!("../assets/icons/assembler.png")),
-            run: load_texture(ctx, "run", include_bytes!("../assets/icons/run.png")),
-            debug: load_texture(ctx, "debug", include_bytes!("../assets/icons/debug.png")),
-            registers: load_texture(ctx, "registers", include_bytes!("../assets/icons/registers.png")),
-            stack: load_texture(ctx, "stack", include_bytes!("../assets/icons/stack.png")),
-            heap: load_texture(ctx, "heap", include_bytes!("../assets/icons/heap.png")),
+            editor: ic!("editor"),
+            assembler: ic!("assembler"),
+            run: ic!("run"),
+            debug: ic!("debug"),
+            registers: ic!("registers"),
+            stack: ic!("stack"),
+            heap: ic!("heap"),
+            stop: ic!("stop"),
+            pause: ic!("pause"),
+            next: ic!("next"),
+            restart: ic!("restart"),
+            attach: ic!("attach"),
+            settings: ic!("settings"),
+            memory: ic!("memory"),
+            timeline: ic!("timeline"),
+            console: ic!("console"),
+            syscalls: ic!("syscalls"),
+            callstack: ic!("callstack"),
+            explorer: ic!("explorer"),
+            instruction: ic!("instruction"),
         }
     }
 }
@@ -1407,9 +1439,10 @@ impl App {
                 let running = self.dbg.as_ref().is_some_and(|d| d.is_alive());
                 let can_step = self.can_step();
                 // Handles clonés (Arc bon marché) => pas d'emprunt de self dans la barre.
-                let ic_run = self.icons.as_ref().map(|i| i.run.clone());
-                let ic_debug = self.icons.as_ref().map(|i| i.debug.clone());
-                let ic_build = self.icons.as_ref().map(|i| i.assembler.clone());
+                let ic = |f: fn(&Icons) -> &egui::TextureHandle| self.icons.as_ref().map(|i| f(i).clone());
+                let (ic_run, ic_debug, ic_build) = (ic(|i| &i.run), ic(|i| &i.debug), ic(|i| &i.assembler));
+                let (ic_pause, ic_next, ic_stop) = (ic(|i| &i.pause), ic(|i| &i.next), ic(|i| &i.stop));
+                let (ic_restart, ic_attach, ic_settings) = (ic(|i| &i.restart), ic(|i| &i.attach), ic(|i| &i.settings));
 
                 // Run : accent quand inactif, grisé quand un programme tourne.
                 if self
@@ -1419,7 +1452,7 @@ impl App {
                     self.launch();
                 }
                 // Pause : non implémenté (step-by-step uniquement), toujours grisé.
-                ui.add_enabled(false, egui::Button::new("⏸  Pause"));
+                ui.add_enabled(false, icon_btn_widget(ic_pause.as_ref(), "Pause"));
                 // Step : accent quand disponible.
                 if self
                     .tip(accent_button(ui, ic_debug.as_ref(), "Step", can_step), "Pas à pas (F10)")
@@ -1430,7 +1463,7 @@ impl App {
                 // Next (step-over) : même comportement que Step pour l'instant.
                 if self
                     .tip(
-                        ui.add_enabled(can_step, egui::Button::new("⤳  Next")),
+                        ui.add_enabled(can_step, icon_btn_widget(ic_next.as_ref(), "Next")),
                         "Passer l'appel (non implémenté — agit comme Step)",
                     )
                     .clicked()
@@ -1438,11 +1471,14 @@ impl App {
                     self.step();
                 }
                 // Stop.
-                if self.tip(bordered_button(ui, "⏹  Stop", running), "Arrêter (Échap)").clicked() {
+                if self.tip(bordered_button(ui, ic_stop.as_ref(), "Stop", running), "Arrêter (Échap)").clicked() {
                     self.stop();
                 }
                 // Restart = relancer depuis le début.
-                if self.tip(ui.button("↺  Restart"), "Relancer (F5)").clicked() {
+                if self
+                    .tip(icon_button(ui, ic_restart.as_ref(), "Restart"), "Relancer (F5)")
+                    .clicked()
+                {
                     self.launch();
                 }
                 ui.separator();
@@ -1453,11 +1489,11 @@ impl App {
                     self.build();
                 }
                 // Attach : non implémenté.
-                ui.add_enabled(false, egui::Button::new("🔌  Attach"));
+                ui.add_enabled(false, icon_btn_widget(ic_attach.as_ref(), "Attach"));
 
                 // Réglages sur la droite.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("⚙  Réglages").clicked() {
+                    if icon_button(ui, ic_settings.as_ref(), "Réglages").clicked() {
                         self.show_settings = true;
                     }
                 });
@@ -1525,7 +1561,7 @@ impl App {
 
     /// Timeline en colonne (bande basse), style mockup.
     fn timeline_col_ui(&mut self, ui: &mut egui::Ui) {
-        header(ui, "TIMELINE");
+        header_icon(ui, self.icons.as_ref().map(|i| &i.timeline), "TIMELINE");
         let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
             ui.weak("— lancez un programme");
             return;
@@ -1613,7 +1649,9 @@ impl App {
             None => Vec::new(),
         };
         let mut pick: Option<u64> = None;
+        let mem_ic = self.icons.as_ref().map(|i| i.memory.clone());
         ui.horizontal(|ui| {
+            icon_img(ui, mem_ic.as_ref(), 15.0);
             header_inline(ui, "MEMORY");
             // Sélecteur de région (façon mockup).
             egui::ComboBox::from_id_salt("mem_region")
@@ -1699,7 +1737,9 @@ impl App {
     }
 
     fn console_ui(&mut self, ui: &mut egui::Ui) {
+        let console_ic = self.icons.as_ref().map(|i| i.console.clone());
         ui.horizontal(|ui| {
+            icon_img(ui, console_ic.as_ref(), 15.0);
             header_inline(ui, "CONSOLE");
             if ui.small_button("effacer").clicked() {
                 self.console.clear();
@@ -1871,7 +1911,7 @@ impl App {
     // ---------- Explorateur de fichiers (panneau de gauche) ----------
 
     fn explorer_ui(&mut self, ui: &mut egui::Ui) {
-        header(ui, "EXPLORER");
+        header_icon(ui, self.icons.as_ref().map(|i| &i.explorer), "EXPLORER");
         ui.label(
             RichText::new(
                 self.explorer_dir
@@ -1919,7 +1959,7 @@ impl App {
     // ---------- Call stack ----------
 
     fn callstack_ui(&self, ui: &mut egui::Ui) {
-        header(ui, "CALL STACK");
+        header_icon(ui, self.icons.as_ref().map(|i| &i.callstack), "CALL STACK");
         if self.dbg.is_none() {
             ui.weak("—");
             return;
@@ -1943,7 +1983,7 @@ impl App {
     // ---------- Syscalls ----------
 
     fn syscalls_ui(&self, ui: &mut egui::Ui) {
-        header(ui, "SYSCALLS");
+        header_icon(ui, self.icons.as_ref().map(|i| &i.syscalls), "SYSCALLS");
         egui::ScrollArea::vertical()
             .id_salt("syscalls_scroll")
             .stick_to_bottom(true)
@@ -2197,14 +2237,12 @@ impl App {
     // ---------- Panneau INSTRUCTION ----------
 
     fn instruction_ui(&mut self, ui: &mut egui::Ui) {
+        let bulb_ic = self.icons.as_ref().map(|i| i.instruction.clone());
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("INSTRUCTION").strong().color(HEADER).size(12.5));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self
-                    .tip(ui.label(RichText::new("💡").size(16.0)), "Aide (F1)")
-                    .hovered()
-                {}
+                icon_img(ui, bulb_ic.as_ref(), 16.0);
             });
         });
         ui.separator();
@@ -2543,10 +2581,28 @@ fn list_dir(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
 }
 
 /// Bouton avec bordure verte (actif/disponible) ou rouge (inactif).
-fn bordered_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+fn bordered_button(
+    ui: &mut egui::Ui,
+    icon: Option<&egui::TextureHandle>,
+    label: &str,
+    enabled: bool,
+) -> egui::Response {
     let color = if enabled { FLAG_ON } else { FALSE_COL };
-    let btn = egui::Button::new(label).stroke(egui::Stroke::new(1.5_f32, color));
+    let btn = match btn_icon(icon) {
+        Some(img) => egui::Button::image_and_text(img, label),
+        None => egui::Button::new(label),
+    }
+    .stroke(egui::Stroke::new(1.5_f32, color));
     ui.add_enabled(enabled, btn)
+}
+
+/// Construit un widget bouton (icône + libellé) sans l'ajouter — pour
+/// `ui.add_enabled(...)`. La source d'image est `'static` (TextureId).
+fn icon_btn_widget(icon: Option<&egui::TextureHandle>, label: &'static str) -> egui::Button<'static> {
+    match btn_icon(icon) {
+        Some(img) => egui::Button::image_and_text(img, label),
+        None => egui::Button::new(label),
+    }
 }
 
 /// Source d'image dimensionnée pour un bouton (16px), à partir d'une icône.
