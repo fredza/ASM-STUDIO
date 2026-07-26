@@ -1,20 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ClaudeCodeEditorTabs">
-    <option name="activeSessionId" value="7d1cda31-5df0-495c-bd25-4bfb7ce18ec6" />
+    <option name="activeSessionId" value="dc9915c4-d069-45a1-bca7-f080544907d5" />
     <option name="openSessionIds">
       <list>
         <option value="7d1cda31-5df0-495c-bd25-4bfb7ce18ec6" />
+        <option value="dc9915c4-d069-45a1-bca7-f080544907d5" />
       </list>
     </option>
     <option name="sessionPaths">
       <map>
         <entry key="7d1cda31-5df0-495c-bd25-4bfb7ce18ec6" value="/sessions/bf31eafd-88fe-492b-8f58-7328d9806c64" />
+        <entry key="dc9915c4-d069-45a1-bca7-f080544907d5" value="/sessions/7b1276a3-0f04-4cd8-9460-e7c922eabacc" />
       </map>
     </option>
     <option name="sessionTitles">
       <map>
         <entry key="7d1cda31-5df0-495c-bd25-4bfb7ce18ec6" value="Je voudrais créer un IDE afin d'apprendre l'assemb" />
+        <entry key="dc9915c4-d069-45a1-bca7-f080544907d5" value="supprime la branche git improved" />
       </map>
     </option>
   </component>
