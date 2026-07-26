@@ -1751,17 +1751,19 @@ impl App {
         let mut commit: Option<(&'static str, u64)> = None;
         let mut stop_edit = false;
 
-        egui::ScrollArea::both()
+        let hdr = self.c_header();
+        egui::ScrollArea::vertical()
             .id_salt("regs_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                egui::Grid::new("regs_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                    for (name, val, pval) in &rows {
+                // Deux registres par ligne (grille à 4 colonnes) : tout tient sans
+                // ascenseur et la largeur du panneau est mieux exploitée.
+                egui::Grid::new("regs_grid").num_columns(4).spacing([20.0, 6.0]).show(ui, |ui| {
+                    for (i, (name, val, pval)) in rows.iter().enumerate() {
                         let (name, val, pval) = (*name, *val, *pval);
-                        ui.label(RichText::new(name).monospace().strong());
+                        ui.label(RichText::new(name).monospace().strong().color(hdr));
                         if self.edit_reg == Some(name) {
                             // Édition : champ hexa + ✓ (valider) / ✗ (annuler).
-                            // On ne capture PAS self dans la closure (emprunts disjoints).
                             let focus_now = std::mem::take(&mut self.edit_focus);
                             let buf = &mut self.edit_buf;
                             let mut committed: Option<u64> = None;
@@ -1769,7 +1771,7 @@ impl App {
                             ui.horizontal(|ui| {
                                 let resp = ui.add(
                                     egui::TextEdit::singleline(buf)
-                                        .desired_width(120.0)
+                                        .desired_width(96.0)
                                         .font(egui::TextStyle::Monospace)
                                         .hint_text("hex"),
                                 );
@@ -1798,7 +1800,6 @@ impl App {
                                 t = t.color(changed_color(flash));
                             }
                             if editable {
-                                // Label cliquable (cible fiable, retour visuel au survol).
                                 let resp = ui
                                     .add(egui::Label::new(t).sense(egui::Sense::click()))
                                     .on_hover_text("Cliquer pour modifier");
@@ -1814,7 +1815,9 @@ impl App {
                                 ui.label(t);
                             }
                         }
-                        ui.end_row();
+                        if i % 2 == 1 {
+                            ui.end_row();
+                        }
                     }
                 });
             });
@@ -2218,6 +2221,18 @@ impl App {
             });
         });
 
+        // Description pédagogique + lien vers la référence officielle.
+        ui.add_space(8.0);
+        card(ui, |ui| {
+            ui.label(RichText::new(&e.description).size(13.0));
+        });
+        ui.add_space(6.0);
+        ui.hyperlink_to(
+            format!("📖 Référence Intel de {} ↗", insn.mnemonic.to_uppercase()),
+            explain::doc_url(&insn.mnemonic),
+        )
+        .on_hover_text("Ouvre la page de l'instruction (manuel Intel SDM, felixcloutier.com)");
+
         if let Some(cond) = &e.condition {
             ui.add_space(4.0);
             ui.label(RichText::new("Condition").strong());
@@ -2235,10 +2250,9 @@ impl App {
                 );
             }
             ui.add_space(4.0);
-            egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-                .show(ui, |ui| {
-                    ui.label(RichText::new("État actuel").small().strong().color(self.c_header()));
+            let hdr2 = self.c_header();
+            card(ui, |ui| {
+                    ui.label(RichText::new("État actuel").small().strong().color(hdr2));
                     ui.horizontal(|ui| {
                         for (name, val) in &e.relevant_flags {
                             let c = if *val { FLAG_ON } else { FLAG_OFF };
@@ -2427,6 +2441,20 @@ fn panel_header(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         content,
     );
     ui.separator();
+}
+
+/// Encadré « carte » moderne : fond légèrement teinté, coins arrondis et marge
+/// interne, sur toute la largeur disponible. Structure et aère le contenu
+/// (utile pour une app pédagogique).
+fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .fill(ui.visuals().faint_bg_color)
+        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+        .rounding(egui::Rounding::same(6.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            content(ui);
+        });
 }
 
 /// Icône optionnelle + titre de section, à placer dans un `panel_header`.
