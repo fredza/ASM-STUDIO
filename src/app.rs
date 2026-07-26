@@ -1840,35 +1840,39 @@ impl App {
         let flash = self.flash_progress(ui);
         let flags = Flags::from_eflags(snap.regs.eflags);
         let prevf = Flags::from_eflags(prev.regs.eflags);
-        egui::ScrollArea::vertical().id_salt("flags_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new("flags_grid").num_columns(3).spacing([8.0, 5.0]).show(ui, |ui| {
-                for ((name, val), (_, pval)) in flags.named().iter().zip(prevf.named()) {
-                    let changed = *val != pval;
-                    // Nom du flag.
-                    let mut label = RichText::new(*name).monospace().strong();
+        // Disposition horizontale compacte (grille 3×2) : tient sans ascenseur
+        // dans le panneau étroit. Chaque cellule = « NOM ● valeur ».
+        const PER_ROW: usize = 3;
+        egui::Grid::new("flags_grid").num_columns(PER_ROW).spacing([16.0, 6.0]).show(ui, |ui| {
+            for (i, ((name, val), (_, pval))) in
+                flags.named().iter().zip(prevf.named()).enumerate()
+            {
+                let changed = *val != pval;
+                let dot = if changed {
+                    changed_color(flash)
+                } else if *val {
+                    FLAG_ON
+                } else {
+                    FLAG_OFF
+                };
+                ui.horizontal(|ui| {
+                    let mut nm = RichText::new(*name).monospace().strong();
                     if changed {
-                        label = label.color(changed_color(flash));
+                        nm = nm.color(changed_color(flash));
                     }
-                    ui.label(label);
-                    // Pastille : orange si modifié, vert si actif, gris sinon.
-                    let dot = if changed {
-                        changed_color(flash)
-                    } else if *val {
-                        FLAG_ON
-                    } else {
-                        FLAG_OFF
-                    };
-                    ui.label(RichText::new("●").color(dot).size(11.0));
-                    // Valeur.
+                    ui.label(nm);
+                    ui.label(RichText::new("●").color(dot).size(10.0));
                     ui.label(
                         RichText::new(if *val { "1" } else { "0" })
                             .monospace()
                             .strong()
                             .color(if *val { FLAG_ON } else { FLAG_OFF }),
                     );
+                });
+                if (i + 1) % PER_ROW == 0 {
                     ui.end_row();
                 }
-            });
+            }
         });
     }
 
