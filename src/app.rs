@@ -929,6 +929,8 @@ impl App {
         // Couleurs figées avant la closure (pas d'accès à self dedans).
         let (hdr, mnem_c, addr_c, bytes_c) =
             (self.c_header(), self.c_mnemonic(), self.c_addr(), self.c_bytes());
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
         let mut open = true;
         let mut close = false;
         egui::Window::new(format!("🔬 Microscope — {} {}", insn.mnemonic, insn.operands))
@@ -942,38 +944,38 @@ impl App {
                 egui::ScrollArea::vertical().id_salt("microscope_scroll").show(ui, |ui| {
                     // --- Identité de l'instruction ---
                     egui::Grid::new("micro_id").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
-                        ui.label(RichText::new("Adresse").strong());
+                        ui.label(RichText::new(tr("Adresse", "Address")).strong());
                         ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(addr_c));
                         ui.end_row();
-                        ui.label(RichText::new("Octets machine").strong());
+                        ui.label(RichText::new(tr("Octets machine", "Machine bytes")).strong());
                         ui.label(RichText::new(insn.bytes_hex()).monospace().color(bytes_c));
                         ui.end_row();
-                        ui.label(RichText::new("Décodage").strong());
+                        ui.label(RichText::new(tr("Décodage", "Decoding")).strong());
                         ui.label(
                             RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
                                 .monospace()
                                 .color(mnem_c),
                         );
                         ui.end_row();
-                        ui.label(RichText::new("Catégorie").strong());
+                        ui.label(RichText::new(tr("Catégorie", "Category")).strong());
                         ui.label(e.category);
                         ui.end_row();
-                        ui.label(RichText::new("Cycles estimés").strong());
+                        ui.label(RichText::new(tr("Cycles estimés", "Estimated cycles")).strong());
                         ui.label(RichText::new(cycles).color(CHANGED))
-                            .on_hover_text("Ordre de grandeur pédagogique, pas une mesure exacte.");
+                            .on_hover_text(tr("Ordre de grandeur pédagogique, pas une mesure exacte.", "Educational ballpark, not an exact measurement."));
                         ui.end_row();
                     });
 
                     ui.add_space(8.0);
-                    ui.label(RichText::new("Que fait cette instruction ?").strong().color(hdr));
+                    ui.label(RichText::new(tr("Que fait cette instruction ?", "What does this instruction do?")).strong().color(hdr));
                     ui.label(&e.description);
 
                     ui.add_space(6.0);
                     ui.hyperlink_to(
-                        format!("📖 Référence Intel de {} (felixcloutier.com)", insn.mnemonic.to_uppercase()),
+                        format!("📖 {} {} (felixcloutier.com)", tr("Référence Intel de", "Intel reference for"), insn.mnemonic.to_uppercase()),
                         explain::doc_url(&insn.mnemonic),
                     )
-                    .on_hover_text("Ouvre la page de l'instruction dans le navigateur\n(mirror du manuel Intel SDM).");
+                    .on_hover_text(tr("Ouvre la page de l'instruction dans le navigateur\n(mirror du manuel Intel SDM).", "Opens the instruction page in the browser\n(mirror of the Intel SDM manual)."));
 
                     ui.add_space(8.0);
                     ui.separator();
@@ -983,21 +985,21 @@ impl App {
                             // ΔRSP + écriture/lecture pile.
                             let d = after.rsp as i128 - before.rsp as i128;
                             if d != 0 {
-                                ui.label(RichText::new("Pile (RSP)").strong().color(hdr));
+                                ui.label(RichText::new(tr("Pile (RSP)", "Stack (RSP)")).strong().color(hdr));
                                 if d < 0 {
                                     ui.colored_label(
                                         PUSH_COL,
                                         format!(
-                                            "RSP : 0x{:X} → 0x{:X}  (−{} octets, PUSH)",
-                                            before.rsp, after.rsp, -d
+                                            "RSP : 0x{:X} → 0x{:X}  (−{} {}, PUSH)",
+                                            before.rsp, after.rsp, -d, tr("octets", "bytes")
                                         ),
                                     );
                                 } else {
                                     ui.colored_label(
                                         POP_COL,
                                         format!(
-                                            "RSP : 0x{:X} → 0x{:X}  (+{} octets, POP)",
-                                            before.rsp, after.rsp, d
+                                            "RSP : 0x{:X} → 0x{:X}  (+{} {}, POP)",
+                                            before.rsp, after.rsp, d, tr("octets", "bytes")
                                         ),
                                     );
                                 }
@@ -1005,7 +1007,7 @@ impl App {
                             }
 
                             // Registres modifiés.
-                            ui.label(RichText::new("Registres modifiés").strong().color(hdr));
+                            ui.label(RichText::new(tr("Registres modifiés", "Modified registers")).strong().color(hdr));
                             let mut any = false;
                             egui::Grid::new("micro_regs").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
                                 for ((n, ov), (_, nv)) in
@@ -1022,7 +1024,7 @@ impl App {
                                 }
                             });
                             if !any {
-                                ui.weak("aucun registre modifié.");
+                                ui.weak(tr("aucun registre modifié.", "no register modified."));
                             }
 
                             ui.add_space(6.0);
@@ -1043,37 +1045,41 @@ impl App {
                                 }
                             });
                             if !fchanged {
-                                ui.weak("aucun flag modifié.");
+                                ui.weak(tr("aucun flag modifié.", "no flag modified."));
                             }
 
                             ui.add_space(8.0);
                             // Schéma pile avant / après.
-                            ui.label(RichText::new("Pile — avant / après").strong().color(hdr));
+                            ui.label(RichText::new(tr("Pile — avant / après", "Stack — before / after")).strong().color(hdr));
                             ui.columns(2, |c| {
-                                micro_stack(&mut c[0], addr_c, "avant", before.rsp, _bstack);
-                                micro_stack(&mut c[1], addr_c, "après", after.rsp, _astack);
+                                micro_stack(&mut c[0], addr_c, tr("avant", "before"), before.rsp, _bstack);
+                                micro_stack(&mut c[1], addr_c, tr("après", "after"), after.rsp, _astack);
                             });
                         }
                         Some((_before, _bstack, None)) => {
-                            ui.weak(
-                                "Instruction à exécuter à l'étape courante — avancez d'un pas (Step) \
+                            ui.weak(tr(
+                                "Instruction à exécuter à l'étape courante — avancez d'un pas (Next) \
                                  pour voir ses effets dynamiques.",
-                            );
-                            micro_static_flags(ui, hdr, &e);
+                                "Instruction to run at the current step — advance one step (Next) \
+                                 to see its dynamic effects.",
+                            ));
+                            micro_static_flags(ui, hdr, &e, tr("Flags positionnés", "Flags set"), tr("Cette instruction ne modifie aucun flag.", "This instruction modifies no flag."));
                         }
                         None => {
-                            ui.weak(
+                            ui.weak(tr(
                                 "Cette instruction n'a pas encore été exécutée dans l'historique \
                                  (effets dynamiques indisponibles).",
-                            );
-                            micro_static_flags(ui, hdr, &e);
+                                "This instruction has not been executed yet in the history \
+                                 (dynamic effects unavailable).",
+                            ));
+                            micro_static_flags(ui, hdr, &e, tr("Flags positionnés", "Flags set"), tr("Cette instruction ne modifie aucun flag.", "This instruction modifies no flag."));
                         }
                     }
 
                     ui.add_space(10.0);
                     ui.separator();
                     ui.vertical_centered(|ui| {
-                        if ui.button("Fermer").clicked() {
+                        if ui.button(tr("Fermer", "Close")).clicked() {
                             close = true;
                         }
                     });
@@ -1088,16 +1094,19 @@ impl App {
         if !self.show_about {
             return;
         }
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let mnem = self.c_mnemonic();
         let mut open = true;
-        egui::Window::new("À propos")
+        egui::Window::new(tr("À propos", "About"))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.heading(RichText::new("ASM Studio").color(self.c_mnemonic()));
-                    ui.label("IDE pédagogique NASM x86-64");
+                    ui.heading(RichText::new("ASM Studio").color(mnem));
+                    ui.label(tr("IDE pédagogique NASM x86-64", "Educational NASM x86-64 IDE"));
                 });
                 ui.add_space(8.0);
                 ui.separator();
@@ -1114,15 +1123,15 @@ impl App {
                         ui.label("Date");
                         ui.label(RichText::new(env!("BUILD_DATE")).monospace());
                         ui.end_row();
-                        ui.label("Licence");
-                        ui.hyperlink_to("MIT (explication)", "https://opensource.org/license/mit")
-                            .on_hover_text("Ouvrir le texte officiel de la licence MIT");
+                        ui.label(tr("Licence", "License"));
+                        ui.hyperlink_to(tr("MIT (explication)", "MIT (explanation)"), "https://opensource.org/license/mit")
+                            .on_hover_text(tr("Ouvrir le texte officiel de la licence MIT", "Open the official MIT license text"));
                         ui.end_row();
                     });
                 ui.separator();
                 ui.add_space(6.0);
                 ui.vertical_centered(|ui| {
-                    if ui.button("Fermer").clicked() {
+                    if ui.button(tr("Fermer", "Close")).clicked() {
                         self.show_about = false;
                     }
                 });
@@ -1290,42 +1299,45 @@ impl App {
         if !self.show_shortcuts {
             return;
         }
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let mnem = self.c_mnemonic();
         let mut open = true;
-        egui::Window::new("Raccourcis clavier")
+        egui::Window::new(tr("Raccourcis clavier", "Keyboard shortcuts"))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
                 let rows = [
-                    ("F1", "Aide / raccourcis"),
-                    ("F5", "Lancer / Restart"),
-                    ("F10 / F8", "Instruction suivante (Next)"),
-                    ("Échap / Maj+F5", "Stop"),
-                    ("Ctrl+B", "Assembler + Lier"),
-                    ("Ctrl+S", "Enregistrer"),
-                    ("Ctrl+O", "Ouvrir"),
-                    ("Ctrl+N", "Nouveau"),
-                    ("← / →", "Timeline : précédent / suivant"),
-                    ("Home / End", "Timeline : début / fin"),
-                    ("Ctrl+1", "Afficher/masquer l'explorateur"),
-                    ("Ctrl+2", "Afficher/masquer l'instruction"),
-                    ("Ctrl+3", "Afficher/masquer la bande CPU"),
-                    ("Ctrl+4", "Afficher/masquer la bande basse"),
+                    ("F1", tr("Aide / raccourcis", "Help / shortcuts")),
+                    ("F5", tr("Lancer / Restart", "Run / Restart")),
+                    ("F10 / F8", tr("Instruction suivante (Next)", "Next instruction (Next)")),
+                    ("Échap / Maj+F5", tr("Stop", "Stop")),
+                    ("Ctrl+B", tr("Assembler + Lier", "Assemble + Link")),
+                    ("Ctrl+S", tr("Enregistrer", "Save")),
+                    ("Ctrl+O", tr("Ouvrir", "Open")),
+                    ("Ctrl+N", tr("Nouveau", "New")),
+                    ("← / →", tr("Timeline : précédent / suivant", "Timeline: previous / next")),
+                    ("Home / End", tr("Timeline : début / fin", "Timeline: start / end")),
+                    ("Ctrl+1", tr("Afficher/masquer l'explorateur", "Show/hide the explorer")),
+                    ("Ctrl+2", tr("Afficher/masquer l'instruction", "Show/hide the instruction panel")),
+                    ("Ctrl+3", tr("Afficher/masquer la bande CPU", "Show/hide the CPU band")),
+                    ("Ctrl+4", tr("Afficher/masquer la bande basse", "Show/hide the bottom band")),
                 ];
                 egui::Grid::new("shortcuts_grid")
                     .num_columns(2)
                     .spacing([24.0, 6.0])
                     .show(ui, |ui| {
                         for (k, d) in rows {
-                            ui.label(RichText::new(k).monospace().strong().color(self.c_mnemonic()));
+                            ui.label(RichText::new(k).monospace().strong().color(mnem));
                             ui.label(d);
                             ui.end_row();
                         }
                     });
                 ui.separator();
                 ui.vertical_centered(|ui| {
-                    if ui.button("Fermer").clicked() {
+                    if ui.button(tr("Fermer", "Close")).clicked() {
                         self.show_shortcuts = false;
                     }
                 });
@@ -1933,13 +1945,14 @@ impl App {
     // ---------- Explorateur de fichiers (panneau de gauche) ----------
 
     fn explorer_ui(&mut self, ui: &mut egui::Ui) {
+        let up_tip = i18n::tr(self.lang, "Dossier parent comme racine", "Parent folder as root");
         header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.explorer), "EXPLORER");
 
         // Barre : nom du dossier racine + remonter d'un cran.
         let mut go_up = false;
         ui.horizontal(|ui| {
             if self
-                .tip(ui.small_button("⬆"), "Dossier parent comme racine")
+                .tip(ui.small_button("⬆"), up_tip)
                 .clicked()
             {
                 go_up = true;
@@ -2171,7 +2184,10 @@ impl App {
 
     fn disasm_ui(&mut self, ui: &mut egui::Ui) {
         if self.disasm.is_empty() {
-            ui.label("Cliquez sur « Lancer » pour assembler, lier et exécuter votre programme.");
+            ui.label(i18n::tr(self.lang,
+                "Cliquez sur « Lancer » pour assembler, lier et exécuter votre programme.",
+                "Click \"Run\" to assemble, link and execute your program.",
+            ));
             return;
         }
         let rip = self.view_rip();
@@ -2594,12 +2610,12 @@ fn micro_stack(ui: &mut egui::Ui, addr_c: Color32, label: &str, rsp: u64, stack:
 }
 
 /// Flags positionnés (info statique) quand l'instruction n'a pas d'avant/après.
-fn micro_static_flags(ui: &mut egui::Ui, hdr: Color32, e: &explain::Explanation) {
+fn micro_static_flags(ui: &mut egui::Ui, hdr: Color32, e: &explain::Explanation, set_label: &str, none_label: &str) {
     ui.add_space(4.0);
     if e.affects_flags.is_empty() {
-        ui.weak("Cette instruction ne modifie aucun flag.");
+        ui.weak(none_label);
     } else {
-        ui.label(RichText::new("Flags positionnés").strong().color(hdr));
+        ui.label(RichText::new(set_label).strong().color(hdr));
         ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
     }
 }
