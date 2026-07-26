@@ -2074,12 +2074,10 @@ impl App {
             None => (None, None),
         };
         ui.horizontal(|ui| {
-            icon_img(ui, edit_ic, 16.0);
-            if ui.selectable_label(self.tab == Tab::Editor, "Éditeur").clicked() {
+            if icon_tab(ui, edit_ic, "Éditeur", self.tab == Tab::Editor).clicked() {
                 self.tab = Tab::Editor;
             }
-            icon_img(ui, disasm_ic, 16.0);
-            if ui.selectable_label(self.tab == Tab::Disasm, "Désassemblage").clicked() {
+            if icon_tab(ui, disasm_ic, "Désassemblage", self.tab == Tab::Disasm).clicked() {
                 self.tab = Tab::Disasm;
             }
             ui.separator();
@@ -2359,12 +2357,10 @@ impl App {
             None => (None, None),
         };
         ui.horizontal(|ui| {
-            icon_img(ui, stack_ic, 15.0);
-            if ui.selectable_label(self.stack_tab == StackTab::Stack, "Pile").clicked() {
+            if icon_tab(ui, stack_ic, "Pile", self.stack_tab == StackTab::Stack).clicked() {
                 self.stack_tab = StackTab::Stack;
             }
-            icon_img(ui, heap_ic, 15.0);
-            if ui.selectable_label(self.stack_tab == StackTab::Heap, "Tas").clicked() {
+            if icon_tab(ui, heap_ic, "Tas", self.stack_tab == StackTab::Heap).clicked() {
                 self.stack_tab = StackTab::Heap;
             }
         });
@@ -2634,6 +2630,22 @@ fn icon_button(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, label: &st
         Some(img) => ui.add(egui::Button::image_and_text(img, label)),
         None => ui.button(label),
     }
+}
+
+/// Onglet sélectionnable avec l'icône DANS le bouton (respecte le padding).
+/// Remplace `icon_img(...) + selectable_label(...)` où l'icône débordait.
+fn icon_tab(
+    ui: &mut egui::Ui,
+    icon: Option<&egui::TextureHandle>,
+    label: &str,
+    selected: bool,
+) -> egui::Response {
+    let btn = match btn_icon(icon) {
+        Some(img) => egui::Button::image_and_text(img, label),
+        None => egui::Button::new(label),
+    }
+    .selected(selected);
+    ui.add(btn)
 }
 
 /// Petit badge coloré (texte sur fond semi-transparent).
