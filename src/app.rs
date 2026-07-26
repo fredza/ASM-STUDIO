@@ -13,6 +13,7 @@ use eframe::egui::{self, Color32, RichText};
 use crate::assemble;
 use crate::debugger::{Debugger, Flags, RunState, Snapshot};
 use crate::disasm::{self, Insn};
+use crate::i18n::{self, Lang};
 use crate::{explain, srcmap, syntax, syscall};
 
 // --- Palette ---
@@ -201,6 +202,8 @@ pub struct App {
     /// Un Step vient d'avoir lieu : mémorise l'instant au prochain frame.
     pending_flash: bool,
     theme_pref: egui::ThemePreference,
+    /// Langue de l'interface (Réglages).
+    lang: Lang,
     show_settings: bool,
     show_about: bool,
     show_shortcuts: bool,
@@ -255,6 +258,7 @@ impl App {
             flash_time: 0.0,
             pending_flash: false,
             theme_pref: egui::ThemePreference::Dark,
+            lang: Lang::Fr,
             show_settings: false,
             show_about: false,
             show_shortcuts: false,
@@ -281,6 +285,7 @@ impl App {
                         _ => ThemePreference::Dark,
                     }
                 }
+                "lang" => self.lang = Lang::from_key(v),
                 "tooltips" => self.show_tooltips = v == "true",
                 "asmstd" => self.use_asmstd = v == "true",
                 "animate" => self.animate = v == "true",
@@ -305,8 +310,9 @@ impl App {
             _ => "dark",
         };
         let content = format!(
-            "theme={theme}\ntooltips={}\nasmstd={}\nanimate={}\n\
+            "theme={theme}\nlang={}\ntooltips={}\nasmstd={}\nanimate={}\n\
              show_explorer={}\nshow_instruction={}\nshow_cpu_band={}\nshow_bottom_band={}\n",
+            self.lang.key(),
             self.show_tooltips,
             self.use_asmstd,
             self.animate,
@@ -333,17 +339,17 @@ impl App {
             && !parent.as_os_str().is_empty()
             && let Err(e) = std::fs::create_dir_all(parent)
         {
-            self.log(&format!("Impossible de créer {}: {e}", parent.display()));
+            self.log(&format!("{} {}: {e}", i18n::tr(self.lang, "Impossible de créer", "Cannot create"), parent.display()));
             return false;
         }
         match std::fs::write(&self.src_path, &self.source) {
             Ok(_) => {
                 self.dirty = false;
-                self.status = format!("Enregistré : {}", self.src_path.display());
+                self.status = format!("{} {}", i18n::tr(self.lang, "Enregistré :", "Saved:"), self.src_path.display());
                 true
             }
             Err(e) => {
-                self.log(&format!("Erreur d'enregistrement de {}: {e}", self.src_path.display()));
+                self.log(&format!("{} {}: {e}", i18n::tr(self.lang, "Erreur d'enregistrement de", "Error saving"), self.src_path.display()));
                 false
             }
         }
@@ -400,9 +406,9 @@ impl App {
                 self.disasm.clear();
                 self.binary = None;
                 self.tab = Tab::Editor;
-                self.status = format!("Ouvert : {}", self.src_path.display());
+                self.status = format!("{} {}", i18n::tr(self.lang, "Ouvert :", "Opened:"), self.src_path.display());
             }
-            Err(e) => self.log(&format!("Impossible d'ouvrir {}: {e}", path.display())),
+            Err(e) => self.log(&format!("{} {}: {e}", i18n::tr(self.lang, "Impossible d'ouvrir", "Cannot open"), path.display())),
         }
     }
 
@@ -415,7 +421,7 @@ impl App {
         self.disasm.clear();
         self.binary = None;
         self.tab = Tab::Editor;
-        self.status = "Nouveau fichier".to_string();
+        self.status = i18n::tr(self.lang, "Nouveau fichier", "New file").to_string();
     }
 
     // ---------- Build / Run ----------
@@ -458,7 +464,7 @@ impl App {
             Err(e) => {
                 self.log(&e);
                 self.binary = None;
-                self.status = "Échec build".to_string();
+                self.status = i18n::tr(self.lang, "Échec build", "Build failed").to_string();
             }
         }
     }
@@ -483,20 +489,20 @@ impl App {
         self.dbg = None;
         match Debugger::launch(&bin) {
             Ok(dbg) => {
-                self.status = format!("Lancé — RIP @ 0x{:X}", dbg.regs().rip);
+                self.status = format!("{} 0x{:X}", i18n::tr(self.lang, "Lancé — RIP @", "Started — RIP @"), dbg.regs().rip);
                 self.log("Running...");
                 self.dbg = Some(dbg);
             }
             Err(e) => {
                 self.log(&e);
-                self.status = "Échec lancement".to_string();
+                self.status = i18n::tr(self.lang, "Échec lancement", "Launch failed").to_string();
             }
         }
     }
 
     fn stop(&mut self) {
         self.dbg = None;
-        self.status = "Arrêté".to_string();
+        self.status = i18n::tr(self.lang, "Arrêté", "Stopped").to_string();
     }
 
     fn step(&mut self) {
@@ -535,10 +541,10 @@ impl App {
         match self.dbg.as_ref().map(|d| d.state) {
             Some(RunState::Stopped) => {
                 let d = self.dbg.as_ref().unwrap();
-                self.status = format!("Step {} — RIP @ 0x{:X}", d.steps(), d.regs().rip);
+                self.status = format!("{} {} — RIP @ 0x{:X}", i18n::tr(self.lang, "Étape", "Step"), d.steps(), d.regs().rip);
             }
-            Some(RunState::Exited(code)) => self.status = format!("Terminé (exit {code})"),
-            Some(RunState::Signaled) => self.status = "Terminé (signal)".to_string(),
+            Some(RunState::Exited(code)) => self.status = format!("{} (exit {code})", i18n::tr(self.lang, "Terminé", "Terminated")),
+            Some(RunState::Signaled) => self.status = i18n::tr(self.lang, "Terminé (signal)", "Terminated (signal)").to_string(),
             None => {}
         }
     }
@@ -555,7 +561,7 @@ impl App {
                     let _ = d.step();
                 }
                 self.view_index = d.history.len() - 1;
-                self.status = format!("Repris à l'étape {}", self.view_index);
+                self.status = format!("{} {}", i18n::tr(self.lang, "Repris à l'étape", "Resumed at step"), self.view_index);
                 self.selected = None;
                 self.dbg = Some(d);
                 self.rebuild_trace(); // resynchronise call stack + syscalls
@@ -681,6 +687,11 @@ impl App {
         } else {
             resp
         }
+    }
+
+    /// Traduit selon la langue courante : `tr(français, anglais)`.
+    fn tr(&self, fr: &'static str, en: &'static str) -> &'static str {
+        i18n::tr(self.lang, fr, en)
     }
 
     // ---------- Palette de texte sensible au thème ----------
@@ -903,7 +914,7 @@ impl App {
             return;
         };
         let flags_now = self.snap().map(|s| Flags::from_eflags(s.regs.eflags)).unwrap_or_default();
-        let e = explain::explain(&insn.mnemonic, &insn.operands, flags_now);
+        let e = explain::explain(&insn.mnemonic, &insn.operands, flags_now, self.lang);
         let cycles = explain::cycles_estimate(&insn.mnemonic);
 
         // Données dynamiques (avant/après) clonées => pas d'emprunt de self dans la closure.
@@ -918,6 +929,8 @@ impl App {
         // Couleurs figées avant la closure (pas d'accès à self dedans).
         let (hdr, mnem_c, addr_c, bytes_c) =
             (self.c_header(), self.c_mnemonic(), self.c_addr(), self.c_bytes());
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
         let mut open = true;
         let mut close = false;
         egui::Window::new(format!("🔬 Microscope — {} {}", insn.mnemonic, insn.operands))
@@ -931,38 +944,38 @@ impl App {
                 egui::ScrollArea::vertical().id_salt("microscope_scroll").show(ui, |ui| {
                     // --- Identité de l'instruction ---
                     egui::Grid::new("micro_id").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
-                        ui.label(RichText::new("Adresse").strong());
+                        ui.label(RichText::new(tr("Adresse", "Address")).strong());
                         ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(addr_c));
                         ui.end_row();
-                        ui.label(RichText::new("Octets machine").strong());
+                        ui.label(RichText::new(tr("Octets machine", "Machine bytes")).strong());
                         ui.label(RichText::new(insn.bytes_hex()).monospace().color(bytes_c));
                         ui.end_row();
-                        ui.label(RichText::new("Décodage").strong());
+                        ui.label(RichText::new(tr("Décodage", "Decoding")).strong());
                         ui.label(
                             RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
                                 .monospace()
                                 .color(mnem_c),
                         );
                         ui.end_row();
-                        ui.label(RichText::new("Catégorie").strong());
+                        ui.label(RichText::new(tr("Catégorie", "Category")).strong());
                         ui.label(e.category);
                         ui.end_row();
-                        ui.label(RichText::new("Cycles estimés").strong());
+                        ui.label(RichText::new(tr("Cycles estimés", "Estimated cycles")).strong());
                         ui.label(RichText::new(cycles).color(CHANGED))
-                            .on_hover_text("Ordre de grandeur pédagogique, pas une mesure exacte.");
+                            .on_hover_text(tr("Ordre de grandeur pédagogique, pas une mesure exacte.", "Educational ballpark, not an exact measurement."));
                         ui.end_row();
                     });
 
                     ui.add_space(8.0);
-                    ui.label(RichText::new("Que fait cette instruction ?").strong().color(hdr));
+                    ui.label(RichText::new(tr("Que fait cette instruction ?", "What does this instruction do?")).strong().color(hdr));
                     ui.label(&e.description);
 
                     ui.add_space(6.0);
                     ui.hyperlink_to(
-                        format!("📖 Référence Intel de {} (felixcloutier.com)", insn.mnemonic.to_uppercase()),
+                        format!("📖 {} {} (felixcloutier.com)", tr("Référence Intel de", "Intel reference for"), insn.mnemonic.to_uppercase()),
                         explain::doc_url(&insn.mnemonic),
                     )
-                    .on_hover_text("Ouvre la page de l'instruction dans le navigateur\n(mirror du manuel Intel SDM).");
+                    .on_hover_text(tr("Ouvre la page de l'instruction dans le navigateur\n(mirror du manuel Intel SDM).", "Opens the instruction page in the browser\n(mirror of the Intel SDM manual)."));
 
                     ui.add_space(8.0);
                     ui.separator();
@@ -972,21 +985,21 @@ impl App {
                             // ΔRSP + écriture/lecture pile.
                             let d = after.rsp as i128 - before.rsp as i128;
                             if d != 0 {
-                                ui.label(RichText::new("Pile (RSP)").strong().color(hdr));
+                                ui.label(RichText::new(tr("Pile (RSP)", "Stack (RSP)")).strong().color(hdr));
                                 if d < 0 {
                                     ui.colored_label(
                                         PUSH_COL,
                                         format!(
-                                            "RSP : 0x{:X} → 0x{:X}  (−{} octets, PUSH)",
-                                            before.rsp, after.rsp, -d
+                                            "RSP : 0x{:X} → 0x{:X}  (−{} {}, PUSH)",
+                                            before.rsp, after.rsp, -d, tr("octets", "bytes")
                                         ),
                                     );
                                 } else {
                                     ui.colored_label(
                                         POP_COL,
                                         format!(
-                                            "RSP : 0x{:X} → 0x{:X}  (+{} octets, POP)",
-                                            before.rsp, after.rsp, d
+                                            "RSP : 0x{:X} → 0x{:X}  (+{} {}, POP)",
+                                            before.rsp, after.rsp, d, tr("octets", "bytes")
                                         ),
                                     );
                                 }
@@ -994,7 +1007,7 @@ impl App {
                             }
 
                             // Registres modifiés.
-                            ui.label(RichText::new("Registres modifiés").strong().color(hdr));
+                            ui.label(RichText::new(tr("Registres modifiés", "Modified registers")).strong().color(hdr));
                             let mut any = false;
                             egui::Grid::new("micro_regs").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
                                 for ((n, ov), (_, nv)) in
@@ -1011,7 +1024,7 @@ impl App {
                                 }
                             });
                             if !any {
-                                ui.weak("aucun registre modifié.");
+                                ui.weak(tr("aucun registre modifié.", "no register modified."));
                             }
 
                             ui.add_space(6.0);
@@ -1032,37 +1045,41 @@ impl App {
                                 }
                             });
                             if !fchanged {
-                                ui.weak("aucun flag modifié.");
+                                ui.weak(tr("aucun flag modifié.", "no flag modified."));
                             }
 
                             ui.add_space(8.0);
                             // Schéma pile avant / après.
-                            ui.label(RichText::new("Pile — avant / après").strong().color(hdr));
+                            ui.label(RichText::new(tr("Pile — avant / après", "Stack — before / after")).strong().color(hdr));
                             ui.columns(2, |c| {
-                                micro_stack(&mut c[0], addr_c, "avant", before.rsp, _bstack);
-                                micro_stack(&mut c[1], addr_c, "après", after.rsp, _astack);
+                                micro_stack(&mut c[0], addr_c, tr("avant", "before"), before.rsp, _bstack);
+                                micro_stack(&mut c[1], addr_c, tr("après", "after"), after.rsp, _astack);
                             });
                         }
                         Some((_before, _bstack, None)) => {
-                            ui.weak(
-                                "Instruction à exécuter à l'étape courante — avancez d'un pas (Step) \
+                            ui.weak(tr(
+                                "Instruction à exécuter à l'étape courante — avancez d'un pas (Next) \
                                  pour voir ses effets dynamiques.",
-                            );
-                            micro_static_flags(ui, hdr, &e);
+                                "Instruction to run at the current step — advance one step (Next) \
+                                 to see its dynamic effects.",
+                            ));
+                            micro_static_flags(ui, hdr, &e, tr("Flags positionnés", "Flags set"), tr("Cette instruction ne modifie aucun flag.", "This instruction modifies no flag."));
                         }
                         None => {
-                            ui.weak(
+                            ui.weak(tr(
                                 "Cette instruction n'a pas encore été exécutée dans l'historique \
                                  (effets dynamiques indisponibles).",
-                            );
-                            micro_static_flags(ui, hdr, &e);
+                                "This instruction has not been executed yet in the history \
+                                 (dynamic effects unavailable).",
+                            ));
+                            micro_static_flags(ui, hdr, &e, tr("Flags positionnés", "Flags set"), tr("Cette instruction ne modifie aucun flag.", "This instruction modifies no flag."));
                         }
                     }
 
                     ui.add_space(10.0);
                     ui.separator();
                     ui.vertical_centered(|ui| {
-                        if ui.button("Fermer").clicked() {
+                        if ui.button(tr("Fermer", "Close")).clicked() {
                             close = true;
                         }
                     });
@@ -1077,16 +1094,19 @@ impl App {
         if !self.show_about {
             return;
         }
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let mnem = self.c_mnemonic();
         let mut open = true;
-        egui::Window::new("À propos")
+        egui::Window::new(tr("À propos", "About"))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.heading(RichText::new("ASM Studio").color(self.c_mnemonic()));
-                    ui.label("IDE pédagogique NASM x86-64");
+                    ui.heading(RichText::new("ASM Studio").color(mnem));
+                    ui.label(tr("IDE pédagogique NASM x86-64", "Educational NASM x86-64 IDE"));
                 });
                 ui.add_space(8.0);
                 ui.separator();
@@ -1103,15 +1123,15 @@ impl App {
                         ui.label("Date");
                         ui.label(RichText::new(env!("BUILD_DATE")).monospace());
                         ui.end_row();
-                        ui.label("Licence");
-                        ui.hyperlink_to("MIT (explication)", "https://opensource.org/license/mit")
-                            .on_hover_text("Ouvrir le texte officiel de la licence MIT");
+                        ui.label(tr("Licence", "License"));
+                        ui.hyperlink_to(tr("MIT (explication)", "MIT (explanation)"), "https://opensource.org/license/mit")
+                            .on_hover_text(tr("Ouvrir le texte officiel de la licence MIT", "Open the official MIT license text"));
                         ui.end_row();
                     });
                 ui.separator();
                 ui.add_space(6.0);
                 ui.vertical_centered(|ui| {
-                    if ui.button("Fermer").clicked() {
+                    if ui.button(tr("Fermer", "Close")).clicked() {
                         self.show_about = false;
                     }
                 });
@@ -1185,62 +1205,84 @@ impl App {
             return;
         }
         use egui::ThemePreference;
+        // Libellés traduits précalculés (évite d'emprunter self pendant que les
+        // widgets empruntent ses champs en écriture).
+        let t_title = self.tr("Réglages", "Settings");
+        let t_lang = self.tr("Langue", "Language");
+        let t_theme = self.tr("Thème", "Theme");
+        let t_sys = self.tr("Système (suit l'OS)", "System (follow OS)");
+        let t_dark = self.tr("Sombre", "Dark");
+        let t_light = self.tr("Clair", "Light");
+        let t_theme_note = self.tr(
+            "Note : la coloration du code est optimisée pour le thème sombre.",
+            "Note: syntax colors are tuned for the dark theme.",
+        );
+        let t_iface = self.tr("Interface", "Interface");
+        let t_tooltips = self.tr(
+            "Afficher les infobulles des raccourcis (au survol des boutons)",
+            "Show shortcut tooltips (on button hover)",
+        );
+        let t_anim = self.tr(
+            "Animations « CPU vivant » (pulsation des valeurs modifiées)",
+            "\"Live CPU\" animations (pulse changed values)",
+        );
+        let t_asmstd_h = self.tr("Bibliothèque asmstd", "asmstd library");
+        let t_asmstd = self.tr(
+            "Activer asmstd (call asm.write, asm.exit, asm.mkdir…)",
+            "Enable asmstd (call asm.write, asm.exit, asm.mkdir…)",
+        );
+        let t_asmstd_tip = self.tr(
+            "Rend asmstd.inc disponible pour %include depuis n'importe quel fichier.\n\
+             Masque les numéros de syscalls derrière des noms lisibles.",
+            "Makes asmstd.inc available for %include from any file.\n\
+             Hides syscall numbers behind readable names.",
+        );
+        let t_asmstd_note = self.tr(
+            "Dans le code : %include \"asmstd.inc\" puis call asm.write",
+            "In code: %include \"asmstd.inc\" then call asm.write",
+        );
+        let t_close = self.tr("Fermer", "Close");
+
         let mut open = true;
         let mut changed = false;
-        egui::Window::new("Réglages")
+        egui::Window::new(t_title)
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(RichText::new("Thème").strong());
+                ui.label(RichText::new(t_lang).strong());
                 ui.add_space(4.0);
-                changed |= ui
-                    .radio_value(&mut self.theme_pref, ThemePreference::System, "Système (suit l'OS)")
-                    .changed();
-                changed |= ui
-                    .radio_value(&mut self.theme_pref, ThemePreference::Dark, "Sombre")
-                    .changed();
-                changed |= ui
-                    .radio_value(&mut self.theme_pref, ThemePreference::Light, "Clair")
-                    .changed();
-                ui.add_space(4.0);
-                ui.weak("Note : la coloration du code est optimisée pour le thème sombre.");
+                changed |= ui.radio_value(&mut self.lang, Lang::Fr, "Français").changed();
+                changed |= ui.radio_value(&mut self.lang, Lang::En, "English").changed();
                 ui.separator();
 
-                ui.label(RichText::new("Interface").strong());
+                ui.label(RichText::new(t_theme).strong());
                 ui.add_space(4.0);
-                changed |= ui
-                    .checkbox(
-                        &mut self.show_tooltips,
-                        "Afficher les infobulles des raccourcis (au survol des boutons)",
-                    )
-                    .changed();
-                changed |= ui
-                    .checkbox(
-                        &mut self.animate,
-                        "Animations « CPU vivant » (pulsation des valeurs modifiées)",
-                    )
-                    .changed();
+                changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::System, t_sys).changed();
+                changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::Dark, t_dark).changed();
+                changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::Light, t_light).changed();
+                ui.add_space(4.0);
+                ui.weak(t_theme_note);
                 ui.separator();
 
-                ui.label(RichText::new("Bibliothèque asmstd").strong());
+                ui.label(RichText::new(t_iface).strong());
+                ui.add_space(4.0);
+                changed |= ui.checkbox(&mut self.show_tooltips, t_tooltips).changed();
+                changed |= ui.checkbox(&mut self.animate, t_anim).changed();
+                ui.separator();
+
+                ui.label(RichText::new(t_asmstd_h).strong());
                 ui.add_space(4.0);
                 changed |= ui
-                    .checkbox(
-                        &mut self.use_asmstd,
-                        "Activer asmstd (call asm.write, asm.exit, asm.mkdir…)",
-                    )
-                    .on_hover_text(
-                        "Rend asmstd.inc disponible pour %include depuis n'importe quel fichier.\n\
-                         Masque les numéros de syscalls derrière des noms lisibles.",
-                    )
+                    .checkbox(&mut self.use_asmstd, t_asmstd)
+                    .on_hover_text(t_asmstd_tip)
                     .changed();
-                ui.weak("Dans le code : %include \"asmstd.inc\" puis call asm.write");
+                ui.weak(t_asmstd_note);
                 ui.separator();
 
                 ui.vertical_centered(|ui| {
-                    if ui.button("Fermer").clicked() {
+                    if ui.button(t_close).clicked() {
                         self.show_settings = false;
                     }
                 });
@@ -1257,42 +1299,45 @@ impl App {
         if !self.show_shortcuts {
             return;
         }
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let mnem = self.c_mnemonic();
         let mut open = true;
-        egui::Window::new("Raccourcis clavier")
+        egui::Window::new(tr("Raccourcis clavier", "Keyboard shortcuts"))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
                 let rows = [
-                    ("F1", "Aide / raccourcis"),
-                    ("F5", "Lancer / Restart"),
-                    ("F10 / F8", "Instruction suivante (Next)"),
-                    ("Échap / Maj+F5", "Stop"),
-                    ("Ctrl+B", "Assembler + Lier"),
-                    ("Ctrl+S", "Enregistrer"),
-                    ("Ctrl+O", "Ouvrir"),
-                    ("Ctrl+N", "Nouveau"),
-                    ("← / →", "Timeline : précédent / suivant"),
-                    ("Home / End", "Timeline : début / fin"),
-                    ("Ctrl+1", "Afficher/masquer l'explorateur"),
-                    ("Ctrl+2", "Afficher/masquer l'instruction"),
-                    ("Ctrl+3", "Afficher/masquer la bande CPU"),
-                    ("Ctrl+4", "Afficher/masquer la bande basse"),
+                    ("F1", tr("Aide / raccourcis", "Help / shortcuts")),
+                    ("F5", tr("Lancer / Restart", "Run / Restart")),
+                    ("F10 / F8", tr("Instruction suivante (Next)", "Next instruction (Next)")),
+                    ("Échap / Maj+F5", tr("Stop", "Stop")),
+                    ("Ctrl+B", tr("Assembler + Lier", "Assemble + Link")),
+                    ("Ctrl+S", tr("Enregistrer", "Save")),
+                    ("Ctrl+O", tr("Ouvrir", "Open")),
+                    ("Ctrl+N", tr("Nouveau", "New")),
+                    ("← / →", tr("Timeline : précédent / suivant", "Timeline: previous / next")),
+                    ("Home / End", tr("Timeline : début / fin", "Timeline: start / end")),
+                    ("Ctrl+1", tr("Afficher/masquer l'explorateur", "Show/hide the explorer")),
+                    ("Ctrl+2", tr("Afficher/masquer l'instruction", "Show/hide the instruction panel")),
+                    ("Ctrl+3", tr("Afficher/masquer la bande CPU", "Show/hide the CPU band")),
+                    ("Ctrl+4", tr("Afficher/masquer la bande basse", "Show/hide the bottom band")),
                 ];
                 egui::Grid::new("shortcuts_grid")
                     .num_columns(2)
                     .spacing([24.0, 6.0])
                     .show(ui, |ui| {
                         for (k, d) in rows {
-                            ui.label(RichText::new(k).monospace().strong().color(self.c_mnemonic()));
+                            ui.label(RichText::new(k).monospace().strong().color(mnem));
                             ui.label(d);
                             ui.end_row();
                         }
                     });
                 ui.separator();
                 ui.vertical_centered(|ui| {
-                    if ui.button("Fermer").clicked() {
+                    if ui.button(tr("Fermer", "Close")).clicked() {
                         self.show_shortcuts = false;
                     }
                 });
@@ -1305,63 +1350,65 @@ impl App {
     // ---------- Menu ----------
 
     fn menu_bar(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("Fichier", |ui| {
-                    if ui.button("Nouveau            Ctrl+N").clicked() {
+                ui.menu_button(tr("Fichier", "File"), |ui| {
+                    if ui.button(tr("Nouveau            Ctrl+N", "New                Ctrl+N")).clicked() {
                         self.new_file();
                         ui.close_menu();
                     }
-                    if ui.button("Ouvrir…            Ctrl+O").clicked() {
+                    if ui.button(tr("Ouvrir…            Ctrl+O", "Open…              Ctrl+O")).clicked() {
                         self.open_browser();
                         ui.close_menu();
                     }
-                    if ui.button("Enregistrer        Ctrl+S").clicked() {
+                    if ui.button(tr("Enregistrer        Ctrl+S", "Save               Ctrl+S")).clicked() {
                         self.save_source();
                         ui.close_menu();
                     }
-                    if ui.button("Enregistrer sous…").clicked() {
+                    if ui.button(tr("Enregistrer sous…", "Save As…")).clicked() {
                         self.open_saveas();
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("Quitter").clicked() {
+                    if ui.button(tr("Quitter", "Quit")).clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
                 ui.menu_button("Build", |ui| {
-                    if ui.button("Assembler + Lier   Ctrl+B").clicked() {
+                    if ui.button(tr("Assembler + Lier   Ctrl+B", "Assemble + Link    Ctrl+B")).clicked() {
                         self.build();
                         ui.close_menu();
                     }
-                    if ui.button("Exécuter (Lancer)  F5").clicked() {
+                    if ui.button(tr("Exécuter (Lancer)  F5", "Run                F5")).clicked() {
                         self.launch();
                         ui.close_menu();
                     }
                 });
                 ui.menu_button("Debug", |ui| {
-                    if ui.button("Lancer / Restart   F5").clicked() {
+                    if ui.button(tr("Lancer / Restart   F5", "Run / Restart      F5")).clicked() {
                         self.launch();
                         ui.close_menu();
                     }
-                    if ui.button("Step               F10").clicked() {
+                    if ui.button(tr("Pas à pas          F10", "Step               F10")).clicked() {
                         self.step();
                         ui.close_menu();
                     }
-                    if ui.button("Stop               Échap").clicked() {
+                    if ui.button(tr("Stop               Échap", "Stop               Esc")).clicked() {
                         self.stop();
                         ui.close_menu();
                     }
                 });
-                ui.menu_button("Affichage", |ui| {
-                    ui.label(RichText::new("Panneaux").small().weak());
+                ui.menu_button(tr("Affichage", "View"), |ui| {
+                    ui.label(RichText::new(tr("Panneaux", "Panels")).small().weak());
                     let mut changed = false;
-                    changed |= ui.checkbox(&mut self.show_explorer, "Explorateur          Ctrl+1").changed();
-                    changed |= ui.checkbox(&mut self.show_instruction, "Instruction          Ctrl+2").changed();
-                    changed |= ui.checkbox(&mut self.show_cpu_band, "Bande CPU (registres…)  Ctrl+3").changed();
-                    changed |= ui.checkbox(&mut self.show_bottom_band, "Bande basse (mémoire…)  Ctrl+4").changed();
+                    changed |= ui.checkbox(&mut self.show_explorer, tr("Explorateur          Ctrl+1", "Explorer             Ctrl+1")).changed();
+                    changed |= ui.checkbox(&mut self.show_instruction, tr("Instruction          Ctrl+2", "Instruction          Ctrl+2")).changed();
+                    changed |= ui.checkbox(&mut self.show_cpu_band, tr("Bande CPU (registres…)  Ctrl+3", "CPU band (registers…)   Ctrl+3")).changed();
+                    changed |= ui.checkbox(&mut self.show_bottom_band, tr("Bande basse (mémoire…)  Ctrl+4", "Bottom band (memory…)   Ctrl+4")).changed();
                     ui.separator();
-                    if ui.button("Tout afficher").clicked() {
+                    if ui.button(tr("Tout afficher", "Show all")).clicked() {
                         self.show_explorer = true;
                         self.show_instruction = true;
                         self.show_cpu_band = true;
@@ -1373,17 +1420,17 @@ impl App {
                         self.save_settings();
                     }
                 });
-                ui.menu_button("Aide", |ui| {
-                    if ui.button("Réglages…").clicked() {
+                ui.menu_button(tr("Aide", "Help"), |ui| {
+                    if ui.button(tr("Réglages…", "Settings…")).clicked() {
                         self.show_settings = true;
                         ui.close_menu();
                     }
-                    if ui.button("Raccourcis clavier…").clicked() {
+                    if ui.button(tr("Raccourcis clavier…", "Keyboard shortcuts…")).clicked() {
                         self.show_shortcuts = true;
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("À propos ASM Studio…").clicked() {
+                    if ui.button(tr("À propos ASM Studio…", "About ASM Studio…")).clicked() {
                         self.show_about = true;
                         ui.close_menu();
                     }
@@ -1398,6 +1445,8 @@ impl App {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.add_space(3.0);
             ui.horizontal(|ui| {
+                let lang = self.lang;
+                let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
                 let running = self.dbg.as_ref().is_some_and(|d| d.is_alive());
                 let can_step = self.can_step();
                 // Handles clonés (Arc bon marché) => pas d'emprunt de self dans la barre.
@@ -1408,7 +1457,7 @@ impl App {
 
                 // Run : accent quand inactif, grisé quand un programme tourne.
                 if self
-                    .tip(accent_button(ui, ic_run.as_ref(), "Run", !running), "Lancer (F5)")
+                    .tip(accent_button(ui, ic_run.as_ref(), "Run", !running), tr("Lancer (F5)", "Run (F5)"))
                     .clicked()
                 {
                     self.launch();
@@ -1418,25 +1467,25 @@ impl App {
                 // Next : exécute l'instruction suivante (accent quand disponible).
                 // Remplace l'ancien couple Step/Next qui faisait doublon.
                 if self
-                    .tip(accent_button(ui, ic_debug.as_ref(), "Next", can_step), "Instruction suivante (F10)")
+                    .tip(accent_button(ui, ic_debug.as_ref(), "Next", can_step), tr("Instruction suivante (F10)", "Next instruction (F10)"))
                     .clicked()
                 {
                     self.step();
                 }
                 // Stop.
-                if self.tip(bordered_button(ui, ic_stop.as_ref(), "Stop", running), "Arrêter (Échap)").clicked() {
+                if self.tip(bordered_button(ui, ic_stop.as_ref(), "Stop", running), tr("Arrêter (Échap)", "Stop (Esc)")).clicked() {
                     self.stop();
                 }
                 // Restart = relancer depuis le début.
                 if self
-                    .tip(icon_button(ui, ic_restart.as_ref(), "Restart"), "Relancer (F5)")
+                    .tip(icon_button(ui, ic_restart.as_ref(), "Restart"), tr("Relancer (F5)", "Restart (F5)"))
                     .clicked()
                 {
                     self.launch();
                 }
                 ui.separator();
                 if self
-                    .tip(icon_button(ui, ic_build.as_ref(), "Build"), "Assembler + Lier (Ctrl+B)")
+                    .tip(icon_button(ui, ic_build.as_ref(), "Build"), tr("Assembler + Lier (Ctrl+B)", "Assemble + Link (Ctrl+B)"))
                     .clicked()
                 {
                     self.build();
@@ -1452,6 +1501,8 @@ impl App {
     // ---------- Barre d'état ----------
 
     fn status_bar(&self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
         egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 match &self.dbg {
@@ -1463,12 +1514,12 @@ impl App {
                     Some(d) => {
                         let msg = match d.state {
                             RunState::Exited(c) => format!("○ Exited ({c})"),
-                            _ => "○ Terminé".to_string(),
+                            _ => format!("○ {}", tr("Terminé", "Terminated")),
                         };
                         ui.colored_label(FLAG_OFF, msg);
                     }
                     None => {
-                        ui.colored_label(FLAG_OFF, "○ Prêt");
+                        ui.colored_label(FLAG_OFF, format!("○ {}", tr("Prêt", "Ready")));
                     }
                 }
                 ui.separator();
@@ -1477,10 +1528,10 @@ impl App {
                 ui.label(RichText::new("Mode : 64-bit").color(self.c_header()));
                 if let Some(s) = self.snap() {
                     ui.separator();
-                    ui.label(format!("Arrêté à : 0x{:X}", s.regs.rip));
+                    ui.label(format!("{} : 0x{:X}", tr("Arrêté à", "Stopped at"), s.regs.rip));
                     if let Some(next) = self.next_addr() {
                         ui.separator();
-                        ui.colored_label(CHANGED, format!("Suivant : 0x{next:X}"));
+                        ui.colored_label(CHANGED, format!("{} : 0x{next:X}", tr("Suivant", "Next")));
                     }
                 }
                 // À droite : position curseur, encodage, syntaxe.
@@ -1508,9 +1559,11 @@ impl App {
 
     /// Timeline en colonne (bande basse), style mockup.
     fn timeline_col_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
         header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.timeline), "TIMELINE");
         let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
-            ui.weak("— lancez un programme");
+            ui.weak(tr("— lancez un programme", "— run a program"));
             return;
         };
         // Pastilles numérotées (façon mockup) si peu d'étapes ; sinon slider.
@@ -1548,7 +1601,7 @@ impl App {
         if let Some(s) = self.snap()
             && let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip)
         {
-            ui.label(RichText::new(format!("Instruction {}/{last}", self.view_index)).strong());
+            ui.label(RichText::new(format!("{} {}/{last}", tr("Instruction", "Instruction"), self.view_index)).strong());
             ui.label(
                 RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
                     .monospace()
@@ -1558,36 +1611,38 @@ impl App {
 
         // Contrôles de lecture (⏮ ⏪ ▶ ⏩ ⏭).
         ui.horizontal(|ui| {
-            if self.tip(ui.button("⏮"), "Début (Home)").clicked() {
+            if self.tip(ui.button("⏮"), tr("Début (Home)", "Start (Home)")).clicked() {
                 self.set_view(0);
             }
-            if self.tip(ui.button("⏪"), "Précédent (←)").clicked() {
+            if self.tip(ui.button("⏪"), tr("Précédent (←)", "Previous (←)")).clicked() {
                 self.set_view(self.view_index as i64 - 1);
             }
-            if self.tip(ui.button("▶"), "Suivant (→)").clicked() {
+            if self.tip(ui.button("▶"), tr("Suivant (→)", "Next (→)")).clicked() {
                 self.set_view(self.view_index as i64 + 1);
             }
-            if self.tip(ui.button("⏩"), "Suivant (→)").clicked() {
+            if self.tip(ui.button("⏩"), tr("Suivant (→)", "Next (→)")).clicked() {
                 self.set_view(self.view_index as i64 + 1);
             }
-            if self.tip(ui.button("⏭"), "Fin (End)").clicked() {
+            if self.tip(ui.button("⏭"), tr("Fin (End)", "End (End)")).clicked() {
                 self.set_view(i64::MAX);
             }
         });
         if !self.is_head_view()
-            && self.tip(ui.button("⟳ Reprendre ici"), "Ré-exécute jusqu'à cette étape").clicked()
+            && self.tip(ui.button(tr("⟳ Reprendre ici", "⟳ Resume here")), tr("Ré-exécute jusqu'à cette étape", "Re-run up to this step")).clicked()
         {
             self.resume_here();
         }
     }
 
     fn memory_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
         // Régions utiles pour le sélecteur (calculées avant l'UI, sans emprunt).
         let regions: Vec<(&str, u64)> = match self.dbg.as_ref().filter(|d| d.is_alive()) {
             Some(d) => {
-                let mut v = vec![("Pile (RSP)", d.regs().rsp), ("Base (RBP)", d.regs().rbp)];
+                let mut v = vec![(tr("Pile (RSP)", "Stack (RSP)"), d.regs().rsp), (tr("Base (RBP)", "Base (RBP)"), d.regs().rbp)];
                 if let Some((h0, _)) = d.heap_range() {
-                    v.push(("Tas (heap)", h0));
+                    v.push((tr("Tas (heap)", "Heap"), h0));
                 }
                 v
             }
@@ -1608,25 +1663,25 @@ impl App {
                         }
                     }
                     if regions.is_empty() {
-                        ui.weak("(lancez un programme)");
+                        ui.weak(tr("(lancez un programme)", "(run a program)"));
                     }
                 });
-            ui.label("aller @");
+            ui.label(tr("aller @", "go to @"));
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.mem_input)
                     .desired_width(130.0)
                     .font(egui::TextStyle::Monospace)
                     .hint_text("0x402000"),
             );
-            let go = ui.button("Aller").clicked()
+            let go = ui.button(tr("Aller", "Go")).clicked()
                 || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
             if go {
                 match parse_hex(&self.mem_input) {
                     Some(a) => {
                         self.mem_addr = a;
-                        self.status = format!("Mémoire @ 0x{a:X}");
+                        self.status = format!("{} 0x{a:X}", tr("Mémoire @", "Memory @"));
                     }
-                    None => self.status = "Adresse hexa invalide".to_string(),
+                    None => self.status = tr("Adresse hexa invalide", "Invalid hex address").to_string(),
                 }
             }
         });
@@ -1636,9 +1691,15 @@ impl App {
         }
         if !self.can_read_memory() {
             let msg = match self.dbg.as_ref().map(|d| d.is_alive()) {
-                Some(false) => "Programme terminé — relancez pour explorer la mémoire.",
-                Some(true) => "Revenez à la dernière étape de la timeline pour lire la mémoire.",
-                None => "Lancez un programme pour explorer la mémoire.",
+                Some(false) => tr(
+                    "Programme terminé — relancez pour explorer la mémoire.",
+                    "Program finished — relaunch to explore memory.",
+                ),
+                Some(true) => tr(
+                    "Revenez à la dernière étape de la timeline pour lire la mémoire.",
+                    "Go back to the last timeline step to read memory.",
+                ),
+                None => tr("Lancez un programme pour explorer la mémoire.", "Run a program to explore memory."),
             };
             ui.weak(msg);
             return;
@@ -1646,14 +1707,14 @@ impl App {
 
         // Laboratoire mémoire : écrire des octets à l'adresse de base affichée.
         ui.horizontal(|ui| {
-            ui.label(RichText::new("✎ écrire @ base :").small());
+            ui.label(RichText::new(tr("✎ écrire @ base :", "✎ write @ base:")).small());
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.mem_poke)
                     .desired_width(150.0)
                     .font(egui::TextStyle::Monospace)
                     .hint_text("48 65 6C…"),
             );
-            let write = ui.button("Écrire").clicked()
+            let write = ui.button(tr("Écrire", "Write")).clicked()
                 || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
             if write {
                 match parse_hex_bytes(&self.mem_poke) {
@@ -1661,13 +1722,13 @@ impl App {
                         let addr = self.mem_addr;
                         match self.dbg.as_mut().unwrap().write_mem(addr, &bytes) {
                             Ok(_) => {
-                                self.status = format!("{} octet(s) écrit(s) @ 0x{addr:X}", bytes.len());
+                                self.status = format!("{} {} 0x{addr:X}", bytes.len(), tr("octet(s) écrit(s) @", "byte(s) written @"));
                                 self.mem_poke.clear();
                             }
                             Err(e) => self.log(&e),
                         }
                     }
-                    _ => self.status = "Octets hexa invalides (ex. « 48 65 6C »)".to_string(),
+                    _ => self.status = tr("Octets hexa invalides (ex. « 48 65 6C »)", "Invalid hex bytes (e.g. \"48 65 6C\")").to_string(),
                 }
             }
         });
@@ -1684,9 +1745,10 @@ impl App {
     fn console_ui(&mut self, ui: &mut egui::Ui) {
         let console_ic = self.icons.as_ref().map(|i| i.console.clone());
         let hdr = self.c_header();
+        let clear = i18n::tr(self.lang, "effacer", "clear");
         panel_header(ui, |ui| {
             header_title(ui, hdr, console_ic.as_ref(), "CONSOLE");
-            if ui.small_button("effacer").clicked() {
+            if ui.small_button(clear).clicked() {
                 self.console.clear();
             }
         });
@@ -1720,20 +1782,22 @@ impl App {
     }
 
     fn registers_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
         header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.registers), "REGISTERS");
         let Some(rows) = self.reg_rows() else {
-            ui.label("Aucun programme lancé.");
+            ui.label(tr("Aucun programme lancé.", "No program running."));
             return;
         };
         // Édition possible seulement quand le processus est vivant et en pause à
         // la dernière étape (ptrace ne peut pas écrire dans un process terminé).
         let editable = self.can_step();
         let hint = if editable {
-            "clic sur une valeur pour l'éditer"
+            tr("clic sur une valeur pour l'éditer", "click a value to edit it")
         } else if self.dbg.as_ref().is_some_and(|d| !d.is_alive()) {
-            "édition indisponible (programme terminé — relancez)"
+            tr("édition indisponible (programme terminé — relancez)", "editing unavailable (program finished — relaunch)")
         } else {
-            "édition à la dernière étape (revenez en fin de timeline)"
+            tr("édition à la dernière étape (revenez en fin de timeline)", "editing only at the last step (go to the end of the timeline)")
         };
         ui.label(RichText::new(hint).small().weak());
         let flash = self.flash_progress(ui); // pulsation « CPU vivant »
@@ -1795,7 +1859,7 @@ impl App {
                             let t = RichText::new(format!("0x{val:016X}")).monospace();
                             if editable {
                                 let chip = egui::Button::new(t).fill(bg).rounding(egui::Rounding::same(4.0));
-                                let resp = ui.add(chip).on_hover_text("Cliquer pour modifier");
+                                let resp = ui.add(chip).on_hover_text(tr("Cliquer pour modifier", "Click to edit"));
                                 if resp.hovered() {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                 }
@@ -1881,13 +1945,14 @@ impl App {
     // ---------- Explorateur de fichiers (panneau de gauche) ----------
 
     fn explorer_ui(&mut self, ui: &mut egui::Ui) {
+        let up_tip = i18n::tr(self.lang, "Dossier parent comme racine", "Parent folder as root");
         header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.explorer), "EXPLORER");
 
         // Barre : nom du dossier racine + remonter d'un cran.
         let mut go_up = false;
         ui.horizontal(|ui| {
             if self
-                .tip(ui.small_button("⬆"), "Dossier parent comme racine")
+                .tip(ui.small_button("⬆"), up_tip)
                 .clicked()
             {
                 go_up = true;
@@ -1928,18 +1993,19 @@ impl App {
             ui.weak("—");
             return;
         }
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(self.lang, fr, en);
         egui::ScrollArea::vertical().id_salt("callstack_scroll").auto_shrink([false, false]).show(ui, |ui| {
             // Frame courante en haut (RIP), puis les retours empilés.
             let mut depth = self.call_stack.len();
             if let Some(rip) = self.view_rip() {
-                ui.label(RichText::new(format!("#{depth}  0x{rip:08X}  (courant)")).monospace().color(CHANGED));
+                ui.label(RichText::new(format!("#{depth}  0x{rip:08X}  {}", tr("(courant)", "(current)"))).monospace().color(CHANGED));
             }
             for addr in self.call_stack.iter().rev() {
                 depth = depth.saturating_sub(1);
                 ui.label(RichText::new(format!("#{depth}  0x{addr:08X}")).monospace().color(self.c_addr()));
             }
             if self.call_stack.is_empty() {
-                ui.weak("(aucun appel en cours)");
+                ui.weak(tr("(aucun appel en cours)", "(no active call)"));
             }
         });
     }
@@ -1954,7 +2020,7 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 if self.syscalls.is_empty() {
-                    ui.weak("(aucun appel système)");
+                    ui.weak(i18n::tr(self.lang, "(aucun appel système)", "(no system call)"));
                 }
                 for s in &self.syscalls {
                     ui.horizontal(|ui| {
@@ -1999,15 +2065,17 @@ impl App {
 
     fn center_ui(&mut self, ui: &mut egui::Ui) {
         let hdr = self.c_header();
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
         let (edit_ic, disasm_ic) = match &self.icons {
             Some(i) => (Some(i.editor.clone()), Some(i.assembler.clone())),
             None => (None, None),
         };
         panel_header(ui, |ui| {
-            if icon_tab(ui, edit_ic.as_ref(), "Éditeur", self.tab == Tab::Editor).clicked() {
+            if icon_tab(ui, edit_ic.as_ref(), tr("Éditeur", "Editor"), self.tab == Tab::Editor).clicked() {
                 self.tab = Tab::Editor;
             }
-            if icon_tab(ui, disasm_ic.as_ref(), "Désassemblage", self.tab == Tab::Disasm).clicked() {
+            if icon_tab(ui, disasm_ic.as_ref(), tr("Désassemblage", "Disassembly"), self.tab == Tab::Disasm).clicked() {
                 self.tab = Tab::Disasm;
             }
             ui.separator();
@@ -2116,7 +2184,10 @@ impl App {
 
     fn disasm_ui(&mut self, ui: &mut egui::Ui) {
         if self.disasm.is_empty() {
-            ui.label("Cliquez sur « Lancer » pour assembler, lier et exécuter votre programme.");
+            ui.label(i18n::tr(self.lang,
+                "Cliquez sur « Lancer » pour assembler, lier et exécuter votre programme.",
+                "Click \"Run\" to assemble, link and execute your program.",
+            ));
             return;
         }
         let rip = self.view_rip();
@@ -2168,6 +2239,8 @@ impl App {
     fn instruction_ui(&mut self, ui: &mut egui::Ui) {
         let bulb_ic = self.icons.as_ref().map(|i| i.instruction.clone());
         let hdr = self.c_header();
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
         panel_header(ui, |ui| {
             header_title(ui, hdr, None, "INSTRUCTION");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2183,7 +2256,10 @@ impl App {
 
         let target = self.selected.or_else(|| self.view_rip());
         let Some(addr) = target else {
-            ui.label("Lancez le programme, puis cliquez une instruction.");
+            ui.label(tr(
+                "Lancez le programme, puis cliquez une instruction.",
+                "Run the program, then click an instruction.",
+            ));
             return;
         };
         let Some(insn) = self.disasm.iter().find(|i| i.address == addr).cloned() else {
@@ -2191,7 +2267,7 @@ impl App {
             return;
         };
         let flags = self.snap().map(|s| Flags::from_eflags(s.regs.eflags)).unwrap_or_default();
-        let e = explain::explain(&insn.mnemonic, &insn.operands, flags);
+        let e = explain::explain(&insn.mnemonic, &insn.operands, flags, self.lang);
         let mnem_col = self.c_mnemonic();
 
         // Ligne 1 : nom de l'instruction + bouton Microscope (aligné à droite).
@@ -2199,8 +2275,8 @@ impl App {
             ui.label(RichText::new(&e.title).size(16.0).strong().color(mnem_col));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button("🔬 Microscope")
-                    .on_hover_text("Tout voir sur cette seule instruction")
+                    .button(tr("🔬 Microscope", "🔬 Microscope"))
+                    .on_hover_text(tr("Tout voir sur cette seule instruction", "See everything about this one instruction"))
                     .clicked()
                 {
                     self.microscope = Some(addr);
@@ -2212,9 +2288,9 @@ impl App {
             ui.label(RichText::new(e.category).italics().weak().size(12.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let tag = if self.selected.is_some() {
-                    "(sélection)"
+                    tr("(sélection)", "(selection)")
                 } else {
-                    "(instruction courante)"
+                    tr("(instruction courante)", "(current instruction)")
                 };
                 ui.label(RichText::new(tag).small().weak());
             });
@@ -2227,22 +2303,26 @@ impl App {
         });
         ui.add_space(6.0);
         ui.hyperlink_to(
-            format!("📖 Référence Intel de {} ↗", insn.mnemonic.to_uppercase()),
+            format!("📖 {} {} ↗", tr("Référence Intel de", "Intel reference for"), insn.mnemonic.to_uppercase()),
             explain::doc_url(&insn.mnemonic),
         )
-        .on_hover_text("Ouvre la page de l'instruction (manuel Intel SDM, felixcloutier.com)");
+        .on_hover_text(tr(
+            "Ouvre la page de l'instruction (manuel Intel SDM, felixcloutier.com)",
+            "Opens the instruction page (Intel SDM manual, felixcloutier.com)",
+        ));
 
         if let Some(cond) = &e.condition {
             ui.add_space(4.0);
-            ui.label(RichText::new("Condition").strong());
+            ui.label(RichText::new(tr("Condition", "Condition")).strong());
             ui.label(RichText::new(cond).monospace());
             // Effet : où mène le saut si la condition est vraie.
             if !insn.operands.is_empty() {
                 ui.add_space(4.0);
-                ui.label(RichText::new("Effet").strong());
+                ui.label(RichText::new(tr("Effet", "Effect")).strong());
                 ui.label(
                     RichText::new(format!(
-                        "Si la condition est vraie, RIP = {}.",
+                        "{} {}.",
+                        tr("Si la condition est vraie, RIP =", "If the condition is true, RIP ="),
                         insn.operands
                     ))
                     .monospace(),
@@ -2251,7 +2331,7 @@ impl App {
             ui.add_space(4.0);
             let hdr2 = self.c_header();
             card(ui, |ui| {
-                    ui.label(RichText::new("État actuel").small().strong().color(hdr2));
+                    ui.label(RichText::new(tr("État actuel", "Current state")).small().strong().color(hdr2));
                     ui.horizontal(|ui| {
                         for (name, val) in &e.relevant_flags {
                             let c = if *val { FLAG_ON } else { FLAG_OFF };
@@ -2265,9 +2345,9 @@ impl App {
                     if let Some(taken) = e.taken {
                         ui.add_space(4.0);
                         let (txt, col) = if taken {
-                            ("✔ Condition vraie — le saut sera pris.", FLAG_ON)
+                            (tr("✔ Condition vraie — le saut sera pris.", "✔ Condition true — the jump will be taken."), FLAG_ON)
                         } else {
-                            ("✘ Condition fausse — pas de saut.", FALSE_COL)
+                            (tr("✘ Condition fausse — pas de saut.", "✘ Condition false — no jump."), FALSE_COL)
                         };
                         let fill = if taken {
                             FLAG_ON.linear_multiply(0.12)
@@ -2286,7 +2366,7 @@ impl App {
         }
         if !e.affects_flags.is_empty() {
             ui.add_space(6.0);
-            ui.label(RichText::new("Flags positionnés").strong());
+            ui.label(RichText::new(tr("Flags positionnés", "Flags set")).strong());
             ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
         }
     }
@@ -2299,11 +2379,13 @@ impl App {
             Some(i) => (Some(i.stack.clone()), Some(i.heap.clone())),
             None => (None, None),
         };
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
         panel_header(ui, |ui| {
-            if icon_tab(ui, stack_ic.as_ref(), "Pile", self.stack_tab == StackTab::Stack).clicked() {
+            if icon_tab(ui, stack_ic.as_ref(), tr("Pile", "Stack"), self.stack_tab == StackTab::Stack).clicked() {
                 self.stack_tab = StackTab::Stack;
             }
-            if icon_tab(ui, heap_ic.as_ref(), "Tas", self.stack_tab == StackTab::Heap).clicked() {
+            if icon_tab(ui, heap_ic.as_ref(), tr("Tas", "Heap"), self.stack_tab == StackTab::Heap).clicked() {
                 self.stack_tab = StackTab::Heap;
             }
         });
@@ -2366,11 +2448,18 @@ impl App {
 
     /// Vue du tas (segment `[heap]` de /proc/<pid>/maps), en hexadécimal.
     fn heap_view(&self, ui: &mut egui::Ui) {
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(self.lang, fr, en);
         if !self.can_read_memory() {
             let msg = match self.dbg.as_ref().map(|d| d.is_alive()) {
-                Some(false) => "Programme terminé — relancez pour explorer le tas.",
-                Some(true) => "Revenez à la dernière étape de la timeline pour lire le tas.",
-                None => "Lancez un programme pour explorer le tas.",
+                Some(false) => tr(
+                    "Programme terminé — relancez pour explorer le tas.",
+                    "Program finished — relaunch to explore the heap.",
+                ),
+                Some(true) => tr(
+                    "Revenez à la dernière étape de la timeline pour lire le tas.",
+                    "Go back to the last timeline step to read the heap.",
+                ),
+                None => tr("Lancez un programme pour explorer le tas.", "Run a program to explore the heap."),
             };
             ui.weak(msg);
             return;
@@ -2378,16 +2467,18 @@ impl App {
         let (hdr, addr_c, bytes_c) = (self.c_header(), self.c_addr(), self.c_bytes());
         let dbg = self.dbg.as_ref().unwrap();
         let Some((start, end)) = dbg.heap_range() else {
-            ui.weak(
+            ui.weak(tr(
                 "Aucun tas pour ce programme : le segment [heap] n'apparaît qu'après un appel \
                  brk/mmap (allocation dynamique). Un programme n'utilisant que .data/.bss ou la \
                  pile n'a pas de tas.",
-            );
+                "No heap for this program: the [heap] segment only appears after a brk/mmap call \
+                 (dynamic allocation). A program using only .data/.bss or the stack has no heap.",
+            ));
             return;
         };
         let size = end - start;
         ui.label(
-            RichText::new(format!("[heap] 0x{start:X} – 0x{end:X}  ({size} octets)"))
+            RichText::new(format!("[heap] 0x{start:X} – 0x{end:X}  ({size} {})", tr("octets", "bytes")))
                 .monospace()
                 .color(hdr),
         );
@@ -2519,12 +2610,12 @@ fn micro_stack(ui: &mut egui::Ui, addr_c: Color32, label: &str, rsp: u64, stack:
 }
 
 /// Flags positionnés (info statique) quand l'instruction n'a pas d'avant/après.
-fn micro_static_flags(ui: &mut egui::Ui, hdr: Color32, e: &explain::Explanation) {
+fn micro_static_flags(ui: &mut egui::Ui, hdr: Color32, e: &explain::Explanation, set_label: &str, none_label: &str) {
     ui.add_space(4.0);
     if e.affects_flags.is_empty() {
-        ui.weak("Cette instruction ne modifie aucun flag.");
+        ui.weak(none_label);
     } else {
-        ui.label(RichText::new("Flags positionnés").strong().color(hdr));
+        ui.label(RichText::new(set_label).strong().color(hdr));
         ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
     }
 }

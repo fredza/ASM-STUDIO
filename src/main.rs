@@ -3,6 +3,7 @@ mod assemble;
 mod debugger;
 mod disasm;
 mod explain;
+mod i18n;
 mod srcmap;
 mod syntax;
 mod syscall;

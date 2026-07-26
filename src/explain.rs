@@ -4,6 +4,7 @@
 //! réels afin d'afficher « le saut sera pris / non pris », comme dans la maquette.
 
 use crate::debugger::Flags;
+use crate::i18n::{self, Lang};
 
 /// Résultat de l'évaluation d'un saut conditionnel :
 /// (condition lisible, saut pris ?, flags pertinents avec leur valeur).
@@ -29,17 +30,22 @@ pub struct Explanation {
 
 /// Construit l'explication d'une instruction à partir de son mnémonique,
 /// de ses opérandes et de l'état courant des flags.
-pub fn explain(mnemonic: &str, operands: &str, flags: Flags) -> Explanation {
+pub fn explain(mnemonic: &str, operands: &str, flags: Flags, lang: Lang) -> Explanation {
     let m = mnemonic.to_lowercase();
+    let t = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
 
     // --- Sauts conditionnels : condition évaluée contre les flags réels ---
-    if let Some((cond, taken, rel)) = eval_jcc(&m, flags) {
+    if let Some((cond, taken, rel)) = eval_jcc(&m, flags, lang) {
         return Explanation {
-            title: format!("{} — {}", mnemonic.to_uppercase(), jcc_title(&m)),
-            category: "Saut conditionnel",
+            title: format!("{} — {}", mnemonic.to_uppercase(), jcc_title(&m, lang)),
+            category: t("Saut conditionnel", "Conditional jump"),
             description: format!(
-                "Saut relatif si la condition est vraie. Cible : {}.",
-                if operands.is_empty() { "(opérande)" } else { operands }
+                "{} {}.",
+                t(
+                    "Saut relatif si la condition est vraie. Cible :",
+                    "Relative jump if the condition is true. Target:"
+                ),
+                if operands.is_empty() { t("(opérande)", "(operand)") } else { operands }
             ),
             condition: Some(cond),
             taken: Some(taken),
@@ -51,145 +57,163 @@ pub fn explain(mnemonic: &str, operands: &str, flags: Flags) -> Explanation {
     // --- Autres instructions courantes ---
     let (category, description, affects): (&str, String, Vec<&str>) = match m.as_str() {
         "mov" => (
-            "Transfert",
-            "Copie la source dans la destination (aucun flag modifié). \
-             Note : écrire dans un registre 32 bits (eax) remet à zéro les 32 bits hauts du 64 bits (rax)."
-                .to_string(),
+            t("Transfert", "Transfer"),
+            t(
+                "Copie la source dans la destination (aucun flag modifié). \
+                 Note : écrire dans un registre 32 bits (eax) remet à zéro les 32 bits hauts du 64 bits (rax).",
+                "Copies the source into the destination (no flag modified). \
+                 Note: writing to a 32-bit register (eax) zeroes the upper 32 bits of the 64-bit register (rax).",
+            ).to_string(),
             vec![],
         ),
         "movabs" => (
-            "Transfert",
-            "Charge un immédiat 64 bits complet dans un registre.".to_string(),
+            t("Transfert", "Transfer"),
+            t("Charge un immédiat 64 bits complet dans un registre.", "Loads a full 64-bit immediate into a register.").to_string(),
             vec![],
         ),
         "lea" => (
-            "Adressage",
-            "Load Effective Address : calcule une adresse (base + index*échelle + déplacement) \
-             et la place dans la destination, SANS accéder à la mémoire. Sert aussi d'arithmétique rapide."
-                .to_string(),
+            t("Adressage", "Addressing"),
+            t(
+                "Load Effective Address : calcule une adresse (base + index*échelle + déplacement) \
+                 et la place dans la destination, SANS accéder à la mémoire. Sert aussi d'arithmétique rapide.",
+                "Load Effective Address: computes an address (base + index*scale + displacement) \
+                 and stores it in the destination WITHOUT accessing memory. Also handy for fast arithmetic.",
+            ).to_string(),
             vec![],
         ),
         "push" => (
-            "Pile",
-            "Décrémente RSP de 8 puis écrit l'opérande au sommet de la pile.".to_string(),
+            t("Pile", "Stack"),
+            t("Décrémente RSP de 8 puis écrit l'opérande au sommet de la pile.", "Decrements RSP by 8 then writes the operand at the top of the stack.").to_string(),
             vec![],
         ),
         "pop" => (
-            "Pile",
-            "Lit le sommet de la pile dans la destination puis incrémente RSP de 8.".to_string(),
+            t("Pile", "Stack"),
+            t("Lit le sommet de la pile dans la destination puis incrémente RSP de 8.", "Reads the top of the stack into the destination then increments RSP by 8.").to_string(),
             vec![],
         ),
         "add" => (
-            "Arithmétique",
-            "Additionne source à destination. Positionne les flags selon le résultat.".to_string(),
+            t("Arithmétique", "Arithmetic"),
+            t("Additionne source à destination. Positionne les flags selon le résultat.", "Adds source to destination. Sets the flags according to the result.").to_string(),
             vec!["CF", "OF", "SF", "ZF", "PF", "AF"],
         ),
         "sub" => (
-            "Arithmétique",
-            "Soustrait source de destination. Positionne les flags selon le résultat.".to_string(),
+            t("Arithmétique", "Arithmetic"),
+            t("Soustrait source de destination. Positionne les flags selon le résultat.", "Subtracts source from destination. Sets the flags according to the result.").to_string(),
             vec!["CF", "OF", "SF", "ZF", "PF", "AF"],
         ),
         "imul" => (
-            "Arithmétique",
-            "Multiplication signée. CF et OF sont mis à 1 si le résultat déborde de la taille de destination."
-                .to_string(),
+            t("Arithmétique", "Arithmetic"),
+            t("Multiplication signée. CF et OF sont mis à 1 si le résultat déborde de la taille de destination.", "Signed multiplication. CF and OF are set if the result overflows the destination size.").to_string(),
             vec!["CF", "OF"],
         ),
         "mul" => (
-            "Arithmétique",
-            "Multiplication non signée (RDX:RAX). CF/OF indiquent un débordement dans la partie haute."
-                .to_string(),
+            t("Arithmétique", "Arithmetic"),
+            t("Multiplication non signée (RDX:RAX). CF/OF indiquent un débordement dans la partie haute.", "Unsigned multiplication (RDX:RAX). CF/OF indicate overflow into the high part.").to_string(),
             vec!["CF", "OF"],
         ),
         "inc" => (
-            "Arithmétique",
-            "Incrémente de 1. Ne modifie PAS CF (contrairement à add).".to_string(),
+            t("Arithmétique", "Arithmetic"),
+            t("Incrémente de 1. Ne modifie PAS CF (contrairement à add).", "Increments by 1. Does NOT modify CF (unlike add).").to_string(),
             vec!["OF", "SF", "ZF", "PF", "AF"],
         ),
         "dec" => (
-            "Arithmétique",
-            "Décrémente de 1. Ne modifie PAS CF.".to_string(),
+            t("Arithmétique", "Arithmetic"),
+            t("Décrémente de 1. Ne modifie PAS CF.", "Decrements by 1. Does NOT modify CF.").to_string(),
             vec!["OF", "SF", "ZF", "PF", "AF"],
         ),
         "neg" => (
-            "Arithmétique",
-            "Remplace l'opérande par son opposé (complément à deux).".to_string(),
+            t("Arithmétique", "Arithmetic"),
+            t("Remplace l'opérande par son opposé (complément à deux).", "Replaces the operand with its negation (two's complement).").to_string(),
             vec!["CF", "OF", "SF", "ZF", "PF", "AF"],
         ),
         "cmp" => (
-            "Comparaison",
-            "Calcule (destination - source) SANS stocker le résultat : seuls les flags sont positionnés. \
-             C'est ce qui prépare un saut conditionnel : ZF=1 si égaux, et SF/OF/CF codent l'ordre."
-                .to_string(),
+            t("Comparaison", "Comparison"),
+            t(
+                "Calcule (destination - source) SANS stocker le résultat : seuls les flags sont positionnés. \
+                 C'est ce qui prépare un saut conditionnel : ZF=1 si égaux, et SF/OF/CF codent l'ordre.",
+                "Computes (destination - source) WITHOUT storing the result: only the flags are set. \
+                 This is what prepares a conditional jump: ZF=1 if equal, and SF/OF/CF encode the ordering.",
+            ).to_string(),
             vec!["CF", "OF", "SF", "ZF", "PF", "AF"],
         ),
         "test" => (
-            "Comparaison",
-            "Calcule (destination AND source) sans le stocker : positionne les flags. \
-             `test rax, rax` sert à savoir si rax est nul (ZF=1) ou négatif (SF=1)."
-                .to_string(),
+            t("Comparaison", "Comparison"),
+            t(
+                "Calcule (destination AND source) sans le stocker : positionne les flags. \
+                 `test rax, rax` sert à savoir si rax est nul (ZF=1) ou négatif (SF=1).",
+                "Computes (destination AND source) without storing it: sets the flags. \
+                 `test rax, rax` tells whether rax is zero (ZF=1) or negative (SF=1).",
+            ).to_string(),
             vec!["SF", "ZF", "PF"],
         ),
         "and" => (
-            "Logique",
-            "ET bit à bit. CF et OF sont mis à 0.".to_string(),
+            t("Logique", "Logic"),
+            t("ET bit à bit. CF et OF sont mis à 0.", "Bitwise AND. CF and OF are cleared.").to_string(),
             vec!["CF", "OF", "SF", "ZF", "PF"],
         ),
         "or" => (
-            "Logique",
-            "OU bit à bit. CF et OF sont mis à 0.".to_string(),
+            t("Logique", "Logic"),
+            t("OU bit à bit. CF et OF sont mis à 0.", "Bitwise OR. CF and OF are cleared.").to_string(),
             vec!["CF", "OF", "SF", "ZF", "PF"],
         ),
         "xor" => (
-            "Logique",
-            "OU exclusif bit à bit. `xor rax, rax` est l'idiome pour mettre rax à 0 \
-             (plus court que mov rax, 0). CF et OF sont mis à 0."
-                .to_string(),
+            t("Logique", "Logic"),
+            t(
+                "OU exclusif bit à bit. `xor rax, rax` est l'idiome pour mettre rax à 0 \
+                 (plus court que mov rax, 0). CF et OF sont mis à 0.",
+                "Bitwise exclusive OR. `xor rax, rax` is the idiom to zero rax \
+                 (shorter than mov rax, 0). CF and OF are cleared.",
+            ).to_string(),
             vec!["CF", "OF", "SF", "ZF", "PF"],
         ),
         "shl" | "sal" => (
-            "Décalage",
-            "Décale les bits vers la gauche (multiplie par 2 par bit). Le dernier bit sorti va dans CF."
-                .to_string(),
+            t("Décalage", "Shift"),
+            t("Décale les bits vers la gauche (multiplie par 2 par bit). Le dernier bit sorti va dans CF.", "Shifts bits left (multiplies by 2 per bit). The last bit shifted out goes to CF.").to_string(),
             vec!["CF", "OF", "SF", "ZF", "PF"],
         ),
         "shr" => (
-            "Décalage",
-            "Décale les bits vers la droite (division non signée par 2). Le dernier bit sorti va dans CF."
-                .to_string(),
+            t("Décalage", "Shift"),
+            t("Décale les bits vers la droite (division non signée par 2). Le dernier bit sorti va dans CF.", "Shifts bits right (unsigned division by 2). The last bit shifted out goes to CF.").to_string(),
             vec!["CF", "OF", "SF", "ZF", "PF"],
         ),
         "jmp" => (
-            "Saut",
-            "Saut inconditionnel : RIP prend la valeur de la cible.".to_string(),
+            t("Saut", "Jump"),
+            t("Saut inconditionnel : RIP prend la valeur de la cible.", "Unconditional jump: RIP takes the target value.").to_string(),
             vec![],
         ),
         "call" => (
-            "Appel",
-            "Empile l'adresse de retour (RSP -= 8) puis saute vers la fonction cible.".to_string(),
+            t("Appel", "Call"),
+            t("Empile l'adresse de retour (RSP -= 8) puis saute vers la fonction cible.", "Pushes the return address (RSP -= 8) then jumps to the target function.").to_string(),
             vec![],
         ),
         "ret" => (
-            "Appel",
-            "Dépile l'adresse de retour dans RIP (RSP += 8) : revient à l'appelant.".to_string(),
+            t("Appel", "Call"),
+            t("Dépile l'adresse de retour dans RIP (RSP += 8) : revient à l'appelant.", "Pops the return address into RIP (RSP += 8): returns to the caller.").to_string(),
             vec![],
         ),
         "syscall" => (
-            "Système",
-            "Appel système Linux : RAX = numéro, arguments dans RDI, RSI, RDX, R10, R8, R9. \
-             Le noyau exécute l'opération (write, read, exit...) et renvoie le résultat dans RAX."
-                .to_string(),
+            t("Système", "System"),
+            t(
+                "Appel système Linux : RAX = numéro, arguments dans RDI, RSI, RDX, R10, R8, R9. \
+                 Le noyau exécute l'opération (write, read, exit...) et renvoie le résultat dans RAX.",
+                "Linux system call: RAX = number, arguments in RDI, RSI, RDX, R10, R8, R9. \
+                 The kernel runs the operation (write, read, exit...) and returns the result in RAX.",
+            ).to_string(),
             vec![],
         ),
-        "nop" => ("Divers", "Ne fait rien (No Operation).".to_string(), vec![]),
+        "nop" => (t("Divers", "Misc"), t("Ne fait rien (No Operation).", "Does nothing (No Operation).").to_string(), vec![]),
         "leave" => (
-            "Pile",
-            "Équivaut à `mov rsp, rbp ; pop rbp` : démonte le cadre de pile de la fonction.".to_string(),
+            t("Pile", "Stack"),
+            t("Équivaut à `mov rsp, rbp ; pop rbp` : démonte le cadre de pile de la fonction.", "Equivalent to `mov rsp, rbp ; pop rbp`: tears down the function's stack frame.").to_string(),
             vec![],
         ),
         _ => (
-            "Inconnu",
-            format!("Instruction « {mnemonic} » : explication non encore répertoriée."),
+            t("Inconnu", "Unknown"),
+            format!(
+                "{} « {mnemonic} » {}",
+                t("Instruction", "Instruction"),
+                t(": explication non encore répertoriée.", ": explanation not catalogued yet."),
+            ),
             vec![],
         ),
     };
@@ -248,48 +272,51 @@ pub fn doc_url(mnemonic: &str) -> String {
 }
 
 /// Titre lisible d'un saut conditionnel.
-fn jcc_title(m: &str) -> &'static str {
+fn jcc_title(m: &str, lang: Lang) -> &'static str {
+    let t = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
     match m {
         "je" | "jz" => "Jump if Equal / Zero",
         "jne" | "jnz" => "Jump if Not Equal / Not Zero",
-        "jg" | "jnle" => "Jump if Greater (signé)",
-        "jge" | "jnl" => "Jump if Greater or Equal (signé)",
-        "jl" | "jnge" => "Jump if Less (signé)",
-        "jle" | "jng" => "Jump if Less or Equal (signé)",
-        "ja" | "jnbe" => "Jump if Above (non signé)",
-        "jae" | "jnb" | "jnc" => "Jump if Above or Equal (non signé)",
-        "jb" | "jc" | "jnae" => "Jump if Below (non signé)",
-        "jbe" | "jna" => "Jump if Below or Equal (non signé)",
-        "js" => "Jump if Sign (négatif)",
-        "jns" => "Jump if Not Sign (positif ou nul)",
+        "jg" | "jnle" => t("Jump if Greater (signé)", "Jump if Greater (signed)"),
+        "jge" | "jnl" => t("Jump if Greater or Equal (signé)", "Jump if Greater or Equal (signed)"),
+        "jl" | "jnge" => t("Jump if Less (signé)", "Jump if Less (signed)"),
+        "jle" | "jng" => t("Jump if Less or Equal (signé)", "Jump if Less or Equal (signed)"),
+        "ja" | "jnbe" => t("Jump if Above (non signé)", "Jump if Above (unsigned)"),
+        "jae" | "jnb" | "jnc" => t("Jump if Above or Equal (non signé)", "Jump if Above or Equal (unsigned)"),
+        "jb" | "jc" | "jnae" => t("Jump if Below (non signé)", "Jump if Below (unsigned)"),
+        "jbe" | "jna" => t("Jump if Below or Equal (non signé)", "Jump if Below or Equal (unsigned)"),
+        "js" => t("Jump if Sign (négatif)", "Jump if Sign (negative)"),
+        "jns" => t("Jump if Not Sign (positif ou nul)", "Jump if Not Sign (positive or zero)"),
         "jo" => "Jump if Overflow",
         "jno" => "Jump if Not Overflow",
         "jp" | "jpe" => "Jump if Parity Even",
         "jnp" | "jpo" => "Jump if Parity Odd",
-        _ => "Saut conditionnel",
+        _ => t("Saut conditionnel", "Conditional jump"),
     }
 }
 
 /// Évalue un saut conditionnel : renvoie (condition lisible, pris ?, flags pertinents).
 /// Renvoie None si `m` n'est pas un saut conditionnel connu.
-fn eval_jcc(m: &str, f: Flags) -> Option<JccEval> {
+fn eval_jcc(m: &str, f: Flags, lang: Lang) -> Option<JccEval> {
     let zf = ("ZF", f.zf);
     let cf = ("CF", f.cf);
     let sf = ("SF", f.sf);
     let of = ("OF", f.of);
     let pf = ("PF", f.pf);
+    let and = i18n::tr(lang, "et", "and");
+    let or = i18n::tr(lang, "ou", "or");
 
     let out = match m {
         "je" | "jz" => ("ZF = 1".into(), f.zf, vec![zf]),
         "jne" | "jnz" => ("ZF = 0".into(), !f.zf, vec![zf]),
-        "jg" | "jnle" => ("ZF = 0 et SF = OF".into(), !f.zf && (f.sf == f.of), vec![zf, sf, of]),
+        "jg" | "jnle" => (format!("ZF = 0 {and} SF = OF"), !f.zf && (f.sf == f.of), vec![zf, sf, of]),
         "jge" | "jnl" => ("SF = OF".into(), f.sf == f.of, vec![sf, of]),
         "jl" | "jnge" => ("SF ≠ OF".into(), f.sf != f.of, vec![sf, of]),
-        "jle" | "jng" => ("ZF = 1 ou SF ≠ OF".into(), f.zf || (f.sf != f.of), vec![zf, sf, of]),
-        "ja" | "jnbe" => ("CF = 0 et ZF = 0".into(), !f.cf && !f.zf, vec![cf, zf]),
+        "jle" | "jng" => (format!("ZF = 1 {or} SF ≠ OF"), f.zf || (f.sf != f.of), vec![zf, sf, of]),
+        "ja" | "jnbe" => (format!("CF = 0 {and} ZF = 0"), !f.cf && !f.zf, vec![cf, zf]),
         "jae" | "jnb" | "jnc" => ("CF = 0".into(), !f.cf, vec![cf]),
         "jb" | "jc" | "jnae" => ("CF = 1".into(), f.cf, vec![cf]),
-        "jbe" | "jna" => ("CF = 1 ou ZF = 1".into(), f.cf || f.zf, vec![cf, zf]),
+        "jbe" | "jna" => (format!("CF = 1 {or} ZF = 1"), f.cf || f.zf, vec![cf, zf]),
         "js" => ("SF = 1".into(), f.sf, vec![sf]),
         "jns" => ("SF = 0".into(), !f.sf, vec![sf]),
         "jo" => ("OF = 1".into(), f.of, vec![of]),
@@ -321,7 +348,7 @@ mod tests {
     fn jl_taken_when_sf_ne_of() {
         // Après cmp 5, 8 : SF=1, OF=0 => SF ≠ OF => jl pris.
         let f = Flags { sf: true, of: false, ..Default::default() };
-        let e = explain("jl", "erreur", f);
+        let e = explain("jl", "erreur", f, Lang::Fr);
         assert_eq!(e.taken, Some(true));
         assert_eq!(e.condition.as_deref(), Some("SF ≠ OF"));
     }
@@ -329,13 +356,13 @@ mod tests {
     #[test]
     fn je_not_taken_when_zf_zero() {
         let f = Flags { zf: false, ..Default::default() };
-        let e = explain("je", "cible", f);
+        let e = explain("je", "cible", f, Lang::Fr);
         assert_eq!(e.taken, Some(false));
     }
 
     #[test]
     fn cmp_lists_affected_flags() {
-        let e = explain("cmp", "rax, rbx", Flags::default());
+        let e = explain("cmp", "rax, rbx", Flags::default(), Lang::Fr);
         assert!(e.affects_flags.contains(&"ZF"));
         assert!(e.taken.is_none());
     }
