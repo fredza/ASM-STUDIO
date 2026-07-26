@@ -82,7 +82,6 @@ struct Icons {
     // Icônes complémentaires (même thème, générées) — boutons et panneaux.
     stop: egui::TextureHandle,
     pause: egui::TextureHandle,
-    next: egui::TextureHandle,
     restart: egui::TextureHandle,
     attach: egui::TextureHandle,
     memory: egui::TextureHandle,
@@ -111,7 +110,6 @@ impl Icons {
             heap: ic!("heap"),
             stop: ic!("stop"),
             pause: ic!("pause"),
-            next: ic!("next"),
             restart: ic!("restart"),
             attach: ic!("attach"),
             memory: ic!("memory"),
@@ -1269,7 +1267,7 @@ impl App {
                 let rows = [
                     ("F1", "Aide / raccourcis"),
                     ("F5", "Lancer / Restart"),
-                    ("F10 / F8", "Step (une instruction)"),
+                    ("F10 / F8", "Instruction suivante (Next)"),
                     ("Échap / Maj+F5", "Stop"),
                     ("Ctrl+B", "Assembler + Lier"),
                     ("Ctrl+S", "Enregistrer"),
@@ -1405,7 +1403,7 @@ impl App {
                 // Handles clonés (Arc bon marché) => pas d'emprunt de self dans la barre.
                 let ic = |f: fn(&Icons) -> &egui::TextureHandle| self.icons.as_ref().map(|i| f(i).clone());
                 let (ic_run, ic_debug, ic_build) = (ic(|i| &i.run), ic(|i| &i.debug), ic(|i| &i.assembler));
-                let (ic_pause, ic_next, ic_stop) = (ic(|i| &i.pause), ic(|i| &i.next), ic(|i| &i.stop));
+                let (ic_pause, ic_stop) = (ic(|i| &i.pause), ic(|i| &i.stop));
                 let (ic_restart, ic_attach) = (ic(|i| &i.restart), ic(|i| &i.attach));
 
                 // Run : accent quand inactif, grisé quand un programme tourne.
@@ -1417,19 +1415,10 @@ impl App {
                 }
                 // Pause : non implémenté (step-by-step uniquement), toujours grisé.
                 ui.add_enabled(false, icon_btn_widget(ic_pause.as_ref(), "Pause"));
-                // Step : accent quand disponible.
+                // Next : exécute l'instruction suivante (accent quand disponible).
+                // Remplace l'ancien couple Step/Next qui faisait doublon.
                 if self
-                    .tip(accent_button(ui, ic_debug.as_ref(), "Step", can_step), "Pas à pas (F10)")
-                    .clicked()
-                {
-                    self.step();
-                }
-                // Next (step-over) : même comportement que Step pour l'instant.
-                if self
-                    .tip(
-                        ui.add_enabled(can_step, icon_btn_widget(ic_next.as_ref(), "Next")),
-                        "Passer l'appel (non implémenté — agit comme Step)",
-                    )
+                    .tip(accent_button(ui, ic_debug.as_ref(), "Next", can_step), "Instruction suivante (F10)")
                     .clicked()
                 {
                     self.step();
@@ -1751,17 +1740,19 @@ impl App {
         let mut commit: Option<(&'static str, u64)> = None;
         let mut stop_edit = false;
 
-        egui::ScrollArea::both()
+        let hdr = self.c_header();
+        egui::ScrollArea::vertical()
             .id_salt("regs_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                egui::Grid::new("regs_grid").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                    for (name, val, pval) in &rows {
+                // Deux registres par ligne (grille à 4 colonnes) : tout tient sans
+                // ascenseur et la largeur du panneau est mieux exploitée.
+                egui::Grid::new("regs_grid").num_columns(4).spacing([20.0, 6.0]).show(ui, |ui| {
+                    for (i, (name, val, pval)) in rows.iter().enumerate() {
                         let (name, val, pval) = (*name, *val, *pval);
-                        ui.label(RichText::new(name).monospace().strong());
+                        ui.label(RichText::new(name).monospace().strong().color(hdr));
                         if self.edit_reg == Some(name) {
                             // Édition : champ hexa + ✓ (valider) / ✗ (annuler).
-                            // On ne capture PAS self dans la closure (emprunts disjoints).
                             let focus_now = std::mem::take(&mut self.edit_focus);
                             let buf = &mut self.edit_buf;
                             let mut committed: Option<u64> = None;
@@ -1769,7 +1760,7 @@ impl App {
                             ui.horizontal(|ui| {
                                 let resp = ui.add(
                                     egui::TextEdit::singleline(buf)
-                                        .desired_width(120.0)
+                                        .desired_width(96.0)
                                         .font(egui::TextStyle::Monospace)
                                         .hint_text("hex"),
                                 );
@@ -1793,15 +1784,18 @@ impl App {
                                 stop_edit = true;
                             }
                         } else {
-                            let mut t = RichText::new(format!("0x{val:016X}")).monospace();
-                            if val != pval {
-                                t = t.color(changed_color(flash));
-                            }
+                            // Valeur en « chip » arrondi ; fond orangé si la valeur
+                            // a changé (pulse via l'animation « CPU vivant »).
+                            let changed = val != pval;
+                            let bg = if changed {
+                                changed_color(flash).linear_multiply(0.22)
+                            } else {
+                                ui.visuals().faint_bg_color
+                            };
+                            let t = RichText::new(format!("0x{val:016X}")).monospace();
                             if editable {
-                                // Label cliquable (cible fiable, retour visuel au survol).
-                                let resp = ui
-                                    .add(egui::Label::new(t).sense(egui::Sense::click()))
-                                    .on_hover_text("Cliquer pour modifier");
+                                let chip = egui::Button::new(t).fill(bg).rounding(egui::Rounding::same(4.0));
+                                let resp = ui.add(chip).on_hover_text("Cliquer pour modifier");
                                 if resp.hovered() {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                 }
@@ -1811,10 +1805,18 @@ impl App {
                                     self.edit_focus = true;
                                 }
                             } else {
-                                ui.label(t);
+                                egui::Frame::none()
+                                    .fill(bg)
+                                    .rounding(egui::Rounding::same(4.0))
+                                    .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+                                    .show(ui, |ui| {
+                                        ui.label(t);
+                                    });
                             }
                         }
-                        ui.end_row();
+                        if i % 2 == 1 {
+                            ui.end_row();
+                        }
                     }
                 });
             });
@@ -2218,6 +2220,18 @@ impl App {
             });
         });
 
+        // Description pédagogique + lien vers la référence officielle.
+        ui.add_space(8.0);
+        card(ui, |ui| {
+            ui.label(RichText::new(&e.description).size(13.0));
+        });
+        ui.add_space(6.0);
+        ui.hyperlink_to(
+            format!("📖 Référence Intel de {} ↗", insn.mnemonic.to_uppercase()),
+            explain::doc_url(&insn.mnemonic),
+        )
+        .on_hover_text("Ouvre la page de l'instruction (manuel Intel SDM, felixcloutier.com)");
+
         if let Some(cond) = &e.condition {
             ui.add_space(4.0);
             ui.label(RichText::new("Condition").strong());
@@ -2235,10 +2249,9 @@ impl App {
                 );
             }
             ui.add_space(4.0);
-            egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-                .show(ui, |ui| {
-                    ui.label(RichText::new("État actuel").small().strong().color(self.c_header()));
+            let hdr2 = self.c_header();
+            card(ui, |ui| {
+                    ui.label(RichText::new("État actuel").small().strong().color(hdr2));
                     ui.horizontal(|ui| {
                         for (name, val) in &e.relevant_flags {
                             let c = if *val { FLAG_ON } else { FLAG_OFF };
@@ -2420,13 +2433,36 @@ const HEADER_H: f32 = 24.0;
 /// contrôles) dans une ligne de `HEADER_H`, puis un séparateur. Tous les
 /// panneaux passent par ici → leurs séparateurs sont alignés.
 fn panel_header(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(3.0);
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), HEADER_H),
-        egui::Layout::left_to_right(egui::Align::Center),
-        content,
-    );
-    ui.separator();
+    ui.add_space(2.0);
+    // Bandeau de titre teinté (style dashboard) : remplace l'ancien séparateur ;
+    // hauteur constante ⇒ tous les bandeaux restent alignés d'un panneau à l'autre.
+    egui::Frame::none()
+        .fill(ui.visuals().faint_bg_color)
+        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+        .rounding(egui::Rounding::same(5.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), HEADER_H - 4.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                content,
+            );
+        });
+    ui.add_space(5.0);
+}
+
+/// Encadré « carte » moderne : fond légèrement teinté, coins arrondis et marge
+/// interne, sur toute la largeur disponible. Structure et aère le contenu
+/// (utile pour une app pédagogique).
+fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .fill(ui.visuals().faint_bg_color)
+        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+        .rounding(egui::Rounding::same(6.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            content(ui);
+        });
 }
 
 /// Icône optionnelle + titre de section, à placer dans un `panel_header`.
