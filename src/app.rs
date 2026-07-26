@@ -731,13 +731,18 @@ impl eframe::App for App {
         self.toolbar(ctx);
         self.status_bar(ctx);
 
+        // Marge interne unique pour TOUS les panneaux (bandes, latéraux, centre)
+        // → rythme vertical cohérent et séparateurs d'en-tête alignés.
+        let pad = egui::Margin::symmetric(8.0, 6.0);
+        let band_frame = egui::Frame::central_panel(&ctx.style()).inner_margin(pad);
+
         // Bande basse : MEMORY | TIMELINE | CONSOLE.
         if self.show_bottom_band {
             egui::TopBottomPanel::bottom("bottom_band")
                 .resizable(true)
                 .default_height(196.0)
+                .frame(band_frame)
                 .show(ctx, |ui| {
-                    ui.add_space(6.0); // écarte le contenu de la poignée de redimensionnement
                     let h = ui.available_height();
                     let cw = ((ui.available_width() - 20.0) / 3.0).max(60.0);
                     ui.horizontal_top(|ui| {
@@ -756,8 +761,8 @@ impl eframe::App for App {
             egui::TopBottomPanel::bottom("mid_band")
                 .resizable(true)
                 .default_height(226.0)
+                .frame(band_frame)
                 .show(ctx, |ui| {
-                    ui.add_space(6.0); // écarte le contenu de la poignée de redimensionnement
                     let h = ui.available_height();
                     let cw = ((ui.available_width() - 40.0) / 5.0).max(90.0);
                     ui.horizontal_top(|ui| {
@@ -775,19 +780,25 @@ impl eframe::App for App {
         }
 
         // Explorateur à gauche, INSTRUCTION à droite, éditeur au centre.
+        // Marge interne IDENTIQUE pour les trois → leurs en-têtes (et donc les
+        // séparateurs sous EXPLORER / onglets éditeur / INSTRUCTION) s'alignent.
         if self.show_explorer {
             egui::SidePanel::left("explorer_panel")
                 .resizable(true)
                 .default_width(180.0)
+                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
                 .show(ctx, |ui| self.explorer_ui(ui));
         }
         if self.show_instruction {
             egui::SidePanel::right("instruction_panel")
                 .resizable(true)
                 .default_width(272.0)
+                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
                 .show(ctx, |ui| self.instruction_ui(ui));
         }
-        egui::CentralPanel::default().show(ctx, |ui| self.center_ui(ui));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(pad))
+            .show(ctx, |ui| self.center_ui(ui));
 
         self.about_window(ctx);
         self.shortcuts_window(ctx);
