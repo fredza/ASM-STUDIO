@@ -241,7 +241,7 @@ impl App {
             edit_buf: String::new(),
             edit_focus: false,
             console: String::new(),
-            status: "Prêt".to_string(),
+            status: String::new(),
             editor_scroll_y: 0.0,
             editor_ln: 1,
             editor_col: 1,
@@ -1533,6 +1533,11 @@ impl App {
                         ui.separator();
                         ui.colored_label(CHANGED, format!("{} : 0x{next:X}", tr("Suivant", "Next")));
                     }
+                }
+                // Dernier message d'action (Enregistré, Build OK, erreurs…).
+                if !self.status.is_empty() {
+                    ui.separator();
+                    ui.label(RichText::new(&self.status).color(self.c_header()));
                 }
                 // À droite : position curseur, encodage, syntaxe.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
