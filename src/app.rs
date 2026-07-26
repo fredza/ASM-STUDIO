@@ -1586,9 +1586,9 @@ impl App {
         };
         let mut pick: Option<u64> = None;
         let mem_ic = self.icons.as_ref().map(|i| i.memory.clone());
-        ui.horizontal(|ui| {
-            icon_img(ui, mem_ic.as_ref(), 15.0);
-            header_inline(ui, self.c_header(), "MEMORY");
+        let hdr = self.c_header();
+        panel_header(ui, |ui| {
+            header_title(ui, hdr, mem_ic.as_ref(), "MEMORY");
             // Sélecteur de région (façon mockup).
             egui::ComboBox::from_id_salt("mem_region")
                 .selected_text(RichText::new(format!("0x{:012X}..", self.mem_addr)).monospace())
@@ -1625,7 +1625,6 @@ impl App {
             self.mem_addr = a;
             self.mem_input = format!("0x{a:X}");
         }
-        ui.separator();
         if !self.can_read_memory() {
             let msg = match self.dbg.as_ref().map(|d| d.is_alive()) {
                 Some(false) => "Programme terminé — relancez pour explorer la mémoire.",
@@ -1675,14 +1674,13 @@ impl App {
 
     fn console_ui(&mut self, ui: &mut egui::Ui) {
         let console_ic = self.icons.as_ref().map(|i| i.console.clone());
-        ui.horizontal(|ui| {
-            icon_img(ui, console_ic.as_ref(), 15.0);
-            header_inline(ui, self.c_header(), "CONSOLE");
+        let hdr = self.c_header();
+        panel_header(ui, |ui| {
+            header_title(ui, hdr, console_ic.as_ref(), "CONSOLE");
             if ui.small_button("effacer").clicked() {
                 self.console.clear();
             }
         });
-        ui.separator();
         egui::ScrollArea::vertical()
             .id_salt("console_scroll")
             .stick_to_bottom(true)
@@ -1976,14 +1974,14 @@ impl App {
     fn center_ui(&mut self, ui: &mut egui::Ui) {
         let hdr = self.c_header();
         let (edit_ic, disasm_ic) = match &self.icons {
-            Some(i) => (Some(&i.editor), Some(&i.assembler)),
+            Some(i) => (Some(i.editor.clone()), Some(i.assembler.clone())),
             None => (None, None),
         };
-        ui.horizontal(|ui| {
-            if icon_tab(ui, edit_ic, "Éditeur", self.tab == Tab::Editor).clicked() {
+        panel_header(ui, |ui| {
+            if icon_tab(ui, edit_ic.as_ref(), "Éditeur", self.tab == Tab::Editor).clicked() {
                 self.tab = Tab::Editor;
             }
-            if icon_tab(ui, disasm_ic, "Désassemblage", self.tab == Tab::Disasm).clicked() {
+            if icon_tab(ui, disasm_ic.as_ref(), "Désassemblage", self.tab == Tab::Disasm).clicked() {
                 self.tab = Tab::Disasm;
             }
             ui.separator();
@@ -2143,14 +2141,13 @@ impl App {
 
     fn instruction_ui(&mut self, ui: &mut egui::Ui) {
         let bulb_ic = self.icons.as_ref().map(|i| i.instruction.clone());
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("INSTRUCTION").strong().color(self.c_header()).size(12.5));
+        let hdr = self.c_header();
+        panel_header(ui, |ui| {
+            header_title(ui, hdr, None, "INSTRUCTION");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 icon_img(ui, bulb_ic.as_ref(), 16.0);
             });
         });
-        ui.separator();
         let target = self.selected.or_else(|| self.view_rip());
         let Some(addr) = target else {
             ui.label("Lancez le programme, puis cliquez une instruction.");
@@ -2248,19 +2245,19 @@ impl App {
     // ---------- Pile / Tas ----------
 
     fn stack_ui(&mut self, ui: &mut egui::Ui) {
+        // Handles clonés (Arc) => la closure peut muter self.stack_tab.
         let (stack_ic, heap_ic) = match &self.icons {
-            Some(i) => (Some(&i.stack), Some(&i.heap)),
+            Some(i) => (Some(i.stack.clone()), Some(i.heap.clone())),
             None => (None, None),
         };
-        ui.horizontal(|ui| {
-            if icon_tab(ui, stack_ic, "Pile", self.stack_tab == StackTab::Stack).clicked() {
+        panel_header(ui, |ui| {
+            if icon_tab(ui, stack_ic.as_ref(), "Pile", self.stack_tab == StackTab::Stack).clicked() {
                 self.stack_tab = StackTab::Stack;
             }
-            if icon_tab(ui, heap_ic, "Tas", self.stack_tab == StackTab::Heap).clicked() {
+            if icon_tab(ui, heap_ic.as_ref(), "Tas", self.stack_tab == StackTab::Heap).clicked() {
                 self.stack_tab = StackTab::Heap;
             }
         });
-        ui.separator();
         match self.stack_tab {
             StackTab::Stack => self.stack_view(ui),
             StackTab::Heap => self.heap_view(ui),
@@ -2375,21 +2372,38 @@ fn hex_dump_rows(ui: &mut egui::Ui, addr_c: Color32, bytes_c: Color32, dbg: &Deb
 
 // ---------- Helpers ----------
 
-/// Titre de section sur sa propre ligne, style moderne.
-fn header(ui: &mut egui::Ui, hdr: Color32, text: &str) {
-    ui.add_space(2.0);
-    ui.label(RichText::new(text).strong().color(hdr).size(12.5));
+/// Hauteur fixe de la ligne d'en-tête d'un panneau, pour aligner les
+/// séparateurs de tous les panneaux au même niveau (certains en-têtes ont des
+/// boutons/combos plus hauts qu'un simple libellé).
+const HEADER_H: f32 = 24.0;
+
+/// En-tête de panneau à hauteur fixe : rend `content` (titre + éventuels
+/// contrôles) dans une ligne de `HEADER_H`, puis un séparateur. Tous les
+/// panneaux passent par ici → leurs séparateurs sont alignés.
+fn panel_header(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(3.0);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), HEADER_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        content,
+    );
     ui.separator();
+}
+
+/// Icône optionnelle + titre de section, à placer dans un `panel_header`.
+fn header_title(ui: &mut egui::Ui, hdr: Color32, icon: Option<&egui::TextureHandle>, text: &str) {
+    icon_img(ui, icon, 15.0);
+    ui.label(RichText::new(text).strong().color(hdr).size(12.5));
+}
+
+/// Titre de section simple (sans contrôle) à hauteur fixe.
+fn header(ui: &mut egui::Ui, hdr: Color32, text: &str) {
+    panel_header(ui, |ui| header_title(ui, hdr, None, text));
 }
 
 /// En-tête de section avec une icône optionnelle à gauche du titre.
 fn header_icon(ui: &mut egui::Ui, hdr: Color32, icon: Option<&egui::TextureHandle>, text: &str) {
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        icon_img(ui, icon, 15.0);
-        ui.label(RichText::new(text).strong().color(hdr).size(12.5));
-    });
-    ui.separator();
+    panel_header(ui, |ui| header_title(ui, hdr, icon, text));
 }
 
 /// Affiche une petite icône carrée (rien si `icon` est `None`).
@@ -2397,11 +2411,6 @@ fn icon_img(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, size: f32) {
     if let Some(t) = icon {
         ui.add(egui::Image::new((t.id(), egui::vec2(size, size))));
     }
-}
-
-/// Titre de section « inline » (dans une ligne horizontale).
-fn header_inline(ui: &mut egui::Ui, hdr: Color32, text: &str) {
-    ui.label(RichText::new(text).strong().color(hdr).size(12.5));
 }
 
 /// Alloue une colonne de largeur `w` et hauteur `h` puis y rend `add`.
