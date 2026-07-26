@@ -206,12 +206,6 @@ pub struct App {
     show_settings: bool,
     show_about: bool,
     show_shortcuts: bool,
-    // Navigateur de fichiers intégré (Ouvrir / Enregistrer sous).
-    show_open: bool,
-    show_saveas: bool,
-    saveas_name: String,
-    /// Répertoire courant du navigateur (toujours absolu).
-    browse_dir: PathBuf,
     /// Icônes (chargées au premier frame, quand le contexte egui existe).
     icons: Option<Icons>,
 }
@@ -223,7 +217,7 @@ impl App {
             "section .text\n    global _start\n_start:\n    mov rax, 60\n    xor rdi, rdi\n    syscall\n"
                 .to_string()
         });
-        let browse_dir = abs_dir_of(&src_path);
+        let explorer_dir = abs_dir_of(&src_path);
         let mut app = App {
             src_path,
             out_dir: PathBuf::from("build"),
@@ -237,7 +231,7 @@ impl App {
             microscope: None,
             syscalls: Vec::new(),
             call_stack: Vec::new(),
-            explorer_dir: browse_dir.clone(),
+            explorer_dir,
             view_index: 0,
             mem_addr: 0,
             mem_input: String::new(),
@@ -266,10 +260,6 @@ impl App {
             show_settings: false,
             show_about: false,
             show_shortcuts: false,
-            show_open: false,
-            show_saveas: false,
-            saveas_name: String::new(),
-            browse_dir,
             icons: None,
         };
         app.load_settings();
@@ -362,20 +352,42 @@ impl App {
     }
 
     /// Ouvre la boîte « Enregistrer sous » sur le dossier affiché dans l'explorateur.
+    /// Dialogue natif « Enregistrer sous » (portail GNOME/Wayland via rfd) :
+    /// la création de dossier est intégrée au sélecteur du système.
     fn open_saveas(&mut self) {
-        self.browse_dir = self.explorer_dir.clone();
-        self.saveas_name = self
+        let name = self
             .src_path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "programme.asm".to_string());
-        self.show_saveas = true;
+        let picked = rfd::FileDialog::new()
+            .set_title("Enregistrer sous")
+            .set_directory(&self.explorer_dir)
+            .set_file_name(&name)
+            .add_filter("Assembleur (.asm, .s)", &["asm", "s"])
+            .save_file();
+        if let Some(mut path) = picked {
+            // Extension .asm par défaut si l'utilisateur n'en fournit pas.
+            if path.extension().is_none() {
+                path.set_extension("asm");
+            }
+            self.explorer_dir = abs_dir_of(&path);
+            self.src_path = path;
+            self.save_source();
+        }
     }
 
-    /// Ouvre le navigateur « Ouvrir » sur le dossier affiché dans l'explorateur.
+    /// Dialogue natif « Ouvrir » (portail GNOME/Wayland via rfd).
     fn open_browser(&mut self) {
-        self.browse_dir = self.explorer_dir.clone();
-        self.show_open = true;
+        let picked = rfd::FileDialog::new()
+            .set_title("Ouvrir un fichier")
+            .set_directory(&self.explorer_dir)
+            .add_filter("Assembleur (.asm, .s)", &["asm", "s"])
+            .add_filter("Tous les fichiers", &["*"])
+            .pick_file();
+        if let Some(path) = picked {
+            self.open_file(path);
+        }
     }
 
     fn open_file(&mut self, path: PathBuf) {
@@ -781,8 +793,6 @@ impl eframe::App for App {
         self.shortcuts_window(ctx);
         self.settings_window(ctx);
         self.microscope_window(ctx);
-        self.open_window(ctx);
-        self.saveas_window(ctx);
     }
 }
 
@@ -1271,132 +1281,6 @@ impl App {
             });
         if !open {
             self.show_shortcuts = false;
-        }
-    }
-
-    /// Navigateur de fichiers modernisé (barre de chemin + liste en lignes
-    /// pleine largeur). Renvoie (dossier à ouvrir, fichier choisi).
-    fn file_browser(&self, ui: &mut egui::Ui, scroll_id: &str) -> (Option<PathBuf>, Option<PathBuf>) {
-        let mut new_dir = None;
-        let mut picked = None;
-
-        // Barre de chemin.
-        egui::Frame::group(ui.style())
-            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("📂");
-                    ui.monospace(self.browse_dir.display().to_string());
-                });
-            });
-        ui.add_space(6.0);
-
-        // Liste (dossiers puis fichiers .asm), lignes pleine largeur.
-        let file_col = self.c_mnemonic();
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt(scroll_id)
-                .max_height(300.0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let (nd, pk) = dir_list_rows(ui, &self.browse_dir, None, file_col, 24.0);
-                    new_dir = nd;
-                    picked = pk;
-                });
-        });
-        (new_dir, picked)
-    }
-
-    fn saveas_window(&mut self, ctx: &egui::Context) {
-        if !self.show_saveas {
-            return;
-        }
-        let mut open = true;
-        let mut confirm = false;
-        let mut cancel = false;
-        let mut new_dir = None;
-        let mut picked = None;
-        egui::Window::new("Enregistrer sous")
-            .collapsible(false)
-            .resizable(true)
-            .default_width(500.0)
-            .default_height(440.0)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .open(&mut open)
-            .show(ctx, |ui| {
-                let (nd, pk) = self.file_browser(ui, "saveas_scroll");
-                new_dir = nd;
-                picked = pk;
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label("Nom :");
-                    ui.add(egui::TextEdit::singleline(&mut self.saveas_name).desired_width(260.0));
-                });
-                ui.add_space(6.0);
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button("💾  Enregistrer").clicked() {
-                        confirm = true;
-                    }
-                    if ui.button("Annuler").clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-        if let Some(d) = new_dir {
-            self.browse_dir = d;
-        }
-        // Clic sur un fichier existant => reprend son nom (écrasement).
-        if let Some(f) = picked {
-            self.saveas_name = f.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        }
-        if confirm && !self.saveas_name.trim().is_empty() {
-            self.src_path = self.browse_dir.join(self.saveas_name.trim());
-            self.explorer_dir = self.browse_dir.clone();
-            self.save_source();
-            self.show_saveas = false;
-        }
-        if cancel || !open {
-            self.show_saveas = false;
-        }
-    }
-
-    fn open_window(&mut self, ctx: &egui::Context) {
-        if !self.show_open {
-            return;
-        }
-        let mut open = true;
-        let mut cancel = false;
-        let mut new_dir = None;
-        let mut chosen = None;
-        egui::Window::new("Ouvrir un fichier .asm")
-            .collapsible(false)
-            .resizable(true)
-            .default_width(500.0)
-            .default_height(440.0)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .open(&mut open)
-            .show(ctx, |ui| {
-                let (nd, pk) = self.file_browser(ui, "open_scroll");
-                new_dir = nd;
-                chosen = pk;
-                ui.add_space(8.0);
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button("Annuler").clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-        if let Some(d) = new_dir {
-            self.browse_dir = d;
-        }
-        if let Some(f) = chosen {
-            self.open_file(f);
-            self.show_open = false;
-        }
-        if !open || cancel {
-            self.show_open = false;
         }
     }
 
@@ -2579,25 +2463,6 @@ fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Liste (dossiers, fichiers .asm) d'un répertoire, triés par nom.
-fn list_dir(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                dirs.push(p);
-            } else if p.extension().is_some_and(|e| e == "asm" || e == "s") {
-                files.push(p);
-            }
-        }
-    }
-    dirs.sort();
-    files.sort();
-    (dirs, files)
-}
-
 /// Nom d'affichage d'un chemin (dernier segment).
 fn file_name(p: &Path) -> String {
     p.file_name().unwrap_or_default().to_string_lossy().into_owned()
@@ -2663,46 +2528,6 @@ fn dir_tree(
             *to_open = Some(f);
         }
     }
-}
-
-/// Rend la liste d'un dossier en lignes pleine largeur : « .. » (remontée),
-/// sous-dossiers puis fichiers `.asm`/`.s`. `current` surligne le fichier
-/// ouvert. Renvoie (dossier à ouvrir, fichier choisi).
-fn dir_list_rows(
-    ui: &mut egui::Ui,
-    dir: &Path,
-    current: Option<&Path>,
-    file_col: Color32,
-    row_h: f32,
-) -> (Option<PathBuf>, Option<PathBuf>) {
-    let mut new_dir = None;
-    let mut picked = None;
-    let w = ui.available_width();
-    let row = |ui: &mut egui::Ui, sel: bool, text: egui::WidgetText| {
-        ui.add_sized([w, row_h], egui::SelectableLabel::new(sel, text))
-    };
-    if let Some(parent) = dir.parent()
-        && row(ui, false, "📁  ..".into()).clicked()
-    {
-        new_dir = Some(parent.to_path_buf());
-    }
-    let (dirs, files) = list_dir(dir);
-    for d in dirs {
-        let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
-        if row(ui, false, format!("📁  {name}").into()).clicked() {
-            new_dir = Some(d);
-        }
-    }
-    for f in files {
-        let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let is_cur = current == Some(f.as_path());
-        let col = if is_cur { CHANGED } else { file_col };
-        let text = RichText::new(format!("📄  {name}")).color(col);
-        if row(ui, is_cur, text.into()).clicked() {
-            picked = Some(f);
-        }
-    }
-    (new_dir, picked)
 }
 
 /// Bouton avec bordure verte (actif/disponible) ou rouge (inactif).
@@ -2832,11 +2657,11 @@ mod tests {
     }
 
     #[test]
-    fn list_dir_finds_asm_example() {
-        let (_dirs, files) = list_dir(&abs_dir_of(Path::new("examples/test.asm")));
+    fn list_entries_finds_asm_example() {
+        let (_dirs, files) = list_entries(&abs_dir_of(Path::new("examples/test.asm")));
         assert!(
             files.iter().any(|f| f.file_name().unwrap() == "test.asm"),
-            "test.asm doit apparaître dans le navigateur"
+            "test.asm doit apparaître dans l'explorateur"
         );
     }
 
