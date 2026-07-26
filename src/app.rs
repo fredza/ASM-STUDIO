@@ -2024,7 +2024,7 @@ impl App {
                 );
             });
         }
-        ui.separator();
+        ui.add_space(2.0);
         match self.tab {
             Tab::Editor => self.editor_ui(ui),
             Tab::Disasm => self.disasm_ui(ui),
