@@ -1161,6 +1161,9 @@ impl App {
         style.visuals = v;
         style.spacing.item_spacing = vec2(8.0, 6.0);
         style.spacing.button_padding = vec2(9.0, 4.0);
+        // Barres de défilement « solides » (réservent leur largeur) plutôt que
+        // flottantes : elles ne se dessinent plus par-dessus le contenu.
+        style.spacing.scroll = egui::style::ScrollStyle::solid();
         style.text_styles.insert(TextStyle::Body, FontId::proportional(14.0));
         style.text_styles.insert(TextStyle::Button, FontId::proportional(14.0));
         style.text_styles.insert(TextStyle::Monospace, FontId::monospace(13.0));
