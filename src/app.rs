@@ -85,7 +85,6 @@ struct Icons {
     next: egui::TextureHandle,
     restart: egui::TextureHandle,
     attach: egui::TextureHandle,
-    settings: egui::TextureHandle,
     memory: egui::TextureHandle,
     timeline: egui::TextureHandle,
     console: egui::TextureHandle,
@@ -115,7 +114,6 @@ impl Icons {
             next: ic!("next"),
             restart: ic!("restart"),
             attach: ic!("attach"),
-            settings: ic!("settings"),
             memory: ic!("memory"),
             timeline: ic!("timeline"),
             console: ic!("console"),
@@ -363,9 +361,9 @@ impl App {
         }
     }
 
-    /// Ouvre la boîte « Enregistrer sous » pré-remplie avec le fichier courant.
+    /// Ouvre la boîte « Enregistrer sous » sur le dossier affiché dans l'explorateur.
     fn open_saveas(&mut self) {
-        self.browse_dir = abs_dir_of(&self.src_path);
+        self.browse_dir = self.explorer_dir.clone();
         self.saveas_name = self
             .src_path
             .file_name()
@@ -374,9 +372,9 @@ impl App {
         self.show_saveas = true;
     }
 
-    /// Ouvre le navigateur « Ouvrir » sur le dossier du fichier courant.
+    /// Ouvre le navigateur « Ouvrir » sur le dossier affiché dans l'explorateur.
     fn open_browser(&mut self) {
-        self.browse_dir = abs_dir_of(&self.src_path);
+        self.browse_dir = self.explorer_dir.clone();
         self.show_open = true;
     }
 
@@ -384,6 +382,8 @@ impl App {
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 self.source = content;
+                // L'explorateur reflète le dossier du fichier ouvert.
+                self.explorer_dir = abs_dir_of(&path);
                 self.src_path = path;
                 self.dirty = false;
                 self.dbg = None;
@@ -398,7 +398,8 @@ impl App {
 
     fn new_file(&mut self) {
         self.source = "section .data\n\nsection .text\n    global _start\n_start:\n    mov rax, 60      ; sys_exit\n    xor rdi, rdi     ; code 0\n    syscall\n".to_string();
-        self.src_path = PathBuf::from("sans-titre.asm");
+        // Le nouveau fichier vise le dossier actuellement affiché dans l'explorateur.
+        self.src_path = self.explorer_dir.join("sans-titre.asm");
         self.dirty = true;
         self.dbg = None;
         self.disasm.clear();
@@ -430,6 +431,9 @@ impl App {
     /// Enregistre puis assemble (nasm) et lie (ld) le programme de l'utilisateur.
     fn build(&mut self) {
         self.save_source();
+        // Artefacts dans un sous-dossier `build/` À CÔTÉ du fichier source
+        // (et non plus dans un `build/` global relatif au répertoire courant).
+        self.out_dir = abs_dir_of(&self.src_path).join("build");
         let includes = self.include_dirs();
         match assemble::assemble_with_includes(&self.src_path, &self.out_dir, &includes) {
             Ok(out) => {
@@ -689,10 +693,6 @@ impl App {
     fn c_bytes(&self) -> Color32 {
         if self.dark { BYTES_COL } else { Color32::from_rgb(0x60, 0x64, 0x70) }
     }
-    /// Couleur « atténuée » (instructions non courantes, etc.).
-    fn c_muted(&self) -> Color32 {
-        if self.dark { Color32::GRAY } else { Color32::from_rgb(0x7A, 0x7E, 0x8A) }
-    }
     /// Fond de la ligne RIP dans le désassemblage.
     fn c_rip_row(&self) -> Color32 {
         if self.dark { RIP_ROW } else { Color32::from_rgb(0xFF, 0xEE, 0xB0) }
@@ -723,8 +723,9 @@ impl eframe::App for App {
         if self.show_bottom_band {
             egui::TopBottomPanel::bottom("bottom_band")
                 .resizable(true)
-                .default_height(190.0)
+                .default_height(196.0)
                 .show(ctx, |ui| {
+                    ui.add_space(6.0); // écarte le contenu de la poignée de redimensionnement
                     let h = ui.available_height();
                     let cw = ((ui.available_width() - 20.0) / 3.0).max(60.0);
                     ui.horizontal_top(|ui| {
@@ -737,24 +738,24 @@ impl eframe::App for App {
                 });
         }
 
-        // Bande centrale : REGISTERS | FLAGS | STACK | CALL STACK | DISASSEMBLY | SYSCALLS.
+        // Bande centrale : REGISTERS | FLAGS | STACK | CALL STACK | SYSCALLS.
+        // (Le désassemblage a son propre onglet au centre : pas de doublon ici.)
         if self.show_cpu_band {
             egui::TopBottomPanel::bottom("mid_band")
                 .resizable(true)
-                .default_height(220.0)
+                .default_height(226.0)
                 .show(ctx, |ui| {
+                    ui.add_space(6.0); // écarte le contenu de la poignée de redimensionnement
                     let h = ui.available_height();
-                    let cw = ((ui.available_width() - 50.0) / 6.0).max(90.0);
+                    let cw = ((ui.available_width() - 40.0) / 5.0).max(90.0);
                     ui.horizontal_top(|ui| {
-                        col(ui, cw * 1.3, h, |ui| self.registers_ui(ui));
+                        col(ui, cw * 1.4, h, |ui| self.registers_ui(ui));
                         ui.separator();
-                        col(ui, cw * 0.6, h, |ui| self.flags_ui(ui));
+                        col(ui, cw * 0.7, h, |ui| self.flags_ui(ui));
                         ui.separator();
-                        col(ui, cw * 1.2, h, |ui| self.stack_ui(ui));
+                        col(ui, cw * 1.3, h, |ui| self.stack_ui(ui));
                         ui.separator();
-                        col(ui, cw * 0.9, h, |ui| self.callstack_ui(ui));
-                        ui.separator();
-                        col(ui, cw * 1.1, h, |ui| self.disasm_around_ui(ui));
+                        col(ui, cw * 1.0, h, |ui| self.callstack_ui(ui));
                         ui.separator();
                         col(ui, ui.available_width(), h, |ui| self.syscalls_ui(ui));
                     });
@@ -1351,6 +1352,7 @@ impl App {
         }
         if confirm && !self.saveas_name.trim().is_empty() {
             self.src_path = self.browse_dir.join(self.saveas_name.trim());
+            self.explorer_dir = self.browse_dir.clone();
             self.save_source();
             self.show_saveas = false;
         }
@@ -1500,7 +1502,7 @@ impl App {
                 let ic = |f: fn(&Icons) -> &egui::TextureHandle| self.icons.as_ref().map(|i| f(i).clone());
                 let (ic_run, ic_debug, ic_build) = (ic(|i| &i.run), ic(|i| &i.debug), ic(|i| &i.assembler));
                 let (ic_pause, ic_next, ic_stop) = (ic(|i| &i.pause), ic(|i| &i.next), ic(|i| &i.stop));
-                let (ic_restart, ic_attach, ic_settings) = (ic(|i| &i.restart), ic(|i| &i.attach), ic(|i| &i.settings));
+                let (ic_restart, ic_attach) = (ic(|i| &i.restart), ic(|i| &i.attach));
 
                 // Run : accent quand inactif, grisé quand un programme tourne.
                 if self
@@ -1548,13 +1550,7 @@ impl App {
                 }
                 // Attach : non implémenté.
                 ui.add_enabled(false, icon_btn_widget(ic_attach.as_ref(), "Attach"));
-
-                // Réglages sur la droite.
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icon_button(ui, ic_settings.as_ref(), "Réglages").clicked() {
-                        self.show_settings = true;
-                    }
-                });
+                // (Réglages : accessible via le menu Aide — pas de doublon ici.)
             });
             ui.add_space(3.0);
         });
@@ -2072,41 +2068,6 @@ impl App {
             });
     }
 
-    // ---------- Désassemblage compact autour de RIP ----------
-
-    fn disasm_around_ui(&self, ui: &mut egui::Ui) {
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("DISASSEMBLY").strong().color(self.c_header()).size(12.5));
-            ui.label(RichText::new("(autour de RIP)").small().weak());
-        });
-        ui.separator();
-        let rip = self.view_rip();
-        if self.disasm.is_empty() {
-            ui.weak("—");
-            return;
-        }
-        let center = rip
-            .and_then(|r| self.disasm.iter().position(|i| i.address == r))
-            .unwrap_or(0);
-        let start = center.saturating_sub(4);
-        let end = (center + 6).min(self.disasm.len());
-        egui::ScrollArea::vertical().id_salt("disasm_around_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            for insn in &self.disasm[start..end] {
-                let cur = Some(insn.address) == rip;
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(if cur { "➤" } else { "  " }).color(CHANGED));
-                    ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(self.c_addr()));
-                    ui.label(
-                        RichText::new(format!("{:<6} {}", insn.mnemonic, insn.operands))
-                            .monospace()
-                            .color(if cur { self.c_mnemonic() } else { self.c_muted() }),
-                    );
-                });
-            }
-        });
-    }
-
     // ---------- Centre : onglets Éditeur / Désassemblage ----------
 
     fn center_ui(&mut self, ui: &mut egui::Ui) {
@@ -2379,14 +2340,6 @@ impl App {
             ui.label(RichText::new("Flags positionnés").strong());
             ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
         }
-        // Pied de page : aide contextuelle (comme le mockup).
-        ui.add_space(8.0);
-        ui.separator();
-        ui.label(
-            RichText::new("Aide : appuyez sur F1 pour plus d'informations")
-                .small()
-                .weak(),
-        );
     }
 
     // ---------- Pile / Tas ----------
