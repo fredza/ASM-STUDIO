@@ -1291,35 +1291,16 @@ impl App {
         ui.add_space(6.0);
 
         // Liste (dossiers puis fichiers .asm), lignes pleine largeur.
+        let file_col = self.c_mnemonic();
         egui::Frame::group(ui.style()).show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
                 .max_height(300.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let w = ui.available_width();
-                    let row = |ui: &mut egui::Ui, text: egui::WidgetText| {
-                        ui.add_sized([w, 24.0], egui::SelectableLabel::new(false, text))
-                    };
-                    if let Some(parent) = self.browse_dir.parent()
-                        && row(ui, "📁  ..".into()).clicked()
-                    {
-                        new_dir = Some(parent.to_path_buf());
-                    }
-                    let (dirs, files) = list_dir(&self.browse_dir);
-                    for d in dirs {
-                        let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
-                        if row(ui, format!("📁  {name}").into()).clicked() {
-                            new_dir = Some(d);
-                        }
-                    }
-                    for f in files {
-                        let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
-                        let text = RichText::new(format!("📄  {name}")).color(self.c_mnemonic());
-                        if row(ui, text.into()).clicked() {
-                            picked = Some(f);
-                        }
-                    }
+                    let (nd, pk) = dir_list_rows(ui, &self.browse_dir, None, file_col, 24.0);
+                    new_dir = nd;
+                    picked = pk;
                 });
         });
         (new_dir, picked)
@@ -2001,28 +1982,12 @@ impl App {
         ui.separator();
         let mut new_dir = None;
         let mut open_file = None;
+        let file_col = self.c_mnemonic();
         egui::ScrollArea::vertical().id_salt("explorer_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            let w = ui.available_width();
-            if let Some(parent) = self.explorer_dir.parent()
-                && ui.add_sized([w, 22.0], egui::SelectableLabel::new(false, "📁  ..")).clicked()
-            {
-                new_dir = Some(parent.to_path_buf());
-            }
-            let (dirs, files) = list_dir(&self.explorer_dir);
-            for d in dirs {
-                let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
-                if ui.add_sized([w, 22.0], egui::SelectableLabel::new(false, format!("📁  {name}"))).clicked() {
-                    new_dir = Some(d);
-                }
-            }
-            for f in files {
-                let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
-                let is_cur = f == self.src_path;
-                let txt = RichText::new(format!("📄  {name}")).color(if is_cur { CHANGED } else { self.c_mnemonic() });
-                if ui.add_sized([w, 22.0], egui::SelectableLabel::new(is_cur, txt)).clicked() {
-                    open_file = Some(f);
-                }
-            }
+            let (nd, of) =
+                dir_list_rows(ui, &self.explorer_dir, Some(&self.src_path), file_col, 22.0);
+            new_dir = nd;
+            open_file = of;
         });
         if let Some(d) = new_dir {
             self.explorer_dir = d;
@@ -2650,6 +2615,46 @@ fn list_dir(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     dirs.sort();
     files.sort();
     (dirs, files)
+}
+
+/// Rend la liste d'un dossier en lignes pleine largeur : « .. » (remontée),
+/// sous-dossiers puis fichiers `.asm`/`.s`. `current` surligne le fichier
+/// ouvert. Renvoie (dossier à ouvrir, fichier choisi).
+fn dir_list_rows(
+    ui: &mut egui::Ui,
+    dir: &Path,
+    current: Option<&Path>,
+    file_col: Color32,
+    row_h: f32,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let mut new_dir = None;
+    let mut picked = None;
+    let w = ui.available_width();
+    let row = |ui: &mut egui::Ui, sel: bool, text: egui::WidgetText| {
+        ui.add_sized([w, row_h], egui::SelectableLabel::new(sel, text))
+    };
+    if let Some(parent) = dir.parent()
+        && row(ui, false, "📁  ..".into()).clicked()
+    {
+        new_dir = Some(parent.to_path_buf());
+    }
+    let (dirs, files) = list_dir(dir);
+    for d in dirs {
+        let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if row(ui, false, format!("📁  {name}").into()).clicked() {
+            new_dir = Some(d);
+        }
+    }
+    for f in files {
+        let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let is_cur = current == Some(f.as_path());
+        let col = if is_cur { CHANGED } else { file_col };
+        let text = RichText::new(format!("📄  {name}")).color(col);
+        if row(ui, is_cur, text.into()).clicked() {
+            picked = Some(f);
+        }
+    }
+    (new_dir, picked)
 }
 
 /// Bouton avec bordure verte (actif/disponible) ou rouge (inactif).
