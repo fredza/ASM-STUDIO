@@ -2277,9 +2277,6 @@ impl App {
         ui.add_space(4.0);
         ui.label(RichText::new(&e.title).heading().color(MNEMONIC));
         ui.label(RichText::new(e.category).italics().weak());
-        ui.add_space(6.0);
-        ui.label(RichText::new("Description").strong());
-        ui.label(&e.description);
 
         if let Some(cond) = &e.condition {
             ui.add_space(6.0);
@@ -2644,7 +2641,8 @@ fn icon_tab(
         Some(img) => egui::Button::image_and_text(img, label),
         None => egui::Button::new(label),
     }
-    .selected(selected);
+    .selected(selected)
+    .rounding(egui::Rounding::same(6.0));
     ui.add(btn)
 }
 
