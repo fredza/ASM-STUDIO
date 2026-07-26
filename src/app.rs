@@ -949,6 +949,13 @@ impl App {
                     ui.label(RichText::new("Que fait cette instruction ?").strong().color(hdr));
                     ui.label(&e.description);
 
+                    ui.add_space(6.0);
+                    ui.hyperlink_to(
+                        format!("📖 Référence Intel de {} (felixcloutier.com)", insn.mnemonic.to_uppercase()),
+                        explain::doc_url(&insn.mnemonic),
+                    )
+                    .on_hover_text("Ouvre la page de l'instruction dans le navigateur\n(mirror du manuel Intel SDM).");
+
                     ui.add_space(8.0);
                     ui.separator();
 

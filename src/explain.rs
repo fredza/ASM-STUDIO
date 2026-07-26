@@ -224,6 +224,29 @@ pub fn cycles_estimate(mnemonic: &str) -> &'static str {
     }
 }
 
+/// Lien vers la référence officielle de l'instruction : le manuel Intel (SDM),
+/// via le mirror consultable en ligne felixcloutier.com/x86 (une page par
+/// instruction). Les sauts conditionnels partagent la page « Jcc » ; certaines
+/// instructions partagent une page groupée.
+pub fn doc_url(mnemonic: &str) -> String {
+    let m = mnemonic.to_lowercase();
+    let slug: &str = match m.as_str() {
+        // Sauts conditionnels : page unique « Jcc ».
+        "je" | "jz" | "jne" | "jnz" | "jg" | "jnle" | "jge" | "jnl" | "jl" | "jnge" | "jle"
+        | "jng" | "ja" | "jnbe" | "jae" | "jnb" | "jnc" | "jb" | "jc" | "jnae" | "jbe" | "jna"
+        | "js" | "jns" | "jo" | "jno" | "jp" | "jpe" | "jnp" | "jpo" | "jcxz" | "jecxz"
+        | "jrcxz" => "jcc",
+        "movabs" => "mov",                          // pseudo-instruction NASM = MOV imm64
+        "sal" | "sar" | "shl" | "shr" => "sal:sar:shl:shr",
+        "rol" | "ror" | "rcl" | "rcr" => "rcl:rcr:rol:ror",
+        // Par défaut, le mnémonique EST le slug (couvre mov, add, sub, and, or,
+        // xor, cmp, test, lea, push, pop, call, ret, inc, dec, neg, not, mul,
+        // imul, div, idiv, nop, syscall, jmp…).
+        other => return format!("https://www.felixcloutier.com/x86/{other}"),
+    };
+    format!("https://www.felixcloutier.com/x86/{slug}")
+}
+
 /// Titre lisible d'un saut conditionnel.
 fn jcc_title(m: &str) -> &'static str {
     match m {
@@ -281,6 +304,18 @@ fn eval_jcc(m: &str, f: Flags) -> Option<JccEval> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doc_url_maps_jcc_and_defaults() {
+        assert_eq!(doc_url("mov"), "https://www.felixcloutier.com/x86/mov");
+        assert_eq!(doc_url("ADD"), "https://www.felixcloutier.com/x86/add");
+        // Tous les sauts conditionnels pointent vers la page « jcc ».
+        assert_eq!(doc_url("jl"), "https://www.felixcloutier.com/x86/jcc");
+        assert_eq!(doc_url("jne"), "https://www.felixcloutier.com/x86/jcc");
+        // movabs (pseudo NASM) => page MOV.
+        assert_eq!(doc_url("movabs"), "https://www.felixcloutier.com/x86/mov");
+        assert_eq!(doc_url("shl"), "https://www.felixcloutier.com/x86/sal:sar:shl:shr");
+    }
 
     #[test]
     fn jl_taken_when_sf_ne_of() {
