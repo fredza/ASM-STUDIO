@@ -749,13 +749,13 @@ impl eframe::App for App {
                     let h = ui.available_height();
                     let cw = ((ui.available_width() - 40.0) / 5.0).max(90.0);
                     ui.horizontal_top(|ui| {
-                        col(ui, cw * 1.4, h, |ui| self.registers_ui(ui));
+                        col(ui, cw * 1.35, h, |ui| self.registers_ui(ui));
                         ui.separator();
-                        col(ui, cw * 0.7, h, |ui| self.flags_ui(ui));
+                        col(ui, cw * 0.6, h, |ui| self.flags_ui(ui));
                         ui.separator();
-                        col(ui, cw * 1.3, h, |ui| self.stack_ui(ui));
+                        col(ui, cw * 1.2, h, |ui| self.stack_ui(ui));
                         ui.separator();
-                        col(ui, cw * 1.0, h, |ui| self.callstack_ui(ui));
+                        col(ui, cw * 0.7, h, |ui| self.callstack_ui(ui));
                         ui.separator();
                         col(ui, ui.available_width(), h, |ui| self.syscalls_ui(ui));
                     });
@@ -772,7 +772,7 @@ impl eframe::App for App {
         if self.show_instruction {
             egui::SidePanel::right("instruction_panel")
                 .resizable(true)
-                .default_width(320.0)
+                .default_width(272.0)
                 .show(ctx, |ui| self.instruction_ui(ui));
         }
         egui::CentralPanel::default().show(ctx, |ui| self.center_ui(ui));
@@ -1055,7 +1055,7 @@ impl App {
         let mut open = true;
         egui::Window::new("À propos")
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
@@ -1161,7 +1161,7 @@ impl App {
         let mut changed = false;
         egui::Window::new("Réglages")
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
@@ -1232,7 +1232,7 @@ impl App {
         let mut open = true;
         egui::Window::new("Raccourcis clavier")
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
@@ -1834,11 +1834,17 @@ impl App {
             ui.label("Aucun programme lancé.");
             return;
         };
-        // Édition possible seulement en pause, à la dernière étape.
+        // Édition possible seulement quand le processus est vivant et en pause à
+        // la dernière étape (ptrace ne peut pas écrire dans un process terminé).
         let editable = self.can_step();
-        if editable {
-            ui.label(RichText::new("clic sur une valeur pour l'éditer").small().weak());
-        }
+        let hint = if editable {
+            "clic sur une valeur pour l'éditer"
+        } else if self.dbg.as_ref().is_some_and(|d| !d.is_alive()) {
+            "édition indisponible (programme terminé — relancez)"
+        } else {
+            "édition à la dernière étape (revenez en fin de timeline)"
+        };
+        ui.label(RichText::new(hint).small().weak());
         let flash = self.flash_progress(ui); // pulsation « CPU vivant »
         let mut commit: Option<(&'static str, u64)> = None;
         let mut stop_edit = false;
@@ -1890,10 +1896,13 @@ impl App {
                                 t = t.color(changed_color(flash));
                             }
                             if editable {
-                                // Bouton sans cadre : clic fiable pour éditer.
+                                // Label cliquable (cible fiable, retour visuel au survol).
                                 let resp = ui
-                                    .add(egui::Button::new(t).frame(false))
+                                    .add(egui::Label::new(t).sense(egui::Sense::click()))
                                     .on_hover_text("Cliquer pour modifier");
+                                if resp.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
                                 if resp.clicked() {
                                     self.edit_reg = Some(name);
                                     self.edit_buf = format!("{val:X}");
@@ -2278,17 +2287,17 @@ impl App {
                 self.microscope = Some(addr);
             }
         });
-        ui.add_space(4.0);
-        ui.label(RichText::new(&e.title).heading().color(self.c_mnemonic()));
-        ui.label(RichText::new(e.category).italics().weak());
+        ui.add_space(2.0);
+        ui.label(RichText::new(&e.title).size(16.0).strong().color(self.c_mnemonic()));
+        ui.label(RichText::new(e.category).italics().weak().size(12.0));
 
         if let Some(cond) = &e.condition {
-            ui.add_space(6.0);
+            ui.add_space(4.0);
             ui.label(RichText::new("Condition").strong());
             ui.label(RichText::new(cond).monospace());
             // Effet : où mène le saut si la condition est vraie.
             if !insn.operands.is_empty() {
-                ui.add_space(6.0);
+                ui.add_space(4.0);
                 ui.label(RichText::new("Effet").strong());
                 ui.label(
                     RichText::new(format!(
@@ -2415,13 +2424,22 @@ impl App {
     /// Vue du tas (segment `[heap]` de /proc/<pid>/maps), en hexadécimal.
     fn heap_view(&self, ui: &mut egui::Ui) {
         if !self.can_read_memory() {
-            ui.weak("Tas lisible sur l'état courant (revenez à la dernière étape).");
+            let msg = match self.dbg.as_ref().map(|d| d.is_alive()) {
+                Some(false) => "Programme terminé — relancez pour explorer le tas.",
+                Some(true) => "Revenez à la dernière étape de la timeline pour lire le tas.",
+                None => "Lancez un programme pour explorer le tas.",
+            };
+            ui.weak(msg);
             return;
         }
         let (hdr, addr_c, bytes_c) = (self.c_header(), self.c_addr(), self.c_bytes());
         let dbg = self.dbg.as_ref().unwrap();
         let Some((start, end)) = dbg.heap_range() else {
-            ui.weak("Aucun tas alloué : le programme n'a pas encore appelé brk/mmap.");
+            ui.weak(
+                "Aucun tas pour ce programme : le segment [heap] n'apparaît qu'après un appel \
+                 brk/mmap (allocation dynamique). Un programme n'utilisant que .data/.bss ou la \
+                 pile n'a pas de tas.",
+            );
             return;
         };
         let size = end - start;
