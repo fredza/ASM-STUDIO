@@ -188,6 +188,8 @@ pub struct App {
 
     tab: Tab,
     stack_tab: StackTab,
+    /// Thème sombre actif (mis à jour dans `apply_theme`) — palette de texte.
+    dark: bool,
     /// Visibilité des panneaux (menu Affichage).
     show_explorer: bool,
     show_instruction: bool,
@@ -252,6 +254,7 @@ impl App {
             editor_col: 1,
             tab: Tab::Editor,
             stack_tab: StackTab::Stack,
+            dark: true,
             show_explorer: true,
             show_instruction: true,
             show_cpu_band: true,
@@ -637,6 +640,39 @@ impl App {
             resp
         }
     }
+
+    // ---------- Palette de texte sensible au thème ----------
+    // En thème clair, les couleurs « sombres » de la maquette deviennent
+    // illisibles : on renvoie des variantes plus foncées.
+
+    /// Couleur des titres de section / libellés secondaires.
+    fn c_header(&self) -> Color32 {
+        if self.dark { HEADER } else { Color32::from_rgb(0x3B, 0x4A, 0x63) }
+    }
+    /// Couleur des mnémoniques / accents bleus.
+    fn c_mnemonic(&self) -> Color32 {
+        if self.dark { MNEMONIC } else { Color32::from_rgb(0x1B, 0x5E, 0xA8) }
+    }
+    /// Couleur des adresses.
+    fn c_addr(&self) -> Color32 {
+        if self.dark { ADDR_COL } else { Color32::from_rgb(0x2A, 0x53, 0x86) }
+    }
+    /// Couleur des octets bruts / texte discret monospace.
+    fn c_bytes(&self) -> Color32 {
+        if self.dark { BYTES_COL } else { Color32::from_rgb(0x60, 0x64, 0x70) }
+    }
+    /// Couleur « atténuée » (instructions non courantes, etc.).
+    fn c_muted(&self) -> Color32 {
+        if self.dark { Color32::GRAY } else { Color32::from_rgb(0x7A, 0x7E, 0x8A) }
+    }
+    /// Fond de la ligne RIP dans le désassemblage.
+    fn c_rip_row(&self) -> Color32 {
+        if self.dark { RIP_ROW } else { Color32::from_rgb(0xFF, 0xEE, 0xB0) }
+    }
+    /// Fond d'une ligne sélectionnée / survolée dans le désassemblage.
+    fn c_sel_row(&self) -> Color32 {
+        if self.dark { SEL_ROW } else { Color32::from_rgb(0xD5, 0xE2, 0xF4) }
+    }
 }
 
 impl eframe::App for App {
@@ -832,6 +868,9 @@ impl App {
             )
         });
 
+        // Couleurs figées avant la closure (pas d'accès à self dedans).
+        let (hdr, mnem_c, addr_c, bytes_c) =
+            (self.c_header(), self.c_mnemonic(), self.c_addr(), self.c_bytes());
         let mut open = true;
         let mut close = false;
         egui::Window::new(format!("🔬 Microscope — {} {}", insn.mnemonic, insn.operands))
@@ -846,16 +885,16 @@ impl App {
                     // --- Identité de l'instruction ---
                     egui::Grid::new("micro_id").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
                         ui.label(RichText::new("Adresse").strong());
-                        ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(ADDR_COL));
+                        ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(addr_c));
                         ui.end_row();
                         ui.label(RichText::new("Octets machine").strong());
-                        ui.label(RichText::new(insn.bytes_hex()).monospace().color(BYTES_COL));
+                        ui.label(RichText::new(insn.bytes_hex()).monospace().color(bytes_c));
                         ui.end_row();
                         ui.label(RichText::new("Décodage").strong());
                         ui.label(
                             RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
                                 .monospace()
-                                .color(MNEMONIC),
+                                .color(mnem_c),
                         );
                         ui.end_row();
                         ui.label(RichText::new("Catégorie").strong());
@@ -868,7 +907,7 @@ impl App {
                     });
 
                     ui.add_space(8.0);
-                    ui.label(RichText::new("Que fait cette instruction ?").strong().color(HEADER));
+                    ui.label(RichText::new("Que fait cette instruction ?").strong().color(hdr));
                     ui.label(&e.description);
 
                     ui.add_space(8.0);
@@ -879,7 +918,7 @@ impl App {
                             // ΔRSP + écriture/lecture pile.
                             let d = after.rsp as i128 - before.rsp as i128;
                             if d != 0 {
-                                ui.label(RichText::new("Pile (RSP)").strong().color(HEADER));
+                                ui.label(RichText::new("Pile (RSP)").strong().color(hdr));
                                 if d < 0 {
                                     ui.colored_label(
                                         PUSH_COL,
@@ -901,7 +940,7 @@ impl App {
                             }
 
                             // Registres modifiés.
-                            ui.label(RichText::new("Registres modifiés").strong().color(HEADER));
+                            ui.label(RichText::new("Registres modifiés").strong().color(hdr));
                             let mut any = false;
                             egui::Grid::new("micro_regs").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
                                 for ((n, ov), (_, nv)) in
@@ -923,7 +962,7 @@ impl App {
 
                             ui.add_space(6.0);
                             // Flags modifiés.
-                            ui.label(RichText::new("Flags").strong().color(HEADER));
+                            ui.label(RichText::new("Flags").strong().color(hdr));
                             let (fb, fa) = (Flags::from_eflags(before.eflags), Flags::from_eflags(after.eflags));
                             let mut fchanged = false;
                             ui.horizontal_wrapped(|ui| {
@@ -944,10 +983,10 @@ impl App {
 
                             ui.add_space(8.0);
                             // Schéma pile avant / après.
-                            ui.label(RichText::new("Pile — avant / après").strong().color(HEADER));
+                            ui.label(RichText::new("Pile — avant / après").strong().color(hdr));
                             ui.columns(2, |c| {
-                                micro_stack(&mut c[0], "avant", before.rsp, _bstack);
-                                micro_stack(&mut c[1], "après", after.rsp, _astack);
+                                micro_stack(&mut c[0], addr_c, "avant", before.rsp, _bstack);
+                                micro_stack(&mut c[1], addr_c, "après", after.rsp, _astack);
                             });
                         }
                         Some((_before, _bstack, None)) => {
@@ -955,14 +994,14 @@ impl App {
                                 "Instruction à exécuter à l'étape courante — avancez d'un pas (Step) \
                                  pour voir ses effets dynamiques.",
                             );
-                            micro_static_flags(ui, &e);
+                            micro_static_flags(ui, hdr, &e);
                         }
                         None => {
                             ui.weak(
                                 "Cette instruction n'a pas encore été exécutée dans l'historique \
                                  (effets dynamiques indisponibles).",
                             );
-                            micro_static_flags(ui, &e);
+                            micro_static_flags(ui, hdr, &e);
                         }
                     }
 
@@ -992,7 +1031,7 @@ impl App {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.heading(RichText::new("ASM Studio").color(MNEMONIC));
+                    ui.heading(RichText::new("ASM Studio").color(self.c_mnemonic()));
                     ui.label("IDE pédagogique NASM x86-64");
                 });
                 ui.add_space(8.0);
@@ -1029,7 +1068,7 @@ impl App {
     }
 
     /// Applique le thème choisi (Système / Sombre / Clair) + le style moderne.
-    fn apply_theme(&self, ctx: &egui::Context) {
+    fn apply_theme(&mut self, ctx: &egui::Context) {
         use egui::{FontId, Rounding, Theme, ThemePreference, TextStyle, vec2};
         let dark = match self.theme_pref {
             ThemePreference::Dark => true,
@@ -1038,6 +1077,7 @@ impl App {
                 ctx.input(|i| i.raw.system_theme) != Some(Theme::Light)
             }
         };
+        self.dark = dark; // pour la palette de texte sensible au thème
         let mut style = (*ctx.style()).clone();
         let mut v = if dark {
             egui::Visuals::dark()
@@ -1062,6 +1102,15 @@ impl App {
             v.window_fill = Color32::from_rgb(0x25, 0x25, 0x2B);
             v.extreme_bg_color = Color32::from_rgb(0x17, 0x17, 0x1B);
             v.faint_bg_color = Color32::from_rgb(0x28, 0x28, 0x30);
+        } else {
+            // Thème clair : texte par défaut nettement sombre pour le contraste,
+            // et fonds légèrement teintés pour délimiter les panneaux.
+            v.override_text_color = Some(Color32::from_rgb(0x1C, 0x20, 0x28));
+            v.panel_fill = Color32::from_rgb(0xF4, 0xF5, 0xF8);
+            v.window_fill = Color32::from_rgb(0xFB, 0xFB, 0xFD);
+            v.extreme_bg_color = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+            v.faint_bg_color = Color32::from_rgb(0xEA, 0xEC, 0xF1);
+            v.hyperlink_color = Color32::from_rgb(0x1B, 0x5E, 0xA8);
         }
         style.visuals = v;
         style.spacing.item_spacing = vec2(8.0, 6.0);
@@ -1179,7 +1228,7 @@ impl App {
                     .spacing([24.0, 6.0])
                     .show(ui, |ui| {
                         for (k, d) in rows {
-                            ui.label(RichText::new(k).monospace().strong().color(MNEMONIC));
+                            ui.label(RichText::new(k).monospace().strong().color(self.c_mnemonic()));
                             ui.label(d);
                             ui.end_row();
                         }
@@ -1238,7 +1287,7 @@ impl App {
                     }
                     for f in files {
                         let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
-                        let text = RichText::new(format!("📄  {name}")).color(MNEMONIC);
+                        let text = RichText::new(format!("📄  {name}")).color(self.c_mnemonic());
                         if row(ui, text.into()).clicked() {
                             picked = Some(f);
                         }
@@ -1525,9 +1574,9 @@ impl App {
                     }
                 }
                 ui.separator();
-                ui.label(RichText::new("Arch : x86_64").color(HEADER));
+                ui.label(RichText::new("Arch : x86_64").color(self.c_header()));
                 ui.separator();
-                ui.label(RichText::new("Mode : 64-bit").color(HEADER));
+                ui.label(RichText::new("Mode : 64-bit").color(self.c_header()));
                 if let Some(s) = self.snap() {
                     ui.separator();
                     ui.label(format!("Arrêté à : 0x{:X}", s.regs.rip));
@@ -1540,11 +1589,11 @@ impl App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(RichText::new("NASM").color(ACCENT).strong());
                     ui.separator();
-                    ui.label(RichText::new("UTF-8").color(HEADER));
+                    ui.label(RichText::new("UTF-8").color(self.c_header()));
                     ui.separator();
                     ui.label(
                         RichText::new(format!("Ln {}, Col {}", self.editor_ln, self.editor_col))
-                            .color(HEADER),
+                            .color(self.c_header()),
                     );
                 });
             });
@@ -1561,7 +1610,7 @@ impl App {
 
     /// Timeline en colonne (bande basse), style mockup.
     fn timeline_col_ui(&mut self, ui: &mut egui::Ui) {
-        header_icon(ui, self.icons.as_ref().map(|i| &i.timeline), "TIMELINE");
+        header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.timeline), "TIMELINE");
         let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
             ui.weak("— lancez un programme");
             return;
@@ -1574,7 +1623,7 @@ impl App {
                     for i in 0..=last {
                         let cur = i == self.view_index;
                         let txt = RichText::new(format!("{i}")).monospace().size(11.0).color(
-                            if cur { Color32::WHITE } else { HEADER },
+                            if cur { Color32::WHITE } else { self.c_header() },
                         );
                         let mut btn = egui::Button::new(txt).min_size(egui::vec2(22.0, 22.0)).rounding(egui::Rounding::same(11.0));
                         if cur {
@@ -1606,7 +1655,7 @@ impl App {
                 ui.label(
                     RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
                         .monospace()
-                        .color(MNEMONIC),
+                        .color(self.c_mnemonic()),
                 );
             }
         }
@@ -1652,7 +1701,7 @@ impl App {
         let mem_ic = self.icons.as_ref().map(|i| i.memory.clone());
         ui.horizontal(|ui| {
             icon_img(ui, mem_ic.as_ref(), 15.0);
-            header_inline(ui, "MEMORY");
+            header_inline(ui, self.c_header(), "MEMORY");
             // Sélecteur de région (façon mockup).
             egui::ComboBox::from_id_salt("mem_region")
                 .selected_text(RichText::new(format!("0x{:012X}..", self.mem_addr)).monospace())
@@ -1729,18 +1778,19 @@ impl App {
         });
         ui.separator();
 
+        let (addr_c, bytes_c) = (self.c_addr(), self.c_bytes());
         let dbg = self.dbg.as_ref().unwrap();
         egui::ScrollArea::both()
             .id_salt("mem_scroll")
             .auto_shrink([false, false])
-            .show(ui, |ui| hex_dump_rows(ui, dbg, self.mem_addr, 8));
+            .show(ui, |ui| hex_dump_rows(ui, addr_c, bytes_c, dbg, self.mem_addr, 8));
     }
 
     fn console_ui(&mut self, ui: &mut egui::Ui) {
         let console_ic = self.icons.as_ref().map(|i| i.console.clone());
         ui.horizontal(|ui| {
             icon_img(ui, console_ic.as_ref(), 15.0);
-            header_inline(ui, "CONSOLE");
+            header_inline(ui, self.c_header(), "CONSOLE");
             if ui.small_button("effacer").clicked() {
                 self.console.clear();
             }
@@ -1776,7 +1826,7 @@ impl App {
     }
 
     fn registers_ui(&mut self, ui: &mut egui::Ui) {
-        header_icon(ui, self.icons.as_ref().map(|i| &i.registers), "REGISTERS");
+        header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.registers), "REGISTERS");
         let Some(rows) = self.reg_rows() else {
             ui.label("Aucun programme lancé.");
             return;
@@ -1868,7 +1918,7 @@ impl App {
     }
 
     fn flags_ui(&self, ui: &mut egui::Ui) {
-        header(ui, "FLAGS");
+        header(ui, self.c_header(), "FLAGS");
         let (Some(snap), Some(prev)) = (self.snap(), self.prev_snap()) else {
             ui.weak("—");
             return;
@@ -1911,7 +1961,7 @@ impl App {
     // ---------- Explorateur de fichiers (panneau de gauche) ----------
 
     fn explorer_ui(&mut self, ui: &mut egui::Ui) {
-        header_icon(ui, self.icons.as_ref().map(|i| &i.explorer), "EXPLORER");
+        header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.explorer), "EXPLORER");
         ui.label(
             RichText::new(
                 self.explorer_dir
@@ -1942,7 +1992,7 @@ impl App {
             for f in files {
                 let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
                 let is_cur = f == self.src_path;
-                let txt = RichText::new(format!("📄  {name}")).color(if is_cur { CHANGED } else { MNEMONIC });
+                let txt = RichText::new(format!("📄  {name}")).color(if is_cur { CHANGED } else { self.c_mnemonic() });
                 if ui.add_sized([w, 22.0], egui::SelectableLabel::new(is_cur, txt)).clicked() {
                     open_file = Some(f);
                 }
@@ -1959,7 +2009,7 @@ impl App {
     // ---------- Call stack ----------
 
     fn callstack_ui(&self, ui: &mut egui::Ui) {
-        header_icon(ui, self.icons.as_ref().map(|i| &i.callstack), "CALL STACK");
+        header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.callstack), "CALL STACK");
         if self.dbg.is_none() {
             ui.weak("—");
             return;
@@ -1972,7 +2022,7 @@ impl App {
             }
             for addr in self.call_stack.iter().rev() {
                 depth = depth.saturating_sub(1);
-                ui.label(RichText::new(format!("#{depth}  0x{addr:08X}")).monospace().color(ADDR_COL));
+                ui.label(RichText::new(format!("#{depth}  0x{addr:08X}")).monospace().color(self.c_addr()));
             }
             if self.call_stack.is_empty() {
                 ui.weak("(aucun appel en cours)");
@@ -1983,7 +2033,7 @@ impl App {
     // ---------- Syscalls ----------
 
     fn syscalls_ui(&self, ui: &mut egui::Ui) {
-        header_icon(ui, self.icons.as_ref().map(|i| &i.syscalls), "SYSCALLS");
+        header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.syscalls), "SYSCALLS");
         egui::ScrollArea::vertical()
             .id_salt("syscalls_scroll")
             .stick_to_bottom(true)
@@ -1994,12 +2044,12 @@ impl App {
                 }
                 for s in &self.syscalls {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(&s.name).monospace().strong().color(MNEMONIC));
+                        ui.label(RichText::new(&s.name).monospace().strong().color(self.c_mnemonic()));
                         ui.label(RichText::new(format!("#{}", s.number)).monospace().weak().small());
                         match s.ret {
                             Some(r) if r < 0 => badge(ui, "ERREUR", FALSE_COL),
                             Some(_) => badge(ui, "SUCCESS", FLAG_ON),
-                            None => badge(ui, "PENDING", HEADER),
+                            None => badge(ui, "PENDING", self.c_header()),
                         }
                     });
                     // Arguments sur une ligne compacte.
@@ -2036,7 +2086,7 @@ impl App {
     fn disasm_around_ui(&self, ui: &mut egui::Ui) {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("DISASSEMBLY").strong().color(HEADER).size(12.5));
+            ui.label(RichText::new("DISASSEMBLY").strong().color(self.c_header()).size(12.5));
             ui.label(RichText::new("(autour de RIP)").small().weak());
         });
         ui.separator();
@@ -2055,11 +2105,11 @@ impl App {
                 let cur = Some(insn.address) == rip;
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(if cur { "➤" } else { "  " }).color(CHANGED));
-                    ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(ADDR_COL));
+                    ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(self.c_addr()));
                     ui.label(
                         RichText::new(format!("{:<6} {}", insn.mnemonic, insn.operands))
                             .monospace()
-                            .color(if cur { MNEMONIC } else { Color32::GRAY }),
+                            .color(if cur { self.c_mnemonic() } else { self.c_muted() }),
                     );
                 });
             }
@@ -2069,6 +2119,7 @@ impl App {
     // ---------- Centre : onglets Éditeur / Désassemblage ----------
 
     fn center_ui(&mut self, ui: &mut egui::Ui) {
+        let hdr = self.c_header();
         let (edit_ic, disasm_ic) = match &self.icons {
             Some(i) => (Some(&i.editor), Some(&i.assembler)),
             None => (None, None),
@@ -2083,18 +2134,18 @@ impl App {
             ui.separator();
             let name = self.src_path.file_name().unwrap_or_default().to_string_lossy();
             let mark = if self.dirty { " ●" } else { "" };
-            ui.label(RichText::new(format!("{name}{mark}")).color(HEADER));
+            ui.label(RichText::new(format!("{name}{mark}")).color(hdr));
         });
         // Bandeau RIP (façon mockup) : « RIP : 0x… mnémonique opérandes ».
         if let Some(s) = self.snap() {
             if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("▶").color(ACTION));
-                    ui.label(RichText::new(format!("RIP : 0x{:X}", s.regs.rip)).monospace().color(ADDR_COL));
+                    ui.label(RichText::new(format!("RIP : 0x{:X}", s.regs.rip)).monospace().color(self.c_addr()));
                     ui.label(
                         RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
                             .monospace()
-                            .color(MNEMONIC),
+                            .color(self.c_mnemonic()),
                     );
                 });
             }
@@ -2109,10 +2160,11 @@ impl App {
     fn editor_ui(&mut self, ui: &mut egui::Ui) {
         // Ligne source courante (RIP) à surligner pendant le débogage.
         let hl = self.current_source_line();
+        let dark = self.dark;
 
         // Coloration syntaxique NASM (retour à la ligne désactivé => aligné aux numéros).
         let mut layouter = |ui: &egui::Ui, text: &str, _wrap: f32| {
-            ui.fonts(|f| f.layout_job(syntax::highlight(text, hl)))
+            ui.fonts(|f| f.layout_job(syntax::highlight(text, dark, hl)))
         };
 
         // Gouttière : numéros de ligne (▶ + accent sur la ligne courante).
@@ -2203,9 +2255,9 @@ impl App {
                     } else {
                         ui.label("    ");
                     }
-                    ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(ADDR_COL));
-                    ui.label(RichText::new(format!("{:<20}", insn.bytes_hex())).monospace().color(BYTES_COL));
-                    ui.label(RichText::new(format!("{:<7}", insn.mnemonic)).monospace().color(MNEMONIC));
+                    ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(self.c_addr()));
+                    ui.label(RichText::new(format!("{:<20}", insn.bytes_hex())).monospace().color(self.c_bytes()));
+                    ui.label(RichText::new(format!("{:<7}", insn.mnemonic)).monospace().color(self.c_mnemonic()));
                     ui.label(RichText::new(&insn.operands).monospace());
                 });
                 let row = inner.response.interact(egui::Sense::click());
@@ -2213,11 +2265,11 @@ impl App {
                     clicked = Some(insn.address);
                 }
                 let fill = if is_current {
-                    Some(RIP_ROW)
+                    Some(self.c_rip_row())
                 } else if is_selected {
-                    Some(SEL_ROW)
+                    Some(self.c_sel_row())
                 } else if row.hovered() {
-                    Some(SEL_ROW.linear_multiply(0.5))
+                    Some(self.c_sel_row().linear_multiply(0.5))
                 } else {
                     None
                 };
@@ -2238,7 +2290,7 @@ impl App {
         let bulb_ic = self.icons.as_ref().map(|i| i.instruction.clone());
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("INSTRUCTION").strong().color(HEADER).size(12.5));
+            ui.label(RichText::new("INSTRUCTION").strong().color(self.c_header()).size(12.5));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 icon_img(ui, bulb_ic.as_ref(), 16.0);
             });
@@ -2275,7 +2327,7 @@ impl App {
             }
         });
         ui.add_space(4.0);
-        ui.label(RichText::new(&e.title).heading().color(MNEMONIC));
+        ui.label(RichText::new(&e.title).heading().color(self.c_mnemonic()));
         ui.label(RichText::new(e.category).italics().weak());
 
         if let Some(cond) = &e.condition {
@@ -2298,7 +2350,7 @@ impl App {
             egui::Frame::group(ui.style())
                 .inner_margin(egui::Margin::symmetric(8.0, 6.0))
                 .show(ui, |ui| {
-                    ui.label(RichText::new("État actuel").small().strong().color(HEADER));
+                    ui.label(RichText::new("État actuel").small().strong().color(self.c_header()));
                     ui.horizontal(|ui| {
                         for (name, val) in &e.relevant_flags {
                             let c = if *val { FLAG_ON } else { FLAG_OFF };
@@ -2394,7 +2446,7 @@ impl App {
                 for (i, val) in snap.stack.iter().enumerate() {
                     let addr = rsp.wrapping_add((i as u64) * 8);
                     let changed = prev_stack.get(i) != Some(val);
-                    ui.label(RichText::new(format!("0x{addr:012X}")).monospace().color(ADDR_COL));
+                    ui.label(RichText::new(format!("0x{addr:012X}")).monospace().color(self.c_addr()));
                     let mut vt = RichText::new(format!("0x{val:016X}")).monospace();
                     if changed {
                         vt = vt.color(changed_color(flash));
@@ -2422,6 +2474,7 @@ impl App {
             ui.weak("Tas lisible sur l'état courant (revenez à la dernière étape).");
             return;
         }
+        let (hdr, addr_c, bytes_c) = (self.c_header(), self.c_addr(), self.c_bytes());
         let dbg = self.dbg.as_ref().unwrap();
         let Some((start, end)) = dbg.heap_range() else {
             ui.weak("Aucun tas alloué : le programme n'a pas encore appelé brk/mmap.");
@@ -2431,18 +2484,18 @@ impl App {
         ui.label(
             RichText::new(format!("[heap] 0x{start:X} – 0x{end:X}  ({size} octets)"))
                 .monospace()
-                .color(HEADER),
+                .color(hdr),
         );
         ui.add_space(2.0);
         let rows = ((size + 15) / 16).min(16) as u64;
         egui::ScrollArea::both().id_salt("heap_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            hex_dump_rows(ui, dbg, start, rows);
+            hex_dump_rows(ui, addr_c, bytes_c, dbg, start, rows);
         });
     }
 }
 
 /// Affiche `rows` lignes de 16 octets (hex + ASCII) à partir de `base`.
-fn hex_dump_rows(ui: &mut egui::Ui, dbg: &Debugger, base: u64, rows: u64) {
+fn hex_dump_rows(ui: &mut egui::Ui, addr_c: Color32, bytes_c: Color32, dbg: &Debugger, base: u64, rows: u64) {
     for row in 0..rows {
         let addr = base.wrapping_add(row * 16);
         let (hex, ascii) = match dbg.read_mem(addr, 16) {
@@ -2457,8 +2510,8 @@ fn hex_dump_rows(ui: &mut egui::Ui, dbg: &Debugger, base: u64, rows: u64) {
             Err(_) => ("?? ".repeat(16).trim_end().to_string(), ".".repeat(16)),
         };
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("0x{addr:08X}")).monospace().color(ADDR_COL));
-            ui.label(RichText::new(hex).monospace().color(BYTES_COL));
+            ui.label(RichText::new(format!("0x{addr:08X}")).monospace().color(addr_c));
+            ui.label(RichText::new(hex).monospace().color(bytes_c));
             ui.label(RichText::new(ascii).monospace().weak());
         });
     }
@@ -2467,18 +2520,18 @@ fn hex_dump_rows(ui: &mut egui::Ui, dbg: &Debugger, base: u64, rows: u64) {
 // ---------- Helpers ----------
 
 /// Titre de section sur sa propre ligne, style moderne.
-fn header(ui: &mut egui::Ui, text: &str) {
+fn header(ui: &mut egui::Ui, hdr: Color32, text: &str) {
     ui.add_space(2.0);
-    ui.label(RichText::new(text).strong().color(HEADER).size(12.5));
+    ui.label(RichText::new(text).strong().color(hdr).size(12.5));
     ui.separator();
 }
 
 /// En-tête de section avec une icône optionnelle à gauche du titre.
-fn header_icon(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, text: &str) {
+fn header_icon(ui: &mut egui::Ui, hdr: Color32, icon: Option<&egui::TextureHandle>, text: &str) {
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         icon_img(ui, icon, 15.0);
-        ui.label(RichText::new(text).strong().color(HEADER).size(12.5));
+        ui.label(RichText::new(text).strong().color(hdr).size(12.5));
     });
     ui.separator();
 }
@@ -2491,8 +2544,8 @@ fn icon_img(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, size: f32) {
 }
 
 /// Titre de section « inline » (dans une ligne horizontale).
-fn header_inline(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).strong().color(HEADER).size(12.5));
+fn header_inline(ui: &mut egui::Ui, hdr: Color32, text: &str) {
+    ui.label(RichText::new(text).strong().color(hdr).size(12.5));
 }
 
 /// Alloue une colonne de largeur `w` et hauteur `h` puis y rend `add`.
@@ -2505,7 +2558,7 @@ fn col(ui: &mut egui::Ui, w: f32, h: f32, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// Petite colonne de pile (microscope) : adresse + valeur, à partir de `rsp`.
-fn micro_stack(ui: &mut egui::Ui, label: &str, rsp: u64, stack: &[u64]) {
+fn micro_stack(ui: &mut egui::Ui, addr_c: Color32, label: &str, rsp: u64, stack: &[u64]) {
     ui.label(RichText::new(label).italics().weak());
     egui::Grid::new(format!("micro_stack_{label}"))
         .num_columns(2)
@@ -2517,7 +2570,7 @@ fn micro_stack(ui: &mut egui::Ui, label: &str, rsp: u64, stack: &[u64]) {
                 ui.label(
                     RichText::new(format!("{mark} 0x{addr:012X}"))
                         .monospace()
-                        .color(ADDR_COL),
+                        .color(addr_c),
                 );
                 ui.label(RichText::new(format!("0x{val:016X}")).monospace());
                 ui.end_row();
@@ -2526,12 +2579,12 @@ fn micro_stack(ui: &mut egui::Ui, label: &str, rsp: u64, stack: &[u64]) {
 }
 
 /// Flags positionnés (info statique) quand l'instruction n'a pas d'avant/après.
-fn micro_static_flags(ui: &mut egui::Ui, e: &explain::Explanation) {
+fn micro_static_flags(ui: &mut egui::Ui, hdr: Color32, e: &explain::Explanation) {
     ui.add_space(4.0);
     if e.affects_flags.is_empty() {
         ui.weak("Cette instruction ne modifie aucun flag.");
     } else {
-        ui.label(RichText::new("Flags positionnés").strong().color(HEADER));
+        ui.label(RichText::new("Flags positionnés").strong().color(hdr));
         ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
     }
 }
