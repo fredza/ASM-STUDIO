@@ -1974,30 +1974,40 @@ impl App {
 
     fn explorer_ui(&mut self, ui: &mut egui::Ui) {
         header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.explorer), "EXPLORER");
-        ui.label(
-            RichText::new(
-                self.explorer_dir
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| self.explorer_dir.display().to_string()),
-            )
-            .small()
-            .weak(),
-        );
-        ui.separator();
-        let mut new_dir = None;
-        let mut open_file = None;
-        let file_col = self.c_mnemonic();
-        egui::ScrollArea::vertical().id_salt("explorer_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            let (nd, of) =
-                dir_list_rows(ui, &self.explorer_dir, Some(&self.src_path), file_col, 22.0);
-            new_dir = nd;
-            open_file = of;
+
+        // Barre : nom du dossier racine + remonter d'un cran.
+        let mut go_up = false;
+        ui.horizontal(|ui| {
+            if self
+                .tip(ui.small_button("⬆"), "Dossier parent comme racine")
+                .clicked()
+            {
+                go_up = true;
+            }
+            let root = self
+                .explorer_dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| self.explorer_dir.display().to_string());
+            ui.label(RichText::new(root).strong().color(self.c_header()))
+                .on_hover_text(self.explorer_dir.display().to_string());
         });
-        if let Some(d) = new_dir {
-            self.explorer_dir = d;
+        if go_up && let Some(p) = self.explorer_dir.parent() {
+            self.explorer_dir = p.to_path_buf();
         }
-        if let Some(f) = open_file {
+        ui.separator();
+
+        // Arbre de fichiers (dossiers repliables + fichiers cliquables).
+        let asm_col = self.c_mnemonic();
+        let other_col = self.c_bytes();
+        let cur = self.src_path.clone();
+        let mut to_open = None;
+        egui::ScrollArea::both().id_salt("explorer_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            ui.spacing_mut().indent = 14.0;
+            let root = self.explorer_dir.clone();
+            dir_tree(ui, &root, &cur, asm_col, other_col, &mut to_open);
+        });
+        if let Some(f) = to_open {
             self.open_file(f);
         }
     }
@@ -2586,6 +2596,73 @@ fn list_dir(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     dirs.sort();
     files.sort();
     (dirs, files)
+}
+
+/// Nom d'affichage d'un chemin (dernier segment).
+fn file_name(p: &Path) -> String {
+    p.file_name().unwrap_or_default().to_string_lossy().into_owned()
+}
+
+/// Entrées d'un dossier : (sous-dossiers, tous les fichiers), triés, en masquant
+/// les entrées cachées (préfixe `.`). Pour l'explorateur en arbre.
+fn list_entries(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if file_name(&p).starts_with('.') {
+                continue;
+            }
+            if p.is_dir() {
+                dirs.push(p);
+            } else {
+                files.push(p);
+            }
+        }
+    }
+    dirs.sort();
+    files.sort();
+    (dirs, files)
+}
+
+/// True si le fichier est une source assembleur (`.asm`/`.s`).
+fn is_asm(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e == "asm" || e == "s")
+}
+
+/// Rend récursivement l'arbre d'un dossier (style explorateur d'IDE) : dossiers
+/// repliables (`CollapsingHeader`), puis fichiers cliquables. Le fichier ouvert
+/// est surligné ; le clic sur un fichier renseigne `to_open`.
+fn dir_tree(
+    ui: &mut egui::Ui,
+    dir: &Path,
+    current: &Path,
+    asm_col: Color32,
+    other_col: Color32,
+    to_open: &mut Option<PathBuf>,
+) {
+    let (dirs, files) = list_entries(dir);
+    for d in dirs {
+        egui::CollapsingHeader::new(RichText::new(format!("🗀  {}", file_name(&d))).color(asm_col))
+            .id_salt(&d)
+            .default_open(false)
+            .show(ui, |ui| dir_tree(ui, &d, current, asm_col, other_col, to_open));
+    }
+    for f in files {
+        let is_cur = f == current;
+        let col = if is_cur {
+            CHANGED
+        } else if is_asm(&f) {
+            asm_col
+        } else {
+            other_col
+        };
+        let label = RichText::new(format!("🗎  {}", file_name(&f))).color(col);
+        if ui.add(egui::SelectableLabel::new(is_cur, label)).clicked() {
+            *to_open = Some(f);
+        }
+    }
 }
 
 /// Rend la liste d'un dossier en lignes pleine largeur : « .. » (remontée),
