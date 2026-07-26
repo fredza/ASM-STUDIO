@@ -731,13 +731,18 @@ impl eframe::App for App {
         self.toolbar(ctx);
         self.status_bar(ctx);
 
+        // Marge interne unique pour TOUS les panneaux (bandes, latéraux, centre)
+        // → rythme vertical cohérent et séparateurs d'en-tête alignés.
+        let pad = egui::Margin::symmetric(8.0, 6.0);
+        let band_frame = egui::Frame::central_panel(&ctx.style()).inner_margin(pad);
+
         // Bande basse : MEMORY | TIMELINE | CONSOLE.
         if self.show_bottom_band {
             egui::TopBottomPanel::bottom("bottom_band")
                 .resizable(true)
                 .default_height(196.0)
+                .frame(band_frame)
                 .show(ctx, |ui| {
-                    ui.add_space(6.0); // écarte le contenu de la poignée de redimensionnement
                     let h = ui.available_height();
                     let cw = ((ui.available_width() - 20.0) / 3.0).max(60.0);
                     ui.horizontal_top(|ui| {
@@ -750,24 +755,23 @@ impl eframe::App for App {
                 });
         }
 
-        // Bande centrale : REGISTERS | FLAGS | STACK | CALL STACK | SYSCALLS.
-        // (Le désassemblage a son propre onglet au centre : pas de doublon ici.)
+        // Bande centrale : REGISTERS | STACK | CALL STACK | SYSCALLS.
+        // (FLAGS est désormais au bas du panneau INSTRUCTION ; le désassemblage
+        // a son propre onglet au centre.)
         if self.show_cpu_band {
             egui::TopBottomPanel::bottom("mid_band")
                 .resizable(true)
                 .default_height(226.0)
+                .frame(band_frame)
                 .show(ctx, |ui| {
-                    ui.add_space(6.0); // écarte le contenu de la poignée de redimensionnement
                     let h = ui.available_height();
-                    let cw = ((ui.available_width() - 40.0) / 5.0).max(90.0);
+                    let cw = ((ui.available_width() - 30.0) / 4.0).max(90.0);
                     ui.horizontal_top(|ui| {
-                        col(ui, cw * 1.35, h, |ui| self.registers_ui(ui));
+                        col(ui, cw * 1.4, h, |ui| self.registers_ui(ui));
                         ui.separator();
-                        col(ui, cw * 0.6, h, |ui| self.flags_ui(ui));
+                        col(ui, cw * 1.3, h, |ui| self.stack_ui(ui));
                         ui.separator();
-                        col(ui, cw * 1.2, h, |ui| self.stack_ui(ui));
-                        ui.separator();
-                        col(ui, cw * 0.7, h, |ui| self.callstack_ui(ui));
+                        col(ui, cw * 0.9, h, |ui| self.callstack_ui(ui));
                         ui.separator();
                         col(ui, ui.available_width(), h, |ui| self.syscalls_ui(ui));
                     });
@@ -775,19 +779,25 @@ impl eframe::App for App {
         }
 
         // Explorateur à gauche, INSTRUCTION à droite, éditeur au centre.
+        // Marge interne IDENTIQUE pour les trois → leurs en-têtes (et donc les
+        // séparateurs sous EXPLORER / onglets éditeur / INSTRUCTION) s'alignent.
         if self.show_explorer {
             egui::SidePanel::left("explorer_panel")
                 .resizable(true)
                 .default_width(180.0)
+                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
                 .show(ctx, |ui| self.explorer_ui(ui));
         }
         if self.show_instruction {
             egui::SidePanel::right("instruction_panel")
                 .resizable(true)
                 .default_width(272.0)
+                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
                 .show(ctx, |ui| self.instruction_ui(ui));
         }
-        egui::CentralPanel::default().show(ctx, |ui| self.center_ui(ui));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(pad))
+            .show(ctx, |ui| self.center_ui(ui));
 
         self.about_window(ctx);
         self.shortcuts_window(ctx);
@@ -1830,35 +1840,39 @@ impl App {
         let flash = self.flash_progress(ui);
         let flags = Flags::from_eflags(snap.regs.eflags);
         let prevf = Flags::from_eflags(prev.regs.eflags);
-        egui::ScrollArea::vertical().id_salt("flags_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new("flags_grid").num_columns(3).spacing([8.0, 5.0]).show(ui, |ui| {
-                for ((name, val), (_, pval)) in flags.named().iter().zip(prevf.named()) {
-                    let changed = *val != pval;
-                    // Nom du flag.
-                    let mut label = RichText::new(*name).monospace().strong();
+        // Disposition horizontale compacte (grille 3×2) : tient sans ascenseur
+        // dans le panneau étroit. Chaque cellule = « NOM ● valeur ».
+        const PER_ROW: usize = 3;
+        egui::Grid::new("flags_grid").num_columns(PER_ROW).spacing([16.0, 6.0]).show(ui, |ui| {
+            for (i, ((name, val), (_, pval))) in
+                flags.named().iter().zip(prevf.named()).enumerate()
+            {
+                let changed = *val != pval;
+                let dot = if changed {
+                    changed_color(flash)
+                } else if *val {
+                    FLAG_ON
+                } else {
+                    FLAG_OFF
+                };
+                ui.horizontal(|ui| {
+                    let mut nm = RichText::new(*name).monospace().strong();
                     if changed {
-                        label = label.color(changed_color(flash));
+                        nm = nm.color(changed_color(flash));
                     }
-                    ui.label(label);
-                    // Pastille : orange si modifié, vert si actif, gris sinon.
-                    let dot = if changed {
-                        changed_color(flash)
-                    } else if *val {
-                        FLAG_ON
-                    } else {
-                        FLAG_OFF
-                    };
-                    ui.label(RichText::new("●").color(dot).size(11.0));
-                    // Valeur.
+                    ui.label(nm);
+                    ui.label(RichText::new("●").color(dot).size(10.0));
                     ui.label(
                         RichText::new(if *val { "1" } else { "0" })
                             .monospace()
                             .strong()
                             .color(if *val { FLAG_ON } else { FLAG_OFF }),
                     );
+                });
+                if (i + 1) % PER_ROW == 0 {
                     ui.end_row();
                 }
-            });
+            }
         });
     }
 
@@ -2013,7 +2027,7 @@ impl App {
                 );
             });
         }
-        ui.separator();
+        ui.add_space(2.0);
         match self.tab {
             Tab::Editor => self.editor_ui(ui),
             Tab::Disasm => self.disasm_ui(ui),
@@ -2158,6 +2172,13 @@ impl App {
                 icon_img(ui, bulb_ic.as_ref(), 16.0);
             });
         });
+
+        // FLAGS épinglé au bas du panneau INSTRUCTION (le cadre par défaut du
+        // panneau dessine le trait de séparation avec le contenu au-dessus).
+        egui::TopBottomPanel::bottom("instr_flags")
+            .resizable(false)
+            .show_inside(ui, |ui| self.flags_ui(ui));
+
         let target = self.selected.or_else(|| self.view_rip());
         let Some(addr) = target else {
             ui.label("Lancez le programme, puis cliquez une instruction.");
@@ -2169,28 +2190,33 @@ impl App {
         };
         let flags = self.snap().map(|s| Flags::from_eflags(s.regs.eflags)).unwrap_or_default();
         let e = explain::explain(&insn.mnemonic, &insn.operands, flags);
+        let mnem_col = self.c_mnemonic();
 
+        // Ligne 1 : nom de l'instruction + bouton Microscope (aligné à droite).
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(if self.selected.is_some() {
+            ui.label(RichText::new(&e.title).size(16.0).strong().color(mnem_col));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button("🔬 Microscope")
+                    .on_hover_text("Tout voir sur cette seule instruction")
+                    .clicked()
+                {
+                    self.microscope = Some(addr);
+                }
+            });
+        });
+        // Ligne 2 : catégorie + repère (instruction courante / sélection) à droite.
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(e.category).italics().weak().size(12.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let tag = if self.selected.is_some() {
                     "(sélection)"
                 } else {
                     "(instruction courante)"
-                })
-                .small()
-                .weak(),
-            );
-            if ui
-                .button("🔬 Microscope")
-                .on_hover_text("Tout voir sur cette seule instruction")
-                .clicked()
-            {
-                self.microscope = Some(addr);
-            }
+                };
+                ui.label(RichText::new(tag).small().weak());
+            });
         });
-        ui.add_space(2.0);
-        ui.label(RichText::new(&e.title).size(16.0).strong().color(self.c_mnemonic()));
-        ui.label(RichText::new(e.category).italics().weak().size(12.0));
 
         if let Some(cond) = &e.condition {
             ui.add_space(4.0);
