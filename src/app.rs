@@ -489,19 +489,11 @@ impl App {
         if !self.can_step() {
             return;
         }
-        // Instruction sur le point de s'exécuter (RIP) : syscall + mnémonique.
-        let (pending, exec_mnemonic) = self
-            .dbg
-            .as_ref()
-            .map(|d| {
-                let rip = d.regs().rip;
-                let insn = self.disasm.iter().find(|i| i.address == rip);
-                let mnem = insn.map(|i| i.mnemonic.clone());
-                let pending = (mnem.as_deref() == Some("syscall"))
-                    .then(|| (syscall::format_call(d.regs()), d.regs().rax));
-                (pending, mnem)
-            })
-            .unwrap_or((None, None));
+        // Appel système sur le point de s'exécuter (RIP) : pour le journal console.
+        let pending = self.dbg.as_ref().and_then(|d| {
+            let insn = self.disasm.iter().find(|i| i.address == d.regs().rip)?;
+            (insn.mnemonic == "syscall").then(|| (syscall::format_call(d.regs()), d.regs().rax))
+        });
 
         if let Some(d) = self.dbg.as_mut()
             && let Err(e) = d.step()
@@ -514,30 +506,16 @@ impl App {
         }
         self.pending_flash = true; // déclenche l'animation « CPU vivant »
 
-        // Suivi de la pile d'appels (call → push frame, ret → pop).
-        if let Some(d) = self.dbg.as_ref().filter(|d| d.is_alive()) {
-            match exec_mnemonic.as_deref() {
-                Some("call") => self.call_stack.push(d.regs().rip),
-                Some("ret") => {
-                    self.call_stack.pop();
-                }
-                _ => {}
-            }
-        }
+        // Reconstruit pile d'appels + journal syscalls depuis l'historique complet
+        // (source unique, cohérente après Step ET après « Reprendre ici »).
+        self.rebuild_trace();
 
+        // Journalise l'appel système dans la console (une fois, à son exécution).
         if let Some((call, num)) = pending {
-            let sc_name = syscall::name(num).to_string();
-            let sc_args = call
-                .find('(')
-                .map(|i| call[i + 1..].trim_end_matches(')').to_string())
-                .unwrap_or_default();
             if syscall::is_exit(num) {
                 self.log(&call);
-                self.syscalls.push(SyscallLog { name: sc_name, args: sc_args, number: num, ret: None });
             } else if let Some(d) = self.dbg.as_ref() {
-                let ret = d.regs().rax as i64;
-                self.log(&format!("{call} = {ret}"));
-                self.syscalls.push(SyscallLog { name: sc_name, args: sc_args, number: num, ret: Some(ret) });
+                self.log(&format!("{call} = {}", d.regs().rax as i64));
             }
         }
         match self.dbg.as_ref().map(|d| d.state) {
@@ -566,9 +544,61 @@ impl App {
                 self.status = format!("Repris à l'étape {}", self.view_index);
                 self.selected = None;
                 self.dbg = Some(d);
+                self.rebuild_trace(); // resynchronise call stack + syscalls
             }
             Err(e) => self.log(&e),
         }
+    }
+
+    /// Reconstruit `call_stack` et `syscalls` depuis l'historique complet du
+    /// debugger : source unique de vérité pour ces deux panneaux. Chaque
+    /// transition `history[i] → history[i+1]` correspond à l'exécution de
+    /// l'instruction à `history[i].rip`.
+    fn rebuild_trace(&mut self) {
+        let mut call_stack = Vec::new();
+        let mut syscalls = Vec::new();
+        // Petit utilitaire local : décompose "name(args)" en (name, args).
+        let log_syscall = |list: &mut Vec<SyscallLog>, regs: &crate::debugger::Registers, ret: Option<i64>| {
+            let num = regs.rax;
+            let call = syscall::format_call(regs);
+            let args = call
+                .find('(')
+                .map(|p| call[p + 1..].trim_end_matches(')').to_string())
+                .unwrap_or_default();
+            list.push(SyscallLog { name: syscall::name(num).to_string(), args, number: num, ret });
+        };
+        if let Some(d) = self.dbg.as_ref() {
+            let hist = &d.history;
+            for i in 0..hist.len().saturating_sub(1) {
+                let cur = &hist[i].regs;
+                let next = &hist[i + 1].regs;
+                let Some(insn) = self.disasm.iter().find(|x| x.address == cur.rip) else {
+                    continue;
+                };
+                match insn.mnemonic.as_str() {
+                    "call" => call_stack.push(next.rip),
+                    "ret" => {
+                        call_stack.pop();
+                    }
+                    "syscall" => {
+                        let ret = (!syscall::is_exit(cur.rax)).then_some(next.rax as i64);
+                        log_syscall(&mut syscalls, cur, ret);
+                    }
+                    _ => {}
+                }
+            }
+            // Cas de l'appel qui termine le processus (exit) : il reste en tête de
+            // l'historique sans successeur (aucun snapshot après la mort du process).
+            if !d.is_alive()
+                && let Some(head) = hist.last()
+                && let Some(insn) = self.disasm.iter().find(|x| x.address == head.regs.rip)
+                && insn.mnemonic == "syscall"
+            {
+                log_syscall(&mut syscalls, &head.regs, None);
+            }
+        }
+        self.call_stack = call_stack;
+        self.syscalls = syscalls;
     }
 
     // ---------- Accès à l'état affiché ----------
@@ -2802,5 +2832,37 @@ mod tests {
         app.set_view(2);
         let rip2 = app.snap().unwrap().regs.rip;
         assert_ne!(rip1, rip2, "changer d'étape doit changer l'état affiché (RIP)");
+    }
+
+    /// `rebuild_trace` journalise les appels système depuis l'historique, et
+    /// `resume_here` resynchronise la trace (pas de données figées du run précédent).
+    #[test]
+    fn trace_rebuilds_syscalls_and_resume_is_consistent() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/trace-test.asm");
+        app.out_dir = PathBuf::from("build/trace");
+        app.source = "section .text\n global _start\n_start:\n mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+
+        app.launch();
+        assert!(app.dbg.is_some(), "le programme doit être lancé");
+        assert!(app.syscalls.is_empty(), "aucun syscall avant d'exécuter");
+
+        // Exécute tout le programme : le syscall exit doit être journalisé une fois.
+        for _ in 0..8 {
+            app.step();
+        }
+        assert_eq!(app.syscalls.len(), 1, "un seul appel système (exit)");
+        assert_eq!(app.syscalls[0].number, 60, "exit = 60");
+        assert!(app.syscalls[0].ret.is_none(), "exit ne revient pas");
+
+        // Revenir avant le syscall puis « Reprendre ici » : la trace doit refléter
+        // la nouvelle position (le syscall n'a pas encore été exécuté).
+        app.set_view(1);
+        app.resume_here();
+        assert!(
+            app.syscalls.is_empty(),
+            "après resume avant le syscall, la trace ne doit pas rester figée"
+        );
     }
 }
