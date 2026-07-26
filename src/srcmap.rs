@@ -38,11 +38,10 @@ pub fn parse(listing: &Path, text_base: u64) -> HashMap<u64, usize> {
         let rest = trimmed[digits_end..].trim_start();
         let first = rest.split_whitespace().next().unwrap_or("");
         // Une ligne de code commence par un offset de 8 chiffres hexadécimaux.
-        if in_text && first.len() == 8 && first.bytes().all(|b| b.is_ascii_hexdigit()) {
-            if let Ok(off) = u64::from_str_radix(first, 16) {
+        if in_text && first.len() == 8 && first.bytes().all(|b| b.is_ascii_hexdigit())
+            && let Ok(off) = u64::from_str_radix(first, 16) {
                 map.entry(text_base.wrapping_add(off)).or_insert(line_no);
             }
-        }
     }
     map
 }

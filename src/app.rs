@@ -343,13 +343,12 @@ impl App {
 
     fn save_source(&mut self) -> bool {
         // Crée le dossier cible s'il n'existe pas (ex. `examples/` absent).
-        if let Some(parent) = self.src_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    self.log(&format!("Impossible de créer {}: {e}", parent.display()));
-                    return false;
-                }
-            }
+        if let Some(parent) = self.src_path.parent()
+            && !parent.as_os_str().is_empty()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            self.log(&format!("Impossible de créer {}: {e}", parent.display()));
+            return false;
         }
         match std::fs::write(&self.src_path, &self.source) {
             Ok(_) => {
@@ -414,17 +413,16 @@ impl App {
     /// (si activé) dossier d'`asmstd.inc`.
     fn include_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = Vec::new();
-        if let Some(p) = self.src_path.parent() {
-            if !p.as_os_str().is_empty() {
-                dirs.push(p.to_path_buf());
-            }
+        if let Some(p) = self.src_path.parent()
+            && !p.as_os_str().is_empty()
+        {
+            dirs.push(p.to_path_buf());
         }
-        if self.use_asmstd {
-            if let Some(d) = asmstd_dir() {
-                if !dirs.contains(&d) {
-                    dirs.push(d);
-                }
-            }
+        if self.use_asmstd
+            && let Some(d) = asmstd_dir()
+            && !dirs.contains(&d)
+        {
+            dirs.push(d);
         }
         dirs
     }
@@ -505,11 +503,11 @@ impl App {
             })
             .unwrap_or((None, None));
 
-        if let Some(d) = self.dbg.as_mut() {
-            if let Err(e) = d.step() {
-                self.log(&e);
-                return;
-            }
+        if let Some(d) = self.dbg.as_mut()
+            && let Err(e) = d.step()
+        {
+            self.log(&e);
+            return;
         }
         if let Some(d) = self.dbg.as_ref() {
             self.view_index = d.history.len() - 1;
@@ -583,7 +581,7 @@ impl App {
             return None;
         }
         let elapsed = ui.input(|i| i.time) - self.flash_time;
-        if elapsed < 0.0 || elapsed >= FLASH_DUR {
+        if !(0.0..FLASH_DUR).contains(&elapsed) {
             return None;
         }
         ui.ctx().request_repaint();
@@ -1273,10 +1271,10 @@ impl App {
                     let row = |ui: &mut egui::Ui, text: egui::WidgetText| {
                         ui.add_sized([w, 24.0], egui::SelectableLabel::new(false, text))
                     };
-                    if let Some(parent) = self.browse_dir.parent() {
-                        if row(ui, "📁  ..".into()).clicked() {
-                            new_dir = Some(parent.to_path_buf());
-                        }
+                    if let Some(parent) = self.browse_dir.parent()
+                        && row(ui, "📁  ..".into()).clicked()
+                    {
+                        new_dir = Some(parent.to_path_buf());
                     }
                     let (dirs, files) = list_dir(&self.browse_dir);
                     for d in dirs {
@@ -1647,17 +1645,15 @@ impl App {
         }
 
         // Étape courante : « Instruction N/last : mnémonique ».
-        if let Some(s) = self.snap() {
-            if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
-                ui.label(
-                    RichText::new(format!("Instruction {}/{last}", self.view_index)).strong(),
-                );
-                ui.label(
-                    RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
-                        .monospace()
-                        .color(self.c_mnemonic()),
-                );
-            }
+        if let Some(s) = self.snap()
+            && let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip)
+        {
+            ui.label(RichText::new(format!("Instruction {}/{last}", self.view_index)).strong());
+            ui.label(
+                RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
+                    .monospace()
+                    .color(self.c_mnemonic()),
+            );
         }
 
         // Contrôles de lecture (⏮ ⏪ ▶ ⏩ ⏭).
@@ -1977,10 +1973,10 @@ impl App {
         let mut open_file = None;
         egui::ScrollArea::vertical().id_salt("explorer_scroll").auto_shrink([false, false]).show(ui, |ui| {
             let w = ui.available_width();
-            if let Some(parent) = self.explorer_dir.parent() {
-                if ui.add_sized([w, 22.0], egui::SelectableLabel::new(false, "📁  ..")).clicked() {
-                    new_dir = Some(parent.to_path_buf());
-                }
+            if let Some(parent) = self.explorer_dir.parent()
+                && ui.add_sized([w, 22.0], egui::SelectableLabel::new(false, "📁  ..")).clicked()
+            {
+                new_dir = Some(parent.to_path_buf());
             }
             let (dirs, files) = list_dir(&self.explorer_dir);
             for d in dirs {
@@ -2137,18 +2133,18 @@ impl App {
             ui.label(RichText::new(format!("{name}{mark}")).color(hdr));
         });
         // Bandeau RIP (façon mockup) : « RIP : 0x… mnémonique opérandes ».
-        if let Some(s) = self.snap() {
-            if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("▶").color(ACTION));
-                    ui.label(RichText::new(format!("RIP : 0x{:X}", s.regs.rip)).monospace().color(self.c_addr()));
-                    ui.label(
-                        RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
-                            .monospace()
-                            .color(self.c_mnemonic()),
-                    );
-                });
-            }
+        if let Some(s) = self.snap()
+            && let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip)
+        {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("▶").color(ACTION));
+                ui.label(RichText::new(format!("RIP : 0x{:X}", s.regs.rip)).monospace().color(self.c_addr()));
+                ui.label(
+                    RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
+                        .monospace()
+                        .color(self.c_mnemonic()),
+                );
+            });
         }
         ui.separator();
         match self.tab {
@@ -2487,7 +2483,7 @@ impl App {
                 .color(hdr),
         );
         ui.add_space(2.0);
-        let rows = ((size + 15) / 16).min(16) as u64;
+        let rows = size.div_ceil(16).min(16);
         egui::ScrollArea::both().id_salt("heap_scroll").auto_shrink([false, false]).show(ui, |ui| {
             hex_dump_rows(ui, addr_c, bytes_c, dbg, start, rows);
         });
@@ -2598,7 +2594,7 @@ fn parse_hex(s: &str) -> Option<u64> {
 /// Analyse une suite d'octets hexadécimaux (« 48 65 6C » ou « 48656C »).
 fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
     let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if cleaned.is_empty() || cleaned.len() % 2 != 0 {
+    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
         return None;
     }
     (0..cleaned.len())

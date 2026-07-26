@@ -161,7 +161,7 @@ impl Debugger {
             ForkResult::Child => {
                 // Dans l'enfant : uniquement des appels async-signal-safe avant execve.
                 let _ = ptrace::traceme();
-                let _ = execv(&cpath, &[cpath.clone()]);
+                let _ = execv(&cpath, std::slice::from_ref(&cpath));
                 // execve a échoué : on sort sans dérouler la pile du parent.
                 unsafe { libc::_exit(127) };
             }
