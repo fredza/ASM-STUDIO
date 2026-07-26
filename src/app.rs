@@ -68,6 +68,42 @@ enum StackTab {
     Heap,
 }
 
+/// Icônes de l'app (planche `src/Assets`, découpées dans `assets/icons/`),
+/// chargées une fois comme textures egui.
+struct Icons {
+    editor: egui::TextureHandle,
+    assembler: egui::TextureHandle,
+    run: egui::TextureHandle,
+    debug: egui::TextureHandle,
+    registers: egui::TextureHandle,
+    stack: egui::TextureHandle,
+    heap: egui::TextureHandle,
+}
+
+impl Icons {
+    fn load(ctx: &egui::Context) -> Self {
+        Icons {
+            editor: load_texture(ctx, "editor", include_bytes!("../assets/icons/editor.png")),
+            assembler: load_texture(ctx, "assembler", include_bytes!("../assets/icons/assembler.png")),
+            run: load_texture(ctx, "run", include_bytes!("../assets/icons/run.png")),
+            debug: load_texture(ctx, "debug", include_bytes!("../assets/icons/debug.png")),
+            registers: load_texture(ctx, "registers", include_bytes!("../assets/icons/registers.png")),
+            stack: load_texture(ctx, "stack", include_bytes!("../assets/icons/stack.png")),
+            heap: load_texture(ctx, "heap", include_bytes!("../assets/icons/heap.png")),
+        }
+    }
+}
+
+/// Décode un PNG et le charge en texture egui (réutilise le décodeur d'eframe).
+fn load_texture(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
+    let img = eframe::icon_data::from_png_bytes(bytes).expect("PNG d'icône valide");
+    let color = egui::ColorImage::from_rgba_unmultiplied(
+        [img.width as usize, img.height as usize],
+        &img.rgba,
+    );
+    ctx.load_texture(name, color, egui::TextureOptions::LINEAR)
+}
+
 /// Un appel système exécuté, pour le panneau SYSCALLS.
 struct SyscallLog {
     name: String,
@@ -140,6 +176,8 @@ pub struct App {
     saveas_name: String,
     /// Répertoire courant du navigateur (toujours absolu).
     browse_dir: PathBuf,
+    /// Icônes (chargées au premier frame, quand le contexte egui existe).
+    icons: Option<Icons>,
 }
 
 impl App {
@@ -193,6 +231,7 @@ impl App {
             show_saveas: false,
             saveas_name: String::new(),
             browse_dir,
+            icons: None,
         };
         app.load_settings();
         app
@@ -564,6 +603,9 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.icons.is_none() {
+            self.icons = Some(Icons::load(ctx));
+        }
         self.apply_theme(ctx);
         if self.pending_flash {
             self.flash_time = ctx.input(|i| i.time);
@@ -1354,16 +1396,23 @@ impl App {
             ui.horizontal(|ui| {
                 let running = self.dbg.as_ref().is_some_and(|d| d.is_alive());
                 let can_step = self.can_step();
+                // Handles clonés (Arc bon marché) => pas d'emprunt de self dans la barre.
+                let ic_run = self.icons.as_ref().map(|i| i.run.clone());
+                let ic_debug = self.icons.as_ref().map(|i| i.debug.clone());
+                let ic_build = self.icons.as_ref().map(|i| i.assembler.clone());
 
                 // Run : accent quand inactif, grisé quand un programme tourne.
-                if self.tip(accent_button(ui, "▶  Run", !running), "Lancer (F5)").clicked() {
+                if self
+                    .tip(accent_button(ui, ic_run.as_ref(), "Run", !running), "Lancer (F5)")
+                    .clicked()
+                {
                     self.launch();
                 }
                 // Pause : non implémenté (step-by-step uniquement), toujours grisé.
                 ui.add_enabled(false, egui::Button::new("⏸  Pause"));
                 // Step : accent quand disponible.
                 if self
-                    .tip(accent_button(ui, "⏭  Step", can_step), "Pas à pas (F10)")
+                    .tip(accent_button(ui, ic_debug.as_ref(), "Step", can_step), "Pas à pas (F10)")
                     .clicked()
                 {
                     self.step();
@@ -1387,7 +1436,10 @@ impl App {
                     self.launch();
                 }
                 ui.separator();
-                if self.tip(ui.button("🔨  Build"), "Assembler + Lier (Ctrl+B)").clicked() {
+                if self
+                    .tip(icon_button(ui, ic_build.as_ref(), "Build"), "Assembler + Lier (Ctrl+B)")
+                    .clicked()
+                {
                     self.build();
                 }
                 // Attach : non implémenté.
@@ -1611,7 +1663,7 @@ impl App {
     }
 
     fn registers_ui(&mut self, ui: &mut egui::Ui) {
-        header(ui, "REGISTERS");
+        header_icon(ui, self.icons.as_ref().map(|i| &i.registers), "REGISTERS");
         let Some(rows) = self.reg_rows() else {
             ui.label("Aucun programme lancé.");
             return;
@@ -1890,11 +1942,17 @@ impl App {
     // ---------- Centre : onglets Éditeur / Désassemblage ----------
 
     fn center_ui(&mut self, ui: &mut egui::Ui) {
+        let (edit_ic, disasm_ic) = match &self.icons {
+            Some(i) => (Some(&i.editor), Some(&i.assembler)),
+            None => (None, None),
+        };
         ui.horizontal(|ui| {
-            if ui.selectable_label(self.tab == Tab::Editor, "  Éditeur  ").clicked() {
+            icon_img(ui, edit_ic, 16.0);
+            if ui.selectable_label(self.tab == Tab::Editor, "Éditeur").clicked() {
                 self.tab = Tab::Editor;
             }
-            if ui.selectable_label(self.tab == Tab::Disasm, "  Désassemblage  ").clicked() {
+            icon_img(ui, disasm_ic, 16.0);
+            if ui.selectable_label(self.tab == Tab::Disasm, "Désassemblage").clicked() {
                 self.tab = Tab::Disasm;
             }
             ui.separator();
@@ -2122,11 +2180,17 @@ impl App {
     // ---------- Pile / Tas ----------
 
     fn stack_ui(&mut self, ui: &mut egui::Ui) {
+        let (stack_ic, heap_ic) = match &self.icons {
+            Some(i) => (Some(&i.stack), Some(&i.heap)),
+            None => (None, None),
+        };
         ui.horizontal(|ui| {
-            if ui.selectable_label(self.stack_tab == StackTab::Stack, "  Pile  ").clicked() {
+            icon_img(ui, stack_ic, 15.0);
+            if ui.selectable_label(self.stack_tab == StackTab::Stack, "Pile").clicked() {
                 self.stack_tab = StackTab::Stack;
             }
-            if ui.selectable_label(self.stack_tab == StackTab::Heap, "  Tas  ").clicked() {
+            icon_img(ui, heap_ic, 15.0);
+            if ui.selectable_label(self.stack_tab == StackTab::Heap, "Tas").clicked() {
                 self.stack_tab = StackTab::Heap;
             }
         });
@@ -2242,6 +2306,23 @@ fn header(ui: &mut egui::Ui, text: &str) {
     ui.separator();
 }
 
+/// En-tête de section avec une icône optionnelle à gauche du titre.
+fn header_icon(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, text: &str) {
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        icon_img(ui, icon, 15.0);
+        ui.label(RichText::new(text).strong().color(HEADER).size(12.5));
+    });
+    ui.separator();
+}
+
+/// Affiche une petite icône carrée (rien si `icon` est `None`).
+fn icon_img(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, size: f32) {
+    if let Some(t) = icon {
+        ui.add(egui::Image::new((t.id(), egui::vec2(size, size))));
+    }
+}
+
 /// Titre de section « inline » (dans une ligne horizontale).
 fn header_inline(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).strong().color(HEADER).size(12.5));
@@ -2332,14 +2413,35 @@ fn bordered_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Respo
     ui.add_enabled(enabled, btn)
 }
 
+/// Source d'image dimensionnée pour un bouton (16px), à partir d'une icône.
+fn btn_icon(icon: Option<&egui::TextureHandle>) -> Option<egui::load::SizedTexture> {
+    icon.map(|t| egui::load::SizedTexture::new(t.id(), egui::vec2(16.0, 16.0)))
+}
+
 /// Bouton d'accent (fond ACCENT si actif, grisé sinon) — pour Run et Step.
-fn accent_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
-    let btn = if enabled {
-        egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACCENT)
-    } else {
-        egui::Button::new(label)
+fn accent_button(
+    ui: &mut egui::Ui,
+    icon: Option<&egui::TextureHandle>,
+    label: &str,
+    enabled: bool,
+) -> egui::Response {
+    let btn = match (enabled, btn_icon(icon)) {
+        (true, Some(img)) => {
+            egui::Button::image_and_text(img, RichText::new(label).color(Color32::WHITE)).fill(ACCENT)
+        }
+        (true, None) => egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACCENT),
+        (false, Some(img)) => egui::Button::image_and_text(img, label),
+        (false, None) => egui::Button::new(label),
     };
     ui.add_enabled(enabled, btn)
+}
+
+/// Bouton ordinaire avec icône optionnelle à gauche du libellé.
+fn icon_button(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, label: &str) -> egui::Response {
+    match btn_icon(icon) {
+        Some(img) => ui.add(egui::Button::image_and_text(img, label)),
+        None => ui.button(label),
+    }
 }
 
 /// Petit badge coloré (texte sur fond semi-transparent).
