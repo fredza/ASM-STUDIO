@@ -755,8 +755,9 @@ impl eframe::App for App {
                 });
         }
 
-        // Bande centrale : REGISTERS | FLAGS | STACK | CALL STACK | SYSCALLS.
-        // (Le désassemblage a son propre onglet au centre : pas de doublon ici.)
+        // Bande centrale : REGISTERS | STACK | CALL STACK | SYSCALLS.
+        // (FLAGS est désormais au bas du panneau INSTRUCTION ; le désassemblage
+        // a son propre onglet au centre.)
         if self.show_cpu_band {
             egui::TopBottomPanel::bottom("mid_band")
                 .resizable(true)
@@ -764,15 +765,13 @@ impl eframe::App for App {
                 .frame(band_frame)
                 .show(ctx, |ui| {
                     let h = ui.available_height();
-                    let cw = ((ui.available_width() - 40.0) / 5.0).max(90.0);
+                    let cw = ((ui.available_width() - 30.0) / 4.0).max(90.0);
                     ui.horizontal_top(|ui| {
-                        col(ui, cw * 1.35, h, |ui| self.registers_ui(ui));
+                        col(ui, cw * 1.4, h, |ui| self.registers_ui(ui));
                         ui.separator();
-                        col(ui, cw * 0.6, h, |ui| self.flags_ui(ui));
+                        col(ui, cw * 1.3, h, |ui| self.stack_ui(ui));
                         ui.separator();
-                        col(ui, cw * 1.2, h, |ui| self.stack_ui(ui));
-                        ui.separator();
-                        col(ui, cw * 0.7, h, |ui| self.callstack_ui(ui));
+                        col(ui, cw * 0.9, h, |ui| self.callstack_ui(ui));
                         ui.separator();
                         col(ui, ui.available_width(), h, |ui| self.syscalls_ui(ui));
                     });
@@ -2169,6 +2168,13 @@ impl App {
                 icon_img(ui, bulb_ic.as_ref(), 16.0);
             });
         });
+
+        // FLAGS épinglé au bas du panneau INSTRUCTION (le cadre par défaut du
+        // panneau dessine le trait de séparation avec le contenu au-dessus).
+        egui::TopBottomPanel::bottom("instr_flags")
+            .resizable(false)
+            .show_inside(ui, |ui| self.flags_ui(ui));
+
         let target = self.selected.or_else(|| self.view_rip());
         let Some(addr) = target else {
             ui.label("Lancez le programme, puis cliquez une instruction.");
@@ -2180,28 +2186,33 @@ impl App {
         };
         let flags = self.snap().map(|s| Flags::from_eflags(s.regs.eflags)).unwrap_or_default();
         let e = explain::explain(&insn.mnemonic, &insn.operands, flags);
+        let mnem_col = self.c_mnemonic();
 
+        // Ligne 1 : nom de l'instruction + bouton Microscope (aligné à droite).
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(if self.selected.is_some() {
+            ui.label(RichText::new(&e.title).size(16.0).strong().color(mnem_col));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button("🔬 Microscope")
+                    .on_hover_text("Tout voir sur cette seule instruction")
+                    .clicked()
+                {
+                    self.microscope = Some(addr);
+                }
+            });
+        });
+        // Ligne 2 : catégorie + repère (instruction courante / sélection) à droite.
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(e.category).italics().weak().size(12.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let tag = if self.selected.is_some() {
                     "(sélection)"
                 } else {
                     "(instruction courante)"
-                })
-                .small()
-                .weak(),
-            );
-            if ui
-                .button("🔬 Microscope")
-                .on_hover_text("Tout voir sur cette seule instruction")
-                .clicked()
-            {
-                self.microscope = Some(addr);
-            }
+                };
+                ui.label(RichText::new(tag).small().weak());
+            });
         });
-        ui.add_space(2.0);
-        ui.label(RichText::new(&e.title).size(16.0).strong().color(self.c_mnemonic()));
-        ui.label(RichText::new(e.category).italics().weak().size(12.0));
 
         if let Some(cond) = &e.condition {
             ui.add_space(4.0);
