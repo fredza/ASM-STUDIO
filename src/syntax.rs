@@ -7,57 +7,85 @@
 
 use eframe::egui::{Color32, FontId, TextFormat, text::LayoutJob};
 
-// Palette (tons VSCode « Dark+ »).
-const COMMENT: Color32 = Color32::from_rgb(0x6A, 0x99, 0x55);
-const MNEMONIC: Color32 = Color32::from_rgb(0x56, 0x9C, 0xD6);
-const REGISTER: Color32 = Color32::from_rgb(0x9C, 0xDC, 0xFE);
-const NUMBER: Color32 = Color32::from_rgb(0xB5, 0xCE, 0xA8);
-const DIRECTIVE: Color32 = Color32::from_rgb(0xC5, 0x86, 0xC0);
-const LABEL: Color32 = Color32::from_rgb(0xDC, 0xDC, 0xAA);
-const STRING: Color32 = Color32::from_rgb(0xCE, 0x91, 0x78);
-const TEXT: Color32 = Color32::from_rgb(0xD4, 0xD4, 0xD4);
+/// Palette de coloration (une variante par thème).
+struct Palette {
+    comment: Color32,
+    mnemonic: Color32,
+    register: Color32,
+    number: Color32,
+    directive: Color32,
+    label: Color32,
+    string: Color32,
+    text: Color32,
+    line_bg: Color32,
+}
+
+// Tons VSCode « Dark+ ».
+const DARK: Palette = Palette {
+    comment: Color32::from_rgb(0x6A, 0x99, 0x55),
+    mnemonic: Color32::from_rgb(0x56, 0x9C, 0xD6),
+    register: Color32::from_rgb(0x9C, 0xDC, 0xFE),
+    number: Color32::from_rgb(0xB5, 0xCE, 0xA8),
+    directive: Color32::from_rgb(0xC5, 0x86, 0xC0),
+    label: Color32::from_rgb(0xDC, 0xDC, 0xAA),
+    string: Color32::from_rgb(0xCE, 0x91, 0x78),
+    text: Color32::from_rgb(0xD4, 0xD4, 0xD4),
+    line_bg: Color32::from_rgb(0x3A, 0x33, 0x1E),
+};
+
+// Tons VSCode « Light+ » : couleurs foncées pour contraster sur fond clair.
+const LIGHT: Palette = Palette {
+    comment: Color32::from_rgb(0x00, 0x80, 0x00),
+    mnemonic: Color32::from_rgb(0x04, 0x51, 0xA5),
+    register: Color32::from_rgb(0x0F, 0x68, 0xA0),
+    number: Color32::from_rgb(0x0A, 0x6E, 0x48),
+    directive: Color32::from_rgb(0xAF, 0x00, 0xDB),
+    label: Color32::from_rgb(0x79, 0x5E, 0x26),
+    string: Color32::from_rgb(0xA3, 0x15, 0x15),
+    text: Color32::from_rgb(0x1C, 0x20, 0x28),
+    line_bg: Color32::from_rgb(0xFF, 0xF3, 0xC4),
+};
 
 /// Taille de police de l'éditeur (partagée avec la gouttière de numéros).
 pub const FONT_SIZE: f32 = 13.0;
-/// Fond de la ligne courante (RIP) pendant le débogage.
-const CURRENT_LINE_BG: Color32 = Color32::from_rgb(0x3A, 0x33, 0x1E);
 
-/// Construit le `LayoutJob` coloré du source complet. `hl_line` (0-based) est la
-/// ligne à surligner (ligne courante du débogage), ou `None`.
+/// Construit le `LayoutJob` coloré du source complet. `dark` choisit la palette,
+/// `hl_line` (0-based) est la ligne à surligner (ligne courante du débogage).
 /// Le retour à la ligne est désactivé pour rester aligné aux numéros de ligne.
-pub fn highlight(text: &str, hl_line: Option<usize>) -> LayoutJob {
+pub fn highlight(text: &str, dark: bool, hl_line: Option<usize>) -> LayoutJob {
+    let pal = if dark { &DARK } else { &LIGHT };
     let font = FontId::monospace(FONT_SIZE);
     let mut job = LayoutJob::default();
     job.wrap.max_width = f32::INFINITY;
     for (i, line) in text.split_inclusive('\n').enumerate() {
         let bg = if Some(i) == hl_line {
-            CURRENT_LINE_BG
+            pal.line_bg
         } else {
             Color32::TRANSPARENT
         };
-        highlight_line(&mut job, line, &font, bg);
+        highlight_line(&mut job, pal, line, &font, bg);
     }
     job
 }
 
-fn highlight_line(job: &mut LayoutJob, line: &str, font: &FontId, bg: Color32) {
+fn highlight_line(job: &mut LayoutJob, pal: &Palette, line: &str, font: &FontId, bg: Color32) {
     let mut rest = line;
     let mut mnem_pending = true;
     while !rest.is_empty() {
         let c = rest.chars().next().unwrap();
         if c == ';' {
             // Commentaire jusqu'à la fin de la ligne.
-            push(job, rest, COMMENT, font, bg);
+            push(job, rest, pal.comment, font, bg);
             break;
         } else if c == '"' || c == '\'' {
             let end = string_end(rest, c);
-            push(job, &rest[..end], STRING, font, bg);
+            push(job, &rest[..end], pal.string, font, bg);
             rest = &rest[end..];
         } else if is_ident(c) {
             let end = rest.find(|ch: char| !is_ident(ch)).unwrap_or(rest.len());
             let word = &rest[..end];
             let after = &rest[end..];
-            push(job, word, classify(word, after, &mut mnem_pending), font, bg);
+            push(job, word, classify(word, after, pal, &mut mnem_pending), font, bg);
             rest = after;
         } else {
             // Suite de séparateurs (espaces, virgules, crochets, opérateurs).
@@ -65,7 +93,7 @@ fn highlight_line(job: &mut LayoutJob, line: &str, font: &FontId, bg: Color32) {
                 .find(|ch: char| ch == ';' || ch == '"' || ch == '\'' || is_ident(ch))
                 .unwrap_or(rest.len())
                 .max(c.len_utf8());
-            push(job, &rest[..end], TEXT, font, bg);
+            push(job, &rest[..end], pal.text, font, bg);
             rest = &rest[end..];
         }
     }
@@ -81,24 +109,24 @@ fn string_end(s: &str, quote: char) -> usize {
     s.len()
 }
 
-fn classify(word: &str, after: &str, mnem_pending: &mut bool) -> Color32 {
+fn classify(word: &str, after: &str, pal: &Palette, mnem_pending: &mut bool) -> Color32 {
     if word.starts_with('.') {
         // Label local (.loop) ou nom de section (.text/.data/.bss).
-        LABEL
+        pal.label
     } else if is_number(word) {
-        NUMBER
+        pal.number
     } else if is_register(word) {
-        REGISTER
+        pal.register
     } else if is_directive(word) {
         *mnem_pending = false;
-        DIRECTIVE
+        pal.directive
     } else if after.trim_start().starts_with(':') {
-        LABEL
+        pal.label
     } else if *mnem_pending {
         *mnem_pending = false;
-        MNEMONIC
+        pal.mnemonic
     } else {
-        TEXT
+        pal.text
     }
 }
 
@@ -152,21 +180,21 @@ mod tests {
     fn covers_whole_line_without_loss() {
         // Chaque caractère doit être stylé (aucune perte de texte à l'affichage).
         let src = "  mov rax, 5   ; commentaire\n";
-        let job = highlight(src, None);
+        let job = highlight(src, true, None);
         assert_eq!(job.text, src);
     }
 
     #[test]
     fn semicolon_inside_string_is_not_a_comment() {
         let src = "    db \"a;b\", 10\n";
-        let job = highlight(src, None);
+        let job = highlight(src, true, None);
         // Tout le texte est présent et la ligne reste intègre.
         assert_eq!(job.text, src);
         // La chaîne "a;b" est colorée en STRING (une section contient a;b).
         assert!(
             job.sections
                 .iter()
-                .any(|s| s.format.color == STRING && src[s.byte_range.clone()].contains(';')),
+                .any(|s| s.format.color == DARK.string && src[s.byte_range.clone()].contains(';')),
             "le ; dans la chaîne ne doit pas déclencher un commentaire"
         );
     }
