@@ -2285,7 +2285,10 @@ impl App {
         }
 
         let prev_stack = self.prev_snap().map(|p| p.stack.clone()).unwrap_or_default();
-        egui::ScrollArea::vertical().id_salt("stack_scroll").show(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("stack_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
             egui::Grid::new("stack_grid").num_columns(3).spacing([10.0, 3.0]).show(ui, |ui| {
                 for (i, val) in snap.stack.iter().enumerate() {
                     let addr = rsp.wrapping_add((i as u64) * 8);
