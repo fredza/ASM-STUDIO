@@ -116,6 +116,11 @@ pub struct App {
 
     tab: Tab,
     stack_tab: StackTab,
+    /// Visibilité des panneaux (menu Affichage).
+    show_explorer: bool,
+    show_instruction: bool,
+    show_cpu_band: bool,
+    show_bottom_band: bool,
     show_tooltips: bool,
     /// Animations « CPU vivant » (pulsation des valeurs modifiées au Step).
     animate: bool,
@@ -171,6 +176,10 @@ impl App {
             editor_scroll_y: 0.0,
             tab: Tab::Editor,
             stack_tab: StackTab::Stack,
+            show_explorer: true,
+            show_instruction: true,
+            show_cpu_band: true,
+            show_bottom_band: true,
             show_tooltips: true,
             animate: true,
             use_asmstd: false,
@@ -209,6 +218,10 @@ impl App {
                 "tooltips" => self.show_tooltips = v == "true",
                 "asmstd" => self.use_asmstd = v == "true",
                 "animate" => self.animate = v == "true",
+                "show_explorer" => self.show_explorer = v == "true",
+                "show_instruction" => self.show_instruction = v == "true",
+                "show_cpu_band" => self.show_cpu_band = v == "true",
+                "show_bottom_band" => self.show_bottom_band = v == "true",
                 _ => {}
             }
         }
@@ -226,8 +239,15 @@ impl App {
             _ => "dark",
         };
         let content = format!(
-            "theme={theme}\ntooltips={}\nasmstd={}\nanimate={}\n",
-            self.show_tooltips, self.use_asmstd, self.animate
+            "theme={theme}\ntooltips={}\nasmstd={}\nanimate={}\n\
+             show_explorer={}\nshow_instruction={}\nshow_cpu_band={}\nshow_bottom_band={}\n",
+            self.show_tooltips,
+            self.use_asmstd,
+            self.animate,
+            self.show_explorer,
+            self.show_instruction,
+            self.show_cpu_band,
+            self.show_bottom_band,
         );
         let _ = std::fs::write(&path, content);
     }
@@ -556,52 +576,60 @@ impl eframe::App for App {
         self.status_bar(ctx);
 
         // Bande basse : MEMORY | TIMELINE | CONSOLE.
-        egui::TopBottomPanel::bottom("bottom_band")
-            .resizable(true)
-            .default_height(190.0)
-            .show(ctx, |ui| {
-                let h = ui.available_height();
-                let cw = ((ui.available_width() - 20.0) / 3.0).max(60.0);
-                ui.horizontal_top(|ui| {
-                    col(ui, cw, h, |ui| self.memory_ui(ui));
-                    ui.separator();
-                    col(ui, cw, h, |ui| self.timeline_col_ui(ui));
-                    ui.separator();
-                    col(ui, ui.available_width(), h, |ui| self.console_ui(ui));
+        if self.show_bottom_band {
+            egui::TopBottomPanel::bottom("bottom_band")
+                .resizable(true)
+                .default_height(190.0)
+                .show(ctx, |ui| {
+                    let h = ui.available_height();
+                    let cw = ((ui.available_width() - 20.0) / 3.0).max(60.0);
+                    ui.horizontal_top(|ui| {
+                        col(ui, cw, h, |ui| self.memory_ui(ui));
+                        ui.separator();
+                        col(ui, cw, h, |ui| self.timeline_col_ui(ui));
+                        ui.separator();
+                        col(ui, ui.available_width(), h, |ui| self.console_ui(ui));
+                    });
                 });
-            });
+        }
 
         // Bande centrale : REGISTERS | FLAGS | STACK | CALL STACK | DISASSEMBLY | SYSCALLS.
-        egui::TopBottomPanel::bottom("mid_band")
-            .resizable(true)
-            .default_height(220.0)
-            .show(ctx, |ui| {
-                let h = ui.available_height();
-                let cw = ((ui.available_width() - 50.0) / 6.0).max(90.0);
-                ui.horizontal_top(|ui| {
-                    col(ui, cw * 1.3, h, |ui| self.registers_ui(ui));
-                    ui.separator();
-                    col(ui, cw * 0.6, h, |ui| self.flags_ui(ui));
-                    ui.separator();
-                    col(ui, cw * 1.2, h, |ui| self.stack_ui(ui));
-                    ui.separator();
-                    col(ui, cw * 0.9, h, |ui| self.callstack_ui(ui));
-                    ui.separator();
-                    col(ui, cw * 1.1, h, |ui| self.disasm_around_ui(ui));
-                    ui.separator();
-                    col(ui, ui.available_width(), h, |ui| self.syscalls_ui(ui));
+        if self.show_cpu_band {
+            egui::TopBottomPanel::bottom("mid_band")
+                .resizable(true)
+                .default_height(220.0)
+                .show(ctx, |ui| {
+                    let h = ui.available_height();
+                    let cw = ((ui.available_width() - 50.0) / 6.0).max(90.0);
+                    ui.horizontal_top(|ui| {
+                        col(ui, cw * 1.3, h, |ui| self.registers_ui(ui));
+                        ui.separator();
+                        col(ui, cw * 0.6, h, |ui| self.flags_ui(ui));
+                        ui.separator();
+                        col(ui, cw * 1.2, h, |ui| self.stack_ui(ui));
+                        ui.separator();
+                        col(ui, cw * 0.9, h, |ui| self.callstack_ui(ui));
+                        ui.separator();
+                        col(ui, cw * 1.1, h, |ui| self.disasm_around_ui(ui));
+                        ui.separator();
+                        col(ui, ui.available_width(), h, |ui| self.syscalls_ui(ui));
+                    });
                 });
-            });
+        }
 
         // Explorateur à gauche, INSTRUCTION à droite, éditeur au centre.
-        egui::SidePanel::left("explorer_panel")
-            .resizable(true)
-            .default_width(180.0)
-            .show(ctx, |ui| self.explorer_ui(ui));
-        egui::SidePanel::right("instruction_panel")
-            .resizable(true)
-            .default_width(320.0)
-            .show(ctx, |ui| self.instruction_ui(ui));
+        if self.show_explorer {
+            egui::SidePanel::left("explorer_panel")
+                .resizable(true)
+                .default_width(180.0)
+                .show(ctx, |ui| self.explorer_ui(ui));
+        }
+        if self.show_instruction {
+            egui::SidePanel::right("instruction_panel")
+                .resizable(true)
+                .default_width(320.0)
+                .show(ctx, |ui| self.instruction_ui(ui));
+        }
         egui::CentralPanel::default().show(ctx, |ui| self.center_ui(ui));
 
         self.about_window(ctx);
@@ -655,6 +683,31 @@ impl App {
         }
         if step {
             self.step();
+        }
+        // Affichage : Ctrl+1..4 bascule chaque panneau.
+        let (t_expl, t_instr, t_cpu, t_bottom) = ctx.input(|i| {
+            let c = i.modifiers.ctrl;
+            (
+                c && i.key_pressed(Key::Num1),
+                c && i.key_pressed(Key::Num2),
+                c && i.key_pressed(Key::Num3),
+                c && i.key_pressed(Key::Num4),
+            )
+        });
+        if t_expl {
+            self.show_explorer = !self.show_explorer;
+        }
+        if t_instr {
+            self.show_instruction = !self.show_instruction;
+        }
+        if t_cpu {
+            self.show_cpu_band = !self.show_cpu_band;
+        }
+        if t_bottom {
+            self.show_bottom_band = !self.show_bottom_band;
+        }
+        if t_expl || t_instr || t_cpu || t_bottom {
+            self.save_settings();
         }
         // Timeline seulement si l'éditeur n'a pas le focus (évite le conflit ←/→).
         let editing = ctx.memory(|m| m.focused().is_some());
@@ -1032,6 +1085,10 @@ impl App {
                     ("Ctrl+N", "Nouveau"),
                     ("← / →", "Timeline : précédent / suivant"),
                     ("Home / End", "Timeline : début / fin"),
+                    ("Ctrl+1", "Afficher/masquer l'explorateur"),
+                    ("Ctrl+2", "Afficher/masquer l'instruction"),
+                    ("Ctrl+3", "Afficher/masquer la bande CPU"),
+                    ("Ctrl+4", "Afficher/masquer la bande basse"),
                 ];
                 egui::Grid::new("shortcuts_grid")
                     .num_columns(2)
@@ -1248,6 +1305,26 @@ impl App {
                     if ui.button("Stop               Échap").clicked() {
                         self.stop();
                         ui.close_menu();
+                    }
+                });
+                ui.menu_button("Affichage", |ui| {
+                    ui.label(RichText::new("Panneaux").small().weak());
+                    let mut changed = false;
+                    changed |= ui.checkbox(&mut self.show_explorer, "Explorateur          Ctrl+1").changed();
+                    changed |= ui.checkbox(&mut self.show_instruction, "Instruction          Ctrl+2").changed();
+                    changed |= ui.checkbox(&mut self.show_cpu_band, "Bande CPU (registres…)  Ctrl+3").changed();
+                    changed |= ui.checkbox(&mut self.show_bottom_band, "Bande basse (mémoire…)  Ctrl+4").changed();
+                    ui.separator();
+                    if ui.button("Tout afficher").clicked() {
+                        self.show_explorer = true;
+                        self.show_instruction = true;
+                        self.show_cpu_band = true;
+                        self.show_bottom_band = true;
+                        changed = true;
+                        ui.close_menu();
+                    }
+                    if changed {
+                        self.save_settings();
                     }
                 });
                 ui.menu_button("Aide", |ui| {
