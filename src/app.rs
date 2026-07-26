@@ -343,13 +343,12 @@ impl App {
 
     fn save_source(&mut self) -> bool {
         // Crée le dossier cible s'il n'existe pas (ex. `examples/` absent).
-        if let Some(parent) = self.src_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                if let Err(e) = std::fs::create_dir_all(parent) {
-                    self.log(&format!("Impossible de créer {}: {e}", parent.display()));
-                    return false;
-                }
-            }
+        if let Some(parent) = self.src_path.parent()
+            && !parent.as_os_str().is_empty()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            self.log(&format!("Impossible de créer {}: {e}", parent.display()));
+            return false;
         }
         match std::fs::write(&self.src_path, &self.source) {
             Ok(_) => {
@@ -414,17 +413,16 @@ impl App {
     /// (si activé) dossier d'`asmstd.inc`.
     fn include_dirs(&self) -> Vec<PathBuf> {
         let mut dirs = Vec::new();
-        if let Some(p) = self.src_path.parent() {
-            if !p.as_os_str().is_empty() {
-                dirs.push(p.to_path_buf());
-            }
+        if let Some(p) = self.src_path.parent()
+            && !p.as_os_str().is_empty()
+        {
+            dirs.push(p.to_path_buf());
         }
-        if self.use_asmstd {
-            if let Some(d) = asmstd_dir() {
-                if !dirs.contains(&d) {
-                    dirs.push(d);
-                }
-            }
+        if self.use_asmstd
+            && let Some(d) = asmstd_dir()
+            && !dirs.contains(&d)
+        {
+            dirs.push(d);
         }
         dirs
     }
@@ -491,55 +489,33 @@ impl App {
         if !self.can_step() {
             return;
         }
-        // Instruction sur le point de s'exécuter (RIP) : syscall + mnémonique.
-        let (pending, exec_mnemonic) = self
-            .dbg
-            .as_ref()
-            .map(|d| {
-                let rip = d.regs().rip;
-                let insn = self.disasm.iter().find(|i| i.address == rip);
-                let mnem = insn.map(|i| i.mnemonic.clone());
-                let pending = (mnem.as_deref() == Some("syscall"))
-                    .then(|| (syscall::format_call(d.regs()), d.regs().rax));
-                (pending, mnem)
-            })
-            .unwrap_or((None, None));
+        // Appel système sur le point de s'exécuter (RIP) : pour le journal console.
+        let pending = self.dbg.as_ref().and_then(|d| {
+            let insn = self.disasm.iter().find(|i| i.address == d.regs().rip)?;
+            (insn.mnemonic == "syscall").then(|| (syscall::format_call(d.regs()), d.regs().rax))
+        });
 
-        if let Some(d) = self.dbg.as_mut() {
-            if let Err(e) = d.step() {
-                self.log(&e);
-                return;
-            }
+        if let Some(d) = self.dbg.as_mut()
+            && let Err(e) = d.step()
+        {
+            self.log(&e);
+            return;
         }
         if let Some(d) = self.dbg.as_ref() {
             self.view_index = d.history.len() - 1;
         }
         self.pending_flash = true; // déclenche l'animation « CPU vivant »
 
-        // Suivi de la pile d'appels (call → push frame, ret → pop).
-        if let Some(d) = self.dbg.as_ref().filter(|d| d.is_alive()) {
-            match exec_mnemonic.as_deref() {
-                Some("call") => self.call_stack.push(d.regs().rip),
-                Some("ret") => {
-                    self.call_stack.pop();
-                }
-                _ => {}
-            }
-        }
+        // Reconstruit pile d'appels + journal syscalls depuis l'historique complet
+        // (source unique, cohérente après Step ET après « Reprendre ici »).
+        self.rebuild_trace();
 
+        // Journalise l'appel système dans la console (une fois, à son exécution).
         if let Some((call, num)) = pending {
-            let sc_name = syscall::name(num).to_string();
-            let sc_args = call
-                .find('(')
-                .map(|i| call[i + 1..].trim_end_matches(')').to_string())
-                .unwrap_or_default();
             if syscall::is_exit(num) {
                 self.log(&call);
-                self.syscalls.push(SyscallLog { name: sc_name, args: sc_args, number: num, ret: None });
             } else if let Some(d) = self.dbg.as_ref() {
-                let ret = d.regs().rax as i64;
-                self.log(&format!("{call} = {ret}"));
-                self.syscalls.push(SyscallLog { name: sc_name, args: sc_args, number: num, ret: Some(ret) });
+                self.log(&format!("{call} = {}", d.regs().rax as i64));
             }
         }
         match self.dbg.as_ref().map(|d| d.state) {
@@ -568,9 +544,61 @@ impl App {
                 self.status = format!("Repris à l'étape {}", self.view_index);
                 self.selected = None;
                 self.dbg = Some(d);
+                self.rebuild_trace(); // resynchronise call stack + syscalls
             }
             Err(e) => self.log(&e),
         }
+    }
+
+    /// Reconstruit `call_stack` et `syscalls` depuis l'historique complet du
+    /// debugger : source unique de vérité pour ces deux panneaux. Chaque
+    /// transition `history[i] → history[i+1]` correspond à l'exécution de
+    /// l'instruction à `history[i].rip`.
+    fn rebuild_trace(&mut self) {
+        let mut call_stack = Vec::new();
+        let mut syscalls = Vec::new();
+        // Petit utilitaire local : décompose "name(args)" en (name, args).
+        let log_syscall = |list: &mut Vec<SyscallLog>, regs: &crate::debugger::Registers, ret: Option<i64>| {
+            let num = regs.rax;
+            let call = syscall::format_call(regs);
+            let args = call
+                .find('(')
+                .map(|p| call[p + 1..].trim_end_matches(')').to_string())
+                .unwrap_or_default();
+            list.push(SyscallLog { name: syscall::name(num).to_string(), args, number: num, ret });
+        };
+        if let Some(d) = self.dbg.as_ref() {
+            let hist = &d.history;
+            for i in 0..hist.len().saturating_sub(1) {
+                let cur = &hist[i].regs;
+                let next = &hist[i + 1].regs;
+                let Some(insn) = self.disasm.iter().find(|x| x.address == cur.rip) else {
+                    continue;
+                };
+                match insn.mnemonic.as_str() {
+                    "call" => call_stack.push(next.rip),
+                    "ret" => {
+                        call_stack.pop();
+                    }
+                    "syscall" => {
+                        let ret = (!syscall::is_exit(cur.rax)).then_some(next.rax as i64);
+                        log_syscall(&mut syscalls, cur, ret);
+                    }
+                    _ => {}
+                }
+            }
+            // Cas de l'appel qui termine le processus (exit) : il reste en tête de
+            // l'historique sans successeur (aucun snapshot après la mort du process).
+            if !d.is_alive()
+                && let Some(head) = hist.last()
+                && let Some(insn) = self.disasm.iter().find(|x| x.address == head.regs.rip)
+                && insn.mnemonic == "syscall"
+            {
+                log_syscall(&mut syscalls, &head.regs, None);
+            }
+        }
+        self.call_stack = call_stack;
+        self.syscalls = syscalls;
     }
 
     // ---------- Accès à l'état affiché ----------
@@ -583,7 +611,7 @@ impl App {
             return None;
         }
         let elapsed = ui.input(|i| i.time) - self.flash_time;
-        if elapsed < 0.0 || elapsed >= FLASH_DUR {
+        if !(0.0..FLASH_DUR).contains(&elapsed) {
             return None;
         }
         ui.ctx().request_repaint();
@@ -1263,35 +1291,16 @@ impl App {
         ui.add_space(6.0);
 
         // Liste (dossiers puis fichiers .asm), lignes pleine largeur.
+        let file_col = self.c_mnemonic();
         egui::Frame::group(ui.style()).show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
                 .max_height(300.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let w = ui.available_width();
-                    let row = |ui: &mut egui::Ui, text: egui::WidgetText| {
-                        ui.add_sized([w, 24.0], egui::SelectableLabel::new(false, text))
-                    };
-                    if let Some(parent) = self.browse_dir.parent() {
-                        if row(ui, "📁  ..".into()).clicked() {
-                            new_dir = Some(parent.to_path_buf());
-                        }
-                    }
-                    let (dirs, files) = list_dir(&self.browse_dir);
-                    for d in dirs {
-                        let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
-                        if row(ui, format!("📁  {name}").into()).clicked() {
-                            new_dir = Some(d);
-                        }
-                    }
-                    for f in files {
-                        let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
-                        let text = RichText::new(format!("📄  {name}")).color(self.c_mnemonic());
-                        if row(ui, text.into()).clicked() {
-                            picked = Some(f);
-                        }
-                    }
+                    let (nd, pk) = dir_list_rows(ui, &self.browse_dir, None, file_col, 24.0);
+                    new_dir = nd;
+                    picked = pk;
                 });
         });
         (new_dir, picked)
@@ -1647,17 +1656,15 @@ impl App {
         }
 
         // Étape courante : « Instruction N/last : mnémonique ».
-        if let Some(s) = self.snap() {
-            if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
-                ui.label(
-                    RichText::new(format!("Instruction {}/{last}", self.view_index)).strong(),
-                );
-                ui.label(
-                    RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
-                        .monospace()
-                        .color(self.c_mnemonic()),
-                );
-            }
+        if let Some(s) = self.snap()
+            && let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip)
+        {
+            ui.label(RichText::new(format!("Instruction {}/{last}", self.view_index)).strong());
+            ui.label(
+                RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
+                    .monospace()
+                    .color(self.c_mnemonic()),
+            );
         }
 
         // Contrôles de lecture (⏮ ⏪ ▶ ⏩ ⏭).
@@ -1975,28 +1982,12 @@ impl App {
         ui.separator();
         let mut new_dir = None;
         let mut open_file = None;
+        let file_col = self.c_mnemonic();
         egui::ScrollArea::vertical().id_salt("explorer_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            let w = ui.available_width();
-            if let Some(parent) = self.explorer_dir.parent() {
-                if ui.add_sized([w, 22.0], egui::SelectableLabel::new(false, "📁  ..")).clicked() {
-                    new_dir = Some(parent.to_path_buf());
-                }
-            }
-            let (dirs, files) = list_dir(&self.explorer_dir);
-            for d in dirs {
-                let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
-                if ui.add_sized([w, 22.0], egui::SelectableLabel::new(false, format!("📁  {name}"))).clicked() {
-                    new_dir = Some(d);
-                }
-            }
-            for f in files {
-                let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
-                let is_cur = f == self.src_path;
-                let txt = RichText::new(format!("📄  {name}")).color(if is_cur { CHANGED } else { self.c_mnemonic() });
-                if ui.add_sized([w, 22.0], egui::SelectableLabel::new(is_cur, txt)).clicked() {
-                    open_file = Some(f);
-                }
-            }
+            let (nd, of) =
+                dir_list_rows(ui, &self.explorer_dir, Some(&self.src_path), file_col, 22.0);
+            new_dir = nd;
+            open_file = of;
         });
         if let Some(d) = new_dir {
             self.explorer_dir = d;
@@ -2137,18 +2128,18 @@ impl App {
             ui.label(RichText::new(format!("{name}{mark}")).color(hdr));
         });
         // Bandeau RIP (façon mockup) : « RIP : 0x… mnémonique opérandes ».
-        if let Some(s) = self.snap() {
-            if let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("▶").color(ACTION));
-                    ui.label(RichText::new(format!("RIP : 0x{:X}", s.regs.rip)).monospace().color(self.c_addr()));
-                    ui.label(
-                        RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
-                            .monospace()
-                            .color(self.c_mnemonic()),
-                    );
-                });
-            }
+        if let Some(s) = self.snap()
+            && let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip)
+        {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("▶").color(ACTION));
+                ui.label(RichText::new(format!("RIP : 0x{:X}", s.regs.rip)).monospace().color(self.c_addr()));
+                ui.label(
+                    RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
+                        .monospace()
+                        .color(self.c_mnemonic()),
+                );
+            });
         }
         ui.separator();
         match self.tab {
@@ -2487,7 +2478,7 @@ impl App {
                 .color(hdr),
         );
         ui.add_space(2.0);
-        let rows = ((size + 15) / 16).min(16) as u64;
+        let rows = size.div_ceil(16).min(16);
         egui::ScrollArea::both().id_salt("heap_scroll").auto_shrink([false, false]).show(ui, |ui| {
             hex_dump_rows(ui, addr_c, bytes_c, dbg, start, rows);
         });
@@ -2598,7 +2589,7 @@ fn parse_hex(s: &str) -> Option<u64> {
 /// Analyse une suite d'octets hexadécimaux (« 48 65 6C » ou « 48656C »).
 fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
     let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if cleaned.is_empty() || cleaned.len() % 2 != 0 {
+    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
         return None;
     }
     (0..cleaned.len())
@@ -2624,6 +2615,46 @@ fn list_dir(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     dirs.sort();
     files.sort();
     (dirs, files)
+}
+
+/// Rend la liste d'un dossier en lignes pleine largeur : « .. » (remontée),
+/// sous-dossiers puis fichiers `.asm`/`.s`. `current` surligne le fichier
+/// ouvert. Renvoie (dossier à ouvrir, fichier choisi).
+fn dir_list_rows(
+    ui: &mut egui::Ui,
+    dir: &Path,
+    current: Option<&Path>,
+    file_col: Color32,
+    row_h: f32,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    let mut new_dir = None;
+    let mut picked = None;
+    let w = ui.available_width();
+    let row = |ui: &mut egui::Ui, sel: bool, text: egui::WidgetText| {
+        ui.add_sized([w, row_h], egui::SelectableLabel::new(sel, text))
+    };
+    if let Some(parent) = dir.parent()
+        && row(ui, false, "📁  ..".into()).clicked()
+    {
+        new_dir = Some(parent.to_path_buf());
+    }
+    let (dirs, files) = list_dir(dir);
+    for d in dirs {
+        let name = d.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if row(ui, false, format!("📁  {name}").into()).clicked() {
+            new_dir = Some(d);
+        }
+    }
+    for f in files {
+        let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let is_cur = current == Some(f.as_path());
+        let col = if is_cur { CHANGED } else { file_col };
+        let text = RichText::new(format!("📄  {name}")).color(col);
+        if row(ui, is_cur, text.into()).clicked() {
+            picked = Some(f);
+        }
+    }
+    (new_dir, picked)
 }
 
 /// Bouton avec bordure verte (actif/disponible) ou rouge (inactif).
@@ -2806,5 +2837,37 @@ mod tests {
         app.set_view(2);
         let rip2 = app.snap().unwrap().regs.rip;
         assert_ne!(rip1, rip2, "changer d'étape doit changer l'état affiché (RIP)");
+    }
+
+    /// `rebuild_trace` journalise les appels système depuis l'historique, et
+    /// `resume_here` resynchronise la trace (pas de données figées du run précédent).
+    #[test]
+    fn trace_rebuilds_syscalls_and_resume_is_consistent() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/trace-test.asm");
+        app.out_dir = PathBuf::from("build/trace");
+        app.source = "section .text\n global _start\n_start:\n mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+
+        app.launch();
+        assert!(app.dbg.is_some(), "le programme doit être lancé");
+        assert!(app.syscalls.is_empty(), "aucun syscall avant d'exécuter");
+
+        // Exécute tout le programme : le syscall exit doit être journalisé une fois.
+        for _ in 0..8 {
+            app.step();
+        }
+        assert_eq!(app.syscalls.len(), 1, "un seul appel système (exit)");
+        assert_eq!(app.syscalls[0].number, 60, "exit = 60");
+        assert!(app.syscalls[0].ret.is_none(), "exit ne revient pas");
+
+        // Revenir avant le syscall puis « Reprendre ici » : la trace doit refléter
+        // la nouvelle position (le syscall n'a pas encore été exécuté).
+        app.set_view(1);
+        app.resume_here();
+        assert!(
+            app.syscalls.is_empty(),
+            "après resume avant le syscall, la trace ne doit pas rester figée"
+        );
     }
 }

@@ -5,6 +5,10 @@
 
 use crate::debugger::Flags;
 
+/// Résultat de l'évaluation d'un saut conditionnel :
+/// (condition lisible, saut pris ?, flags pertinents avec leur valeur).
+type JccEval = (String, bool, Vec<(&'static str, bool)>);
+
 /// Explication structurée d'une instruction, prête à l'affichage.
 pub struct Explanation {
     /// Titre lisible, ex. « JL — Jump if Less (saut si inférieur, signé) ».
@@ -245,7 +249,7 @@ fn jcc_title(m: &str) -> &'static str {
 
 /// Évalue un saut conditionnel : renvoie (condition lisible, pris ?, flags pertinents).
 /// Renvoie None si `m` n'est pas un saut conditionnel connu.
-fn eval_jcc(m: &str, f: Flags) -> Option<(String, bool, Vec<(&'static str, bool)>)> {
+fn eval_jcc(m: &str, f: Flags) -> Option<JccEval> {
     let zf = ("ZF", f.zf);
     let cf = ("CF", f.cf);
     let sf = ("SF", f.sf);
