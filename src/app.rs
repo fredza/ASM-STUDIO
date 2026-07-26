@@ -70,7 +70,8 @@ enum StackTab {
 
 /// Un appel système exécuté, pour le panneau SYSCALLS.
 struct SyscallLog {
-    call: String,
+    name: String,
+    args: String,
     number: u64,
     ret: Option<i64>,
 }
@@ -427,13 +428,18 @@ impl App {
         }
 
         if let Some((call, num)) = pending {
+            let sc_name = syscall::name(num).to_string();
+            let sc_args = call
+                .find('(')
+                .map(|i| call[i + 1..].trim_end_matches(')').to_string())
+                .unwrap_or_default();
             if syscall::is_exit(num) {
                 self.log(&call);
-                self.syscalls.push(SyscallLog { call, number: num, ret: None });
+                self.syscalls.push(SyscallLog { name: sc_name, args: sc_args, number: num, ret: None });
             } else if let Some(d) = self.dbg.as_ref() {
                 let ret = d.regs().rax as i64;
                 self.log(&format!("{call} = {ret}"));
-                self.syscalls.push(SyscallLog { call, number: num, ret: Some(ret) });
+                self.syscalls.push(SyscallLog { name: sc_name, args: sc_args, number: num, ret: Some(ret) });
             }
         }
         match self.dbg.as_ref().map(|d| d.state) {
@@ -1269,47 +1275,53 @@ impl App {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.add_space(3.0);
             ui.horizontal(|ui| {
-                // Running = un programme est en cours (tracé et vivant).
                 let running = self.dbg.as_ref().is_some_and(|d| d.is_alive());
+                let can_step = self.can_step();
 
-                // Lancer : vert + actif quand rien ne tourne ; rouge + inactif sinon.
-                if self.tip(bordered_button(ui, "▶  Lancer", !running), "F5").clicked() {
+                // Run : accent quand inactif, grisé quand un programme tourne.
+                if self.tip(accent_button(ui, "▶  Run", !running), "Lancer (F5)").clicked() {
                     self.launch();
                 }
-                // Précédent : recule d'une étape dans la timeline enregistrée.
-                let can_prev = self.dbg.is_some() && self.view_index > 0;
+                // Pause : non implémenté (step-by-step uniquement), toujours grisé.
+                ui.add_enabled(false, egui::Button::new("⏸  Pause"));
+                // Step : accent quand disponible.
                 if self
-                    .tip(
-                        ui.add_enabled(can_prev, egui::Button::new("◀  Précédent")),
-                        "Étape précédente (←)",
-                    )
-                    .clicked()
-                {
-                    self.set_view(self.view_index as i64 - 1);
-                }
-                let can_step = self.can_step();
-                if self
-                    .tip(ui.add_enabled(can_step, egui::Button::new("⏭  Step")), "F10 / F8")
+                    .tip(accent_button(ui, "⏭  Step", can_step), "Pas à pas (F10)")
                     .clicked()
                 {
                     self.step();
                 }
-                if self.tip(ui.button("🔄  Restart"), "F5").clicked() {
-                    self.launch();
+                // Next (step-over) : même comportement que Step pour l'instant.
+                if self
+                    .tip(
+                        ui.add_enabled(can_step, egui::Button::new("⤳  Next")),
+                        "Passer l'appel (non implémenté — agit comme Step)",
+                    )
+                    .clicked()
+                {
+                    self.step();
                 }
-                // Stop : vert + actif quand un programme tourne ; rouge + inactif sinon.
-                if self.tip(bordered_button(ui, "⏹  Stop", running), "Échap").clicked() {
+                // Stop.
+                if self.tip(bordered_button(ui, "⏹  Stop", running), "Arrêter (Échap)").clicked() {
                     self.stop();
+                }
+                // Restart = relancer depuis le début.
+                if self.tip(ui.button("↺  Restart"), "Relancer (F5)").clicked() {
+                    self.launch();
                 }
                 ui.separator();
                 if self.tip(ui.button("🔨  Build"), "Assembler + Lier (Ctrl+B)").clicked() {
                     self.build();
                 }
-                if self.tip(ui.button("💾  Enregistrer"), "Ctrl+S").clicked() {
-                    self.save_source();
-                }
-                ui.separator();
-                ui.label(RichText::new(&self.status).color(HEADER));
+                // Attach : non implémenté.
+                ui.add_enabled(false, egui::Button::new("🔌  Attach"));
+
+                // Réglages sur la droite.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("⚙  Réglages").clicked() {
+                        self.show_settings = true;
+                    }
+                });
             });
             ui.add_space(3.0);
         });
@@ -1721,28 +1733,51 @@ impl App {
 
     fn syscalls_ui(&self, ui: &mut egui::Ui) {
         header(ui, "SYSCALLS");
-        egui::ScrollArea::vertical().id_salt("syscalls_scroll").stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
-            if self.syscalls.is_empty() {
-                ui.weak("(aucun appel système)");
-            }
-            for s in &self.syscalls {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{}", s.number)).monospace().weak());
-                    ui.label(RichText::new(&s.call).monospace().color(MNEMONIC));
-                });
-                match s.ret {
-                    Some(r) if r < 0 => {
-                        ui.label(RichText::new(format!("   = {r}  (errno)")).monospace().color(FALSE_COL));
-                    }
-                    Some(r) => {
-                        ui.label(RichText::new(format!("   = {r}")).monospace().color(FLAG_ON));
-                    }
-                    None => {
-                        ui.label(RichText::new("   (ne revient pas)").monospace().weak());
-                    }
+        egui::ScrollArea::vertical()
+            .id_salt("syscalls_scroll")
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.syscalls.is_empty() {
+                    ui.weak("(aucun appel système)");
                 }
-            }
-        });
+                for s in &self.syscalls {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&s.name).monospace().strong().color(MNEMONIC));
+                        ui.label(RichText::new(format!("#{}", s.number)).monospace().weak().small());
+                        match s.ret {
+                            Some(r) if r < 0 => badge(ui, "ERREUR", FALSE_COL),
+                            Some(_) => badge(ui, "OK", FLAG_ON),
+                            None => badge(ui, "PENDING", HEADER),
+                        }
+                    });
+                    // Arguments sur une ligne compacte.
+                    if !s.args.is_empty() {
+                        ui.label(RichText::new(format!("  {}", s.args)).monospace().small().weak());
+                    }
+                    // Valeur de retour.
+                    match s.ret {
+                        Some(r) if r < 0 => {
+                            ui.label(
+                                RichText::new(format!("  ret  {r}  (errno)"))
+                                    .monospace()
+                                    .small()
+                                    .color(FALSE_COL),
+                            );
+                        }
+                        Some(r) => {
+                            ui.label(
+                                RichText::new(format!("  ret  {r}"))
+                                    .monospace()
+                                    .small()
+                                    .color(FLAG_ON),
+                            );
+                        }
+                        None => {}
+                    }
+                    ui.add_space(2.0);
+                }
+            });
     }
 
     // ---------- Désassemblage compact autour de RIP ----------
@@ -1964,22 +1999,41 @@ impl App {
             ui.label(RichText::new("Condition").strong());
             ui.label(RichText::new(cond).monospace());
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("État actuel :").strong());
-                for (name, val) in &e.relevant_flags {
-                    let c = if *val { FLAG_ON } else { FLAG_OFF };
-                    ui.label(RichText::new(format!("{name} = {}", *val as u8)).monospace().color(c));
-                }
-            });
-            if let Some(taken) = e.taken {
-                ui.add_space(6.0);
-                let (txt, col) = if taken {
-                    ("✔ Condition vraie — le saut sera pris.", FLAG_ON)
-                } else {
-                    ("✘ Condition fausse — pas de saut (on continue).", FALSE_COL)
-                };
-                ui.label(RichText::new(txt).color(col).strong());
-            }
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .show(ui, |ui| {
+                    ui.label(RichText::new("État actuel").small().strong().color(HEADER));
+                    ui.horizontal(|ui| {
+                        for (name, val) in &e.relevant_flags {
+                            let c = if *val { FLAG_ON } else { FLAG_OFF };
+                            ui.label(
+                                RichText::new(format!("{name} = {}", *val as u8))
+                                    .monospace()
+                                    .color(c),
+                            );
+                        }
+                    });
+                    if let Some(taken) = e.taken {
+                        ui.add_space(4.0);
+                        let (txt, col) = if taken {
+                            ("✔ Condition vraie — le saut sera pris.", FLAG_ON)
+                        } else {
+                            ("✘ Condition fausse — pas de saut.", FALSE_COL)
+                        };
+                        let fill = if taken {
+                            FLAG_ON.linear_multiply(0.12)
+                        } else {
+                            FALSE_COL.linear_multiply(0.12)
+                        };
+                        egui::Frame::default()
+                            .fill(fill)
+                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                            .rounding(egui::Rounding::same(4.0))
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(txt).color(col).strong());
+                            });
+                    }
+                });
         }
         if !e.affects_flags.is_empty() {
             ui.add_space(6.0);
@@ -2199,6 +2253,27 @@ fn bordered_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Respo
     let color = if enabled { FLAG_ON } else { FALSE_COL };
     let btn = egui::Button::new(label).stroke(egui::Stroke::new(1.5_f32, color));
     ui.add_enabled(enabled, btn)
+}
+
+/// Bouton d'accent (fond ACCENT si actif, grisé sinon) — pour Run et Step.
+fn accent_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    let btn = if enabled {
+        egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACCENT)
+    } else {
+        egui::Button::new(label)
+    };
+    ui.add_enabled(enabled, btn)
+}
+
+/// Petit badge coloré (texte sur fond semi-transparent).
+fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
+    egui::Frame::default()
+        .fill(color.linear_multiply(0.22))
+        .inner_margin(egui::Margin::symmetric(5.0, 2.0))
+        .rounding(egui::Rounding::same(4.0))
+        .show(ui, |ui| {
+            ui.label(RichText::new(text).small().strong().color(color));
+        });
 }
 
 /// Chemin du fichier de réglages persistants (XDG : ~/.config/asm_studio/settings.conf).
