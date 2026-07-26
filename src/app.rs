@@ -914,7 +914,7 @@ impl App {
             return;
         };
         let flags_now = self.snap().map(|s| Flags::from_eflags(s.regs.eflags)).unwrap_or_default();
-        let e = explain::explain(&insn.mnemonic, &insn.operands, flags_now);
+        let e = explain::explain(&insn.mnemonic, &insn.operands, flags_now, self.lang);
         let cycles = explain::cycles_estimate(&insn.mnemonic);
 
         // Données dynamiques (avant/après) clonées => pas d'emprunt de self dans la closure.
@@ -2267,7 +2267,7 @@ impl App {
             return;
         };
         let flags = self.snap().map(|s| Flags::from_eflags(s.regs.eflags)).unwrap_or_default();
-        let e = explain::explain(&insn.mnemonic, &insn.operands, flags);
+        let e = explain::explain(&insn.mnemonic, &insn.operands, flags, self.lang);
         let mnem_col = self.c_mnemonic();
 
         // Ligne 1 : nom de l'instruction + bouton Microscope (aligné à droite).
