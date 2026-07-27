@@ -207,6 +207,11 @@ pub struct App {
     show_settings: bool,
     show_about: bool,
     show_shortcuts: bool,
+    show_calculator: bool,
+    /// Saisie de la calculatrice multi-base (texte brut, parsé selon `calc_base`).
+    calc_input: String,
+    /// Base d'entrée de la calculatrice : 2, 8, 10 ou 16.
+    calc_base: u32,
     /// Icônes (chargées au premier frame, quand le contexte egui existe).
     icons: Option<Icons>,
 }
@@ -262,6 +267,9 @@ impl App {
             show_settings: false,
             show_about: false,
             show_shortcuts: false,
+            show_calculator: false,
+            calc_input: String::new(),
+            calc_base: 10,
             icons: None,
         };
         app.load_settings();
@@ -812,6 +820,7 @@ impl eframe::App for App {
         self.shortcuts_window(ctx);
         self.settings_window(ctx);
         self.microscope_window(ctx);
+        self.calculator_window(ctx);
     }
 }
 
@@ -964,6 +973,33 @@ impl App {
                         ui.label(RichText::new(cycles).color(CHANGED))
                             .on_hover_text(tr("Ordre de grandeur pédagogique, pas une mesure exacte.", "Educational ballpark, not an exact measurement."));
                         ui.end_row();
+                        // Ligne syscall dans la grille d'identité (si applicable).
+                        if insn.mnemonic == "syscall" {
+                            if let Some((before, _, _)) = &dynamics {
+                                ui.label(RichText::new(tr("Appel système", "System call")).strong());
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("#{}", before.rax))
+                                            .monospace()
+                                            .color(bytes_c),
+                                    );
+                                    ui.label(
+                                        RichText::new(syscall::name(before.rax))
+                                            .monospace()
+                                            .strong()
+                                            .color(mnem_c),
+                                    );
+                                });
+                                ui.end_row();
+                                ui.label(RichText::new(tr("Arguments", "Arguments")).strong());
+                                ui.label(
+                                    RichText::new(syscall::format_call(before))
+                                        .monospace()
+                                        .color(addr_c),
+                                );
+                                ui.end_row();
+                            }
+                        }
                     });
 
                     ui.add_space(8.0);
@@ -1347,6 +1383,113 @@ impl App {
         }
     }
 
+    // ---------- Calculatrice multi-base ----------
+
+    fn calculator_window(&mut self, ctx: &egui::Context) {
+        if !self.show_calculator {
+            return;
+        }
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let mnem = self.c_mnemonic();
+        let hdr = self.c_header();
+        let mut open = true;
+        egui::Window::new(tr("Calculatrice", "Calculator"))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                // Sélecteur de base d'entrée.
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tr("Base d'entrée :", "Input base:")).color(hdr));
+                    ui.radio_value(&mut self.calc_base, 10, "Dec");
+                    ui.radio_value(&mut self.calc_base, 16, "Hex");
+                    ui.radio_value(&mut self.calc_base, 2, "Bin");
+                    ui.radio_value(&mut self.calc_base, 8, "Oct");
+                });
+                ui.add_space(4.0);
+
+                // Champ de saisie.
+                let hint = match self.calc_base {
+                    16 => "deadbeef",
+                    2  => "10110100",
+                    8  => "377",
+                    _  => "42",
+                };
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.calc_input)
+                        .desired_width(ui.available_width())
+                        .font(egui::TextStyle::Monospace)
+                        .hint_text(hint),
+                );
+                // Supprime les caractères invalides pour la base courante
+                // (s'applique aussi au changement de base sur un texte existant).
+                let base = self.calc_base;
+                self.calc_input.retain(|c| c.is_digit(base));
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // Parse la valeur selon la base choisie (supporte le préfixe 0x/0b/0o).
+                let stripped = self.calc_input.trim().trim_start_matches("0x").trim_start_matches("0X")
+                    .trim_start_matches("0b").trim_start_matches("0B")
+                    .trim_start_matches("0o").trim_start_matches("0O");
+                let parsed: Option<u64> = if stripped.is_empty() {
+                    None
+                } else {
+                    u64::from_str_radix(stripped, self.calc_base).ok()
+                };
+
+                // Grille de résultats.
+                egui::Grid::new("calc_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        let rows: &[(&str, u32, &str)] = &[
+                            ("Dec", 10, ""),
+                            ("Hex", 16, "0x"),
+                            ("Oct", 8,  "0o"),
+                            ("Bin", 2,  "0b"),
+                        ];
+                        for (label, base, prefix) in rows {
+                            ui.label(RichText::new(*label).strong().color(hdr));
+                            let txt = match parsed {
+                                Some(v) => match *base {
+                                    10 => format!("{v}"),
+                                    16 => format!("{prefix}{v:X}"),
+                                    8  => format!("{prefix}{v:o}"),
+                                    2  => format!("{prefix}{v:b}"),
+                                    _  => "?".to_string(),
+                                },
+                                None => "—".to_string(),
+                            };
+                            ui.label(RichText::new(txt).monospace().color(mnem));
+                            ui.end_row();
+                        }
+                        // Valeur interprétée comme signée (i64).
+                        if let Some(v) = parsed {
+                            ui.label(RichText::new(tr("Signé (i64)", "Signed (i64)")).strong().color(hdr));
+                            ui.label(RichText::new(format!("{}", v as i64)).monospace().color(self.c_bytes()));
+                            ui.end_row();
+                        }
+                    });
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.vertical_centered(|ui| {
+                    if ui.button(tr("Fermer", "Close")).clicked() {
+                        self.show_calculator = false;
+                    }
+                });
+            });
+        if !open {
+            self.show_calculator = false;
+        }
+    }
+
     // ---------- Menu ----------
 
     fn menu_bar(&mut self, ctx: &egui::Context) {
@@ -1427,6 +1570,10 @@ impl App {
                     }
                     if ui.button(tr("Raccourcis clavier…", "Keyboard shortcuts…")).clicked() {
                         self.show_shortcuts = true;
+                        ui.close_menu();
+                    }
+                    if ui.button(tr("Calculatrice…", "Calculator…")).clicked() {
+                        self.show_calculator = true;
                         ui.close_menu();
                     }
                     ui.separator();
@@ -1511,13 +1658,26 @@ impl App {
                         ui.separator();
                         ui.label(format!("PID {}", d.pid()));
                     }
-                    Some(d) => {
-                        let msg = match d.state {
-                            RunState::Exited(c) => format!("○ Exited ({c})"),
-                            _ => format!("○ {}", tr("Terminé", "Terminated")),
-                        };
-                        ui.colored_label(FLAG_OFF, msg);
-                    }
+                    Some(d) => match d.state {
+                        RunState::Exited(0) => {
+                            ui.colored_label(
+                                FLAG_ON,
+                                RichText::new(format!("✔ {} 0", tr("Exit", "Exit"))).strong(),
+                            );
+                        }
+                        RunState::Exited(c) => {
+                            ui.colored_label(
+                                FALSE_COL,
+                                RichText::new(format!("✘ {} {c}", tr("Exit", "Exit"))).strong(),
+                            );
+                        }
+                        RunState::Signaled => {
+                            ui.colored_label(FALSE_COL, RichText::new(tr("✘ Signal", "✘ Signal")).strong());
+                        }
+                        RunState::Stopped => {
+                            ui.colored_label(FLAG_OFF, format!("○ {}", tr("Arrêté", "Stopped")));
+                        }
+                    },
                     None => {
                         ui.colored_label(FLAG_OFF, format!("○ {}", tr("Prêt", "Ready")));
                     }
@@ -1678,8 +1838,9 @@ impl App {
                     .font(egui::TextStyle::Monospace)
                     .hint_text("0x402000"),
             );
-            let go = ui.button(tr("Aller", "Go")).clicked()
-                || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            let can_mem = self.can_read_memory();
+            let go = ui.add_enabled(can_mem, egui::Button::new(tr("Aller", "Go"))).clicked()
+                || (can_mem && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
             if go {
                 match parse_hex(&self.mem_input) {
                     Some(a) => {
@@ -2300,6 +2461,23 @@ impl App {
                 ui.label(RichText::new(tag).small().weak());
             });
         });
+
+        // Pastille syscall : numéro RAX + nom, sur une ligne compacte.
+        if insn.mnemonic == "syscall" {
+            if let Some(snap) = self.snap() {
+                let rax = snap.regs.rax;
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    badge(ui, &format!("#{rax}"), self.c_bytes());
+                    ui.label(
+                        RichText::new(syscall::name(rax))
+                            .monospace()
+                            .strong()
+                            .color(self.c_mnemonic()),
+                    );
+                });
+            }
+        }
 
         // Description pédagogique + lien vers la référence officielle.
         ui.add_space(8.0);
