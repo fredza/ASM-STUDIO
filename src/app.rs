@@ -974,31 +974,31 @@ impl App {
                             .on_hover_text(tr("Ordre de grandeur pédagogique, pas une mesure exacte.", "Educational ballpark, not an exact measurement."));
                         ui.end_row();
                         // Ligne syscall dans la grille d'identité (si applicable).
-                        if insn.mnemonic == "syscall" {
-                            if let Some((before, _, _)) = &dynamics {
-                                ui.label(RichText::new(tr("Appel système", "System call")).strong());
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("#{}", before.rax))
-                                            .monospace()
-                                            .color(bytes_c),
-                                    );
-                                    ui.label(
-                                        RichText::new(syscall::name(before.rax))
-                                            .monospace()
-                                            .strong()
-                                            .color(mnem_c),
-                                    );
-                                });
-                                ui.end_row();
-                                ui.label(RichText::new(tr("Arguments", "Arguments")).strong());
+                        if insn.mnemonic == "syscall"
+                            && let Some((before, _, _)) = &dynamics
+                        {
+                            ui.label(RichText::new(tr("Appel système", "System call")).strong());
+                            ui.horizontal(|ui| {
                                 ui.label(
-                                    RichText::new(syscall::format_call(before))
+                                    RichText::new(format!("#{}", before.rax))
                                         .monospace()
-                                        .color(addr_c),
+                                        .color(bytes_c),
                                 );
-                                ui.end_row();
-                            }
+                                ui.label(
+                                    RichText::new(syscall::name(before.rax))
+                                        .monospace()
+                                        .strong()
+                                        .color(mnem_c),
+                                );
+                            });
+                            ui.end_row();
+                            ui.label(RichText::new(tr("Arguments", "Arguments")).strong());
+                            ui.label(
+                                RichText::new(syscall::format_call(before))
+                                    .monospace()
+                                    .color(addr_c),
+                            );
+                            ui.end_row();
                         }
                     });
 
@@ -1433,37 +1433,19 @@ impl App {
                 ui.separator();
                 ui.add_space(4.0);
 
-                // Parse la valeur selon la base choisie (supporte le préfixe 0x/0b/0o).
-                let stripped = self.calc_input.trim().trim_start_matches("0x").trim_start_matches("0X")
-                    .trim_start_matches("0b").trim_start_matches("0B")
-                    .trim_start_matches("0o").trim_start_matches("0O");
-                let parsed: Option<u64> = if stripped.is_empty() {
-                    None
-                } else {
-                    u64::from_str_radix(stripped, self.calc_base).ok()
-                };
+                // Le filtre `retain` ci-dessus garantit une saisie déjà valide
+                // pour la base : plus de préfixe à retirer.
+                let parsed = calc_parse(&self.calc_input, self.calc_base);
 
                 // Grille de résultats.
                 egui::Grid::new("calc_grid")
                     .num_columns(2)
                     .spacing([16.0, 6.0])
                     .show(ui, |ui| {
-                        let rows: &[(&str, u32, &str)] = &[
-                            ("Dec", 10, ""),
-                            ("Hex", 16, "0x"),
-                            ("Oct", 8,  "0o"),
-                            ("Bin", 2,  "0b"),
-                        ];
-                        for (label, base, prefix) in rows {
-                            ui.label(RichText::new(*label).strong().color(hdr));
+                        for (label, base) in [("Dec", 10), ("Hex", 16), ("Oct", 8), ("Bin", 2)] {
+                            ui.label(RichText::new(label).strong().color(hdr));
                             let txt = match parsed {
-                                Some(v) => match *base {
-                                    10 => format!("{v}"),
-                                    16 => format!("{prefix}{v:X}"),
-                                    8  => format!("{prefix}{v:o}"),
-                                    2  => format!("{prefix}{v:b}"),
-                                    _  => "?".to_string(),
-                                },
+                                Some(v) => calc_format(v, base),
                                 None => "—".to_string(),
                             };
                             ui.label(RichText::new(txt).monospace().color(mnem));
@@ -2463,20 +2445,20 @@ impl App {
         });
 
         // Pastille syscall : numéro RAX + nom, sur une ligne compacte.
-        if insn.mnemonic == "syscall" {
-            if let Some(snap) = self.snap() {
-                let rax = snap.regs.rax;
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    badge(ui, &format!("#{rax}"), self.c_bytes());
-                    ui.label(
-                        RichText::new(syscall::name(rax))
-                            .monospace()
-                            .strong()
-                            .color(self.c_mnemonic()),
-                    );
-                });
-            }
+        if insn.mnemonic == "syscall"
+            && let Some(snap) = self.snap()
+        {
+            let rax = snap.regs.rax;
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                badge(ui, &format!("#{rax}"), self.c_bytes());
+                ui.label(
+                    RichText::new(syscall::name(rax))
+                        .monospace()
+                        .strong()
+                        .color(self.c_mnemonic()),
+                );
+            });
         }
 
         // Description pédagogique + lien vers la référence officielle.
@@ -2809,6 +2791,26 @@ fn parse_hex(s: &str) -> Option<u64> {
     u64::from_str_radix(s, 16).ok()
 }
 
+/// Analyse une valeur non signée dans la base donnée (2, 8, 10 ou 16).
+/// `None` si vide ou hors plage `u64`. Utilisé par la calculatrice multi-base.
+fn calc_parse(s: &str, base: u32) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    u64::from_str_radix(s, base).ok()
+}
+
+/// Formate `v` dans la base donnée, avec préfixe (`0x`/`0o`/`0b`) sauf en base 10.
+fn calc_format(v: u64, base: u32) -> String {
+    match base {
+        16 => format!("0x{v:X}"),
+        8 => format!("0o{v:o}"),
+        2 => format!("0b{v:b}"),
+        _ => format!("{v}"),
+    }
+}
+
 /// Analyse une suite d'octets hexadécimaux (« 48 65 6C » ou « 48656C »).
 fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
     let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
@@ -3029,6 +3031,28 @@ mod tests {
         assert_eq!(parse_hex_bytes("48656C"), Some(vec![0x48, 0x65, 0x6C]));
         assert_eq!(parse_hex_bytes("4"), None, "longueur impaire invalide");
         assert_eq!(parse_hex_bytes("zz"), None, "non-hexa invalide");
+    }
+
+    #[test]
+    fn calc_parse_reads_each_base() {
+        assert_eq!(calc_parse("101", 2), Some(0b101));
+        assert_eq!(calc_parse("777", 8), Some(0o777));
+        assert_eq!(calc_parse("42", 10), Some(42));
+        assert_eq!(calc_parse("dead", 16), Some(0xDEAD));
+        assert_eq!(calc_parse("  ff  ", 16), Some(0xFF), "espaces tolérés");
+        assert_eq!(calc_parse("", 10), None, "vide → None");
+    }
+
+    #[test]
+    fn calc_format_roundtrips_with_prefix() {
+        assert_eq!(calc_format(255, 10), "255");
+        assert_eq!(calc_format(255, 16), "0xFF");
+        assert_eq!(calc_format(255, 8), "0o377");
+        assert_eq!(calc_format(255, 2), "0b11111111");
+        // Aller-retour parse ∘ format (sans le préfixe, retiré par le filtre UI).
+        let v = 0xCAFE;
+        assert_eq!(calc_parse("CAFE", 16), Some(v));
+        assert_eq!(calc_format(v, 16), "0xCAFE");
     }
 
     /// Vérifie que la logique timeline (head-follow + clamp min/max) est correcte,
