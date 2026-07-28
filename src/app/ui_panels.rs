@@ -8,7 +8,7 @@ use super::{
     PUSH_COL, POP_COL,
     changed_color, changed_color2,
     panel_header, header, header_icon, header_title, icon_tab,
-    badge, hex_dump_rows, parse_hex, parse_hex_bytes,
+    hex_dump_rows, parse_hex, parse_hex_bytes,
     dir_tree,
 };
 
@@ -482,50 +482,50 @@ impl App {
                     ui.weak(i18n::tr(self.lang, "(aucun appel système)", "(no system call)"));
                 }
                 for s in &self.syscalls {
-                    egui::Frame::none()
-                        .inner_margin(egui::Margin { left: 6.0, right: 4.0, top: 3.0, bottom: 3.0 })
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&s.name).monospace().strong().color(self.c_mnemonic()));
-                                ui.label(RichText::new(format!("#{}", s.number)).monospace().weak().small());
-                                match s.ret {
-                                    Some(r) if r < 0 => badge(ui, "ERREUR", FALSE_COL),
-                                    Some(_) => badge(ui, "SUCCESS", FLAG_ON),
-                                    None => badge(ui, "PENDING", self.c_header()),
-                                }
+                    // Couleur encode le résultat : vert=ok, rouge=erreur, gris=pending.
+                    let col = match s.ret {
+                        Some(r) if r < 0 => FALSE_COL,
+                        Some(_) => FLAG_ON,
+                        None => self.c_bytes(),
+                    };
+                    // Ligne 1 : nom  #num  ——  = ret (aligné à droite).
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(&s.name)
+                                .monospace()
+                                .strong()
+                                .color(col),
+                        );
+                        ui.label(
+                            RichText::new(format!("#{}", s.number))
+                                .monospace()
+                                .small()
+                                .color(self.c_bytes()),
+                        );
+                        if let Some(r) = s.ret {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(
+                                    RichText::new(format!("= {r}"))
+                                        .monospace()
+                                        .small()
+                                        .color(col),
+                                );
                             });
-                            // Arguments sur une ligne indentée.
-                            if !s.args.is_empty() {
-                                ui.indent("sc_args", |ui| {
-                                    ui.label(RichText::new(&s.args).monospace().small().weak());
-                                });
-                            }
-                            // Valeur de retour.
-                            match s.ret {
-                                Some(r) if r < 0 => {
-                                    ui.indent("sc_ret", |ui| {
-                                        ui.label(
-                                            RichText::new(format!("ret  {r}  (errno)"))
-                                                .monospace()
-                                                .small()
-                                                .color(FALSE_COL),
-                                        );
-                                    });
-                                }
-                                Some(r) => {
-                                    ui.indent("sc_ret", |ui| {
-                                        ui.label(
-                                            RichText::new(format!("ret  {r}"))
-                                                .monospace()
-                                                .small()
-                                                .color(FLAG_ON),
-                                        );
-                                    });
-                                }
-                                None => {}
-                            }
-                        });
-                    ui.separator();
+                        }
+                    });
+                    // Ligne 2 : arguments tronqués (évite le débordement horizontal).
+                    if !s.args.is_empty() {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("  ({})", s.args))
+                                    .monospace()
+                                    .small()
+                                    .weak(),
+                            )
+                            .truncate(),
+                        );
+                    }
+                    ui.add_space(2.0);
                 }
             });
     }
