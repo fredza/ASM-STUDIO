@@ -236,6 +236,7 @@ dependencies = [
  "libc",
  "nix",
  "object",
+ "pollster",
  "rfd",
 ]
 

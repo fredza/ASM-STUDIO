@@ -220,6 +220,11 @@ pub struct App {
     pub(super) calc_base: u32,
     /// Icônes (chargées au premier frame, quand le contexte egui existe).
     pub(super) icons: Option<Icons>,
+    /// Dialogue « Ouvrir » natif en cours sur un thread de fond (sinon `None`).
+    /// Sondé chaque frame → l'UI ne se fige pas pendant que le sélecteur est ouvert.
+    pub(super) pending_open: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
+    /// Dialogue « Enregistrer sous » natif en cours sur un thread de fond.
+    pub(super) pending_saveas: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
 }
 
 impl App {
@@ -277,6 +282,8 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
+            pending_open: None,
+            pending_saveas: None,
         };
         app.load_settings();
         app
@@ -447,6 +454,12 @@ impl eframe::App for App {
             self.icons = Some(Icons::load(ctx));
         }
         self.apply_theme(ctx);
+        // Récupère le résultat d'un dialogue fichier natif (thread de fond) et,
+        // tant qu'il est ouvert, force un repaint périodique pour continuer à sonder.
+        self.poll_file_dialogs();
+        if self.dialog_pending() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         if self.pending_flash {
             self.flash_time = ctx.input(|i| i.time);
             self.pending_flash = false;

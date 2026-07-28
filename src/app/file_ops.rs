@@ -35,42 +35,101 @@ impl App {
     }
 
     /// Ouvre la boîte « Enregistrer sous » sur le dossier affiché dans l'explorateur.
-    /// Dialogue natif « Enregistrer sous » (portail GNOME/Wayland via rfd) :
-    /// la création de dossier est intégrée au sélecteur du système.
+    /// Dialogue natif (portail GNOME/Wayland via rfd) piloté sur un thread de fond :
+    /// l'UI reste réactive (pas de freeze « ne répond pas ») pendant la sélection.
+    /// Le résultat est récupéré dans `poll_file_dialogs`.
     pub(super) fn open_saveas(&mut self) {
+        if self.pending_saveas.is_some() {
+            return; // un dialogue est déjà ouvert
+        }
         let name = self
             .src_path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "programme.asm".to_string());
-        let picked = rfd::FileDialog::new()
-            .set_title("Enregistrer sous")
-            .set_directory(&self.explorer_dir)
-            .set_file_name(&name)
-            .add_filter("Assembleur (.asm, .s)", &["asm", "s"])
-            .save_file();
-        if let Some(mut path) = picked {
-            // Extension .asm par défaut si l'utilisateur n'en fournit pas.
-            if path.extension().is_none() {
-                path.set_extension("asm");
+        let dir = self.explorer_dir.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // AsyncFileDialog + block_on : le futur du portail XDG tourne ICI
+            // (thread de fond), sans bloquer la boucle egui du thread principal.
+            let path = pollster::block_on(
+                rfd::AsyncFileDialog::new()
+                    .set_title("Enregistrer sous")
+                    .set_directory(&dir)
+                    .set_file_name(&name)
+                    .add_filter("Assembleur (.asm, .s)", &["asm", "s"])
+                    .save_file(),
+            )
+            .map(|h| h.path().to_path_buf());
+            let _ = tx.send(path);
+        });
+        self.pending_saveas = Some(rx);
+    }
+
+    /// Dialogue natif « Ouvrir » (portail GNOME/Wayland via rfd), non bloquant.
+    /// Voir [`open_saveas`](Self::open_saveas) pour le motif thread de fond.
+    pub(super) fn open_browser(&mut self) {
+        if self.pending_open.is_some() {
+            return;
+        }
+        let dir = self.explorer_dir.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let path = pollster::block_on(
+                rfd::AsyncFileDialog::new()
+                    .set_title("Ouvrir un fichier")
+                    .set_directory(&dir)
+                    .add_filter("Assembleur (.asm, .s)", &["asm", "s"])
+                    .add_filter("Tous les fichiers", &["*"])
+                    .pick_file(),
+            )
+            .map(|h| h.path().to_path_buf());
+            let _ = tx.send(path);
+        });
+        self.pending_open = Some(rx);
+    }
+
+    /// Récupère le résultat des dialogues fichiers natifs en cours (thread de fond),
+    /// sans bloquer. À appeler chaque frame depuis `update`.
+    pub(super) fn poll_file_dialogs(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+        // Ouvrir.
+        if let Some(rx) = &self.pending_open {
+            match rx.try_recv() {
+                Ok(picked) => {
+                    self.pending_open = None;
+                    if let Some(path) = picked {
+                        self.open_file(path);
+                    }
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.pending_open = None,
             }
-            self.explorer_dir = abs_dir_of(&path);
-            self.src_path = path;
-            self.save_source();
+        }
+        // Enregistrer sous.
+        if let Some(rx) = &self.pending_saveas {
+            match rx.try_recv() {
+                Ok(picked) => {
+                    self.pending_saveas = None;
+                    if let Some(mut path) = picked {
+                        // Extension .asm par défaut si l'utilisateur n'en fournit pas.
+                        if path.extension().is_none() {
+                            path.set_extension("asm");
+                        }
+                        self.explorer_dir = abs_dir_of(&path);
+                        self.src_path = path;
+                        self.save_source();
+                    }
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.pending_saveas = None,
+            }
         }
     }
 
-    /// Dialogue natif « Ouvrir » (portail GNOME/Wayland via rfd).
-    pub(super) fn open_browser(&mut self) {
-        let picked = rfd::FileDialog::new()
-            .set_title("Ouvrir un fichier")
-            .set_directory(&self.explorer_dir)
-            .add_filter("Assembleur (.asm, .s)", &["asm", "s"])
-            .add_filter("Tous les fichiers", &["*"])
-            .pick_file();
-        if let Some(path) = picked {
-            self.open_file(path);
-        }
+    /// Vrai si un dialogue fichier natif est ouvert (attente d'une sélection).
+    pub(super) fn dialog_pending(&self) -> bool {
+        self.pending_open.is_some() || self.pending_saveas.is_some()
     }
 
     pub(super) fn open_file(&mut self, path: PathBuf) {

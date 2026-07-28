@@ -14,3 +14,5 @@ capstone = "0.12"
 object = "0.36"
 # Dialogues fichiers natifs via le portail XDG (GNOME/Wayland), sans GTK.
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+# Pilote le futur AsyncFileDialog sur un thread de fond (bloque ce thread, pas l'UI).
+pollster = "0.4"
