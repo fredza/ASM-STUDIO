@@ -311,8 +311,9 @@ impl Debugger {
 impl Drop for Debugger {
     fn drop(&mut self) {
         // Évite les zombies si on relance ou on ferme pendant l'exécution.
+        // ptrace::kill() est déprécié sur Linux moderne ; on envoie SIGKILL directement.
         if self.state == RunState::Stopped {
-            let _ = ptrace::kill(self.child);
+            let _ = nix::sys::signal::kill(self.child, nix::sys::signal::Signal::SIGKILL);
             let _ = waitpid(self.child, None);
         }
     }

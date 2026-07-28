@@ -482,40 +482,50 @@ impl App {
                     ui.weak(i18n::tr(self.lang, "(aucun appel système)", "(no system call)"));
                 }
                 for s in &self.syscalls {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&s.name).monospace().strong().color(self.c_mnemonic()));
-                        ui.label(RichText::new(format!("#{}", s.number)).monospace().weak().small());
-                        match s.ret {
-                            Some(r) if r < 0 => badge(ui, "ERREUR", FALSE_COL),
-                            Some(_) => badge(ui, "SUCCESS", FLAG_ON),
-                            None => badge(ui, "PENDING", self.c_header()),
-                        }
-                    });
-                    // Arguments sur une ligne compacte.
-                    if !s.args.is_empty() {
-                        ui.label(RichText::new(format!("  {}", s.args)).monospace().small().weak());
-                    }
-                    // Valeur de retour.
-                    match s.ret {
-                        Some(r) if r < 0 => {
-                            ui.label(
-                                RichText::new(format!("  ret  {r}  (errno)"))
-                                    .monospace()
-                                    .small()
-                                    .color(FALSE_COL),
-                            );
-                        }
-                        Some(r) => {
-                            ui.label(
-                                RichText::new(format!("  ret  {r}"))
-                                    .monospace()
-                                    .small()
-                                    .color(FLAG_ON),
-                            );
-                        }
-                        None => {}
-                    }
-                    ui.add_space(2.0);
+                    egui::Frame::none()
+                        .inner_margin(egui::Margin { left: 6.0, right: 4.0, top: 3.0, bottom: 3.0 })
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&s.name).monospace().strong().color(self.c_mnemonic()));
+                                ui.label(RichText::new(format!("#{}", s.number)).monospace().weak().small());
+                                match s.ret {
+                                    Some(r) if r < 0 => badge(ui, "ERREUR", FALSE_COL),
+                                    Some(_) => badge(ui, "SUCCESS", FLAG_ON),
+                                    None => badge(ui, "PENDING", self.c_header()),
+                                }
+                            });
+                            // Arguments sur une ligne indentée.
+                            if !s.args.is_empty() {
+                                ui.indent("sc_args", |ui| {
+                                    ui.label(RichText::new(&s.args).monospace().small().weak());
+                                });
+                            }
+                            // Valeur de retour.
+                            match s.ret {
+                                Some(r) if r < 0 => {
+                                    ui.indent("sc_ret", |ui| {
+                                        ui.label(
+                                            RichText::new(format!("ret  {r}  (errno)"))
+                                                .monospace()
+                                                .small()
+                                                .color(FALSE_COL),
+                                        );
+                                    });
+                                }
+                                Some(r) => {
+                                    ui.indent("sc_ret", |ui| {
+                                        ui.label(
+                                            RichText::new(format!("ret  {r}"))
+                                                .monospace()
+                                                .small()
+                                                .color(FLAG_ON),
+                                        );
+                                    });
+                                }
+                                None => {}
+                            }
+                        });
+                    ui.separator();
                 }
             });
     }

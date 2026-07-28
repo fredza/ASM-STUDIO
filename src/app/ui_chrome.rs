@@ -313,16 +313,28 @@ impl App {
 
     // ---------- Barre d'état ----------
 
-    pub(super) fn status_bar(&self, ctx: &egui::Context) {
+    pub(super) fn status_bar(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let mut kill_requested = false;
         egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 match &self.dbg {
                     Some(d) if d.is_alive() => {
                         ui.colored_label(FLAG_ON, "● Running");
                         ui.separator();
-                        ui.label(format!("PID {}", d.pid()));
+                        // Clic droit sur le PID → menu contextuel Kill.
+                        ui.label(format!("PID {}", d.pid()))
+                            .on_hover_text(tr(
+                                "Clic droit pour Kill · Esc pour Stop",
+                                "Right-click to Kill · Esc to Stop",
+                            ))
+                            .context_menu(|ui| {
+                                if ui.button(tr("🗙 Kill (SIGKILL)", "🗙 Kill (SIGKILL)")).clicked() {
+                                    kill_requested = true;
+                                    ui.close_menu();
+                                }
+                            });
                     }
                     Some(d) => match d.state {
                         RunState::Exited(0) => {
@@ -378,5 +390,8 @@ impl App {
                 });
             });
         });
+        if kill_requested {
+            self.stop();
+        }
     }
 }
