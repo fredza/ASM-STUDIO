@@ -464,9 +464,18 @@ impl App {
                         .font(egui::TextStyle::Monospace)
                         .hint_text(hint),
                 );
-                // Supprime les caractères invalides pour la base courante.
+                // Filtre les caractères invalides pour la base courante.
+                // En base 10, le signe '-' est autorisé en première position.
                 let base = self.calc_base;
-                self.calc_input.retain(|c| c.is_digit(base));
+                if base == 10 {
+                    let neg = self.calc_input.starts_with('-');
+                    self.calc_input.retain(|c| c.is_ascii_digit());
+                    if neg {
+                        self.calc_input.insert(0, '-');
+                    }
+                } else {
+                    self.calc_input.retain(|c| c.is_digit(base));
+                }
 
                 ui.add_space(6.0);
                 ui.separator();
@@ -486,12 +495,6 @@ impl App {
                                 None => "—".to_string(),
                             };
                             ui.label(RichText::new(txt).monospace().color(mnem));
-                            ui.end_row();
-                        }
-                        // Valeur interprétée comme signée (i64).
-                        if let Some(v) = parsed {
-                            ui.label(RichText::new(tr("Signé (i64)", "Signed (i64)")).strong().color(hdr));
-                            ui.label(RichText::new(format!("{}", v as i64)).monospace().color(self.c_bytes()));
                             ui.end_row();
                         }
                     });

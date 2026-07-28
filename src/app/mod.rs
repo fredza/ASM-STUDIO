@@ -646,22 +646,27 @@ pub(super) fn parse_hex(s: &str) -> Option<u64> {
     u64::from_str_radix(s, 16).ok()
 }
 
-/// Analyse une valeur non signée dans la base donnée (2, 8, 10 ou 16).
-/// `None` si vide ou hors plage `u64`. Utilisé par la calculatrice multi-base.
-pub(super) fn calc_parse(s: &str, base: u32) -> Option<u64> {
+/// Analyse une valeur dans la base donnée (2, 8, 10 ou 16).
+/// Base 10 : signé (`i64`), supporte le signe `-`. Autres bases : bit-pattern `u64` casté.
+/// Renvoie `None` si vide ou hors plage.
+pub(super) fn calc_parse(s: &str, base: u32) -> Option<i64> {
     let s = s.trim();
     if s.is_empty() {
         return None;
     }
-    u64::from_str_radix(s, base).ok()
+    if base == 10 {
+        return s.parse::<i64>().ok();
+    }
+    u64::from_str_radix(s, base).ok().map(|v| v as i64)
 }
 
 /// Formate `v` dans la base donnée, avec préfixe (`0x`/`0o`/`0b`) sauf en base 10.
-pub(super) fn calc_format(v: u64, base: u32) -> String {
+/// Hex/Oct/Bin : affiche le motif de bits en non-signé. Dec : affiche signé.
+pub(super) fn calc_format(v: i64, base: u32) -> String {
     match base {
-        16 => format!("0x{v:X}"),
-        8 => format!("0o{v:o}"),
-        2 => format!("0b{v:b}"),
+        16 => format!("0x{:X}", v as u64),
+        8 => format!("0o{:o}", v as u64),
+        2 => format!("0b{:b}", v as u64),
         _ => format!("{v}"),
     }
 }
@@ -911,6 +916,7 @@ mod tests {
         assert_eq!(calc_parse("dead", 16), Some(0xDEAD));
         assert_eq!(calc_parse("  ff  ", 16), Some(0xFF), "espaces tolérés");
         assert_eq!(calc_parse("", 10), None, "vide → None");
+        assert_eq!(calc_parse("-42", 10), Some(-42), "décimal négatif supporté");
     }
 
     #[test]
