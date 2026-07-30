@@ -349,22 +349,22 @@ mod band_tests {
         }
     }
 
-    /// À la largeur d'écran du rapport de bug (3840 px), les cinq colonnes
-    /// doivent toutes être confortables — SYSCALLS comprise.
+    /// SYSCALLS avait disparu de la bande quand une cinquième colonne s'y
+    /// ajoutait. La prédiction est depuis passée en fenêtre flottante, mais le
+    /// test garde le cas à cinq colonnes : c'est le partage lui-même qui était
+    /// faux, et rien n'interdit d'en rajouter une un jour.
     #[test]
-    fn syscalls_column_survives_the_prediction_column() {
-        let with = band_widths(3840.0, 9.0, &[1.30, 1.10, 1.15, 0.75, 0.70]);
-        assert_eq!(with.len(), 5);
-        let syscalls = *with.last().unwrap();
-        assert!(syscalls > 300.0, "SYSCALLS doit rester lisible : {syscalls}px");
-        // Et l'ajout de PRÉDICTION ne doit pas la faire disparaître par rapport
-        // à la disposition sans prédiction.
-        let without = band_widths(3840.0, 9.0, &[1.40, 1.30, 0.90, 0.90]);
-        assert!(
-            syscalls > *without.last().unwrap() * 0.5,
-            "SYSCALLS passe de {}px à {syscalls}px : chute trop brutale",
-            without.last().unwrap()
-        );
+    fn last_column_survives_a_fifth_one() {
+        let four = band_widths(3840.0, 9.0, &[1.40, 1.30, 0.90, 0.90]);
+        assert_eq!(four.len(), 4);
+        assert!(*four.last().unwrap() > 300.0, "SYSCALLS : {:?}", four.last());
+
+        let five = band_widths(3840.0, 9.0, &[1.30, 1.10, 1.15, 0.75, 0.70]);
+        assert_eq!(five.len(), 5);
+        let last = *five.last().unwrap();
+        assert!(last > 300.0, "la 5e colonne doit rester lisible : {last}px");
+        let total: f32 = five.iter().sum::<f32>() + 9.0 * 4.0;
+        assert!(total <= 3840.5, "les 5 colonnes débordent : {total}");
     }
 
     /// L'ordre des largeurs doit suivre l'ordre des poids.

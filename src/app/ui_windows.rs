@@ -460,7 +460,7 @@ impl App {
                     ("Ctrl+2", tr("Afficher/masquer l'instruction", "Show/hide the instruction panel", "Mostrar/ocultar el panel de instrucción")),
                     ("Ctrl+3", tr("Afficher/masquer la bande CPU", "Show/hide the CPU band", "Mostrar/ocultar la banda CPU")),
                     ("Ctrl+4", tr("Afficher/masquer la bande basse", "Show/hide the bottom band", "Mostrar/ocultar la banda inferior")),
-                    ("Ctrl+5", tr("Afficher/masquer le panneau Prédiction", "Show/hide the Prediction panel", "Mostrar/ocultar el panel Predicción")),
+                    ("Ctrl+5", tr("Afficher/masquer la fenêtre Prédiction", "Show/hide the Prediction window", "Mostrar/ocultar la ventana Predicción")),
                     ("F6", tr("Ramener le focus dans l'éditeur", "Move focus back to the editor", "Devolver el foco al editor")),
                     ("Ctrl+Tab", tr("Onglet suivant (Éditeur / Désassemblage / Vue mémoire)", "Next tab (Editor / Disassembly / Memory View)", "Pestaña siguiente (Editor / Desensamblado / Vista memoria)")),
                     ("Tab", tr("Élément interactif suivant (hors éditeur)", "Next interactive element (outside the editor)", "Siguiente elemento interactivo (fuera del editor)")),

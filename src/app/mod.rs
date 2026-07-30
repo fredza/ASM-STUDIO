@@ -573,36 +573,22 @@ impl eframe::App for App {
                 .frame(band_frame)
                 .show(ctx, |ui| {
                     let h = ui.available_height();
-                    // Poids relatifs des colonnes RÉELLEMENT affichées, normalisés
-                    // par `band_widths`. Additionner des multiplicateurs choisis à
+                    // Poids relatifs des quatre colonnes, normalisés par
+                    // `band_widths` : additionner des multiplicateurs choisis à
                     // la main faisait dépasser la largeur et poussait SYSCALLS
-                    // hors de l'écran dès que PRÉDICTION s'ajoutait.
-                    let predict = self.pedagogy_predict;
-                    let weights: &[f32] = if predict {
-                        &[1.30, 1.10, 1.15, 0.75, 0.70]
-                    } else {
-                        &[1.40, 1.30, 0.90, 0.90]
-                    };
+                    // hors de l'écran. La prédiction, elle, est une fenêtre
+                    // flottante — elle ne dispute plus sa place à la bande.
+                    let weights: &[f32] = &[1.40, 1.30, 0.90, 0.90];
                     let sep_w = ui.spacing().item_spacing.x * 2.0 + 1.0;
                     let w = band_widths(ui.available_width(), sep_w, weights);
                     ui.horizontal_top(|ui| {
-                        let mut k = 0;
-                        let mut next = |w: &[f32]| {
-                            let v = w[k];
-                            k += 1;
-                            v
-                        };
-                        col(ui, next(&w), h, |ui| self.registers_ui(ui));
+                        col(ui, w[0], h, |ui| self.registers_ui(ui));
                         ui.separator();
-                        if predict {
-                            col(ui, next(&w), h, |ui| self.predict_ui(ui));
-                            ui.separator();
-                        }
-                        col(ui, next(&w), h, |ui| self.stack_ui(ui));
+                        col(ui, w[1], h, |ui| self.stack_ui(ui));
                         ui.separator();
-                        col(ui, next(&w), h, |ui| self.callstack_ui(ui));
+                        col(ui, w[2], h, |ui| self.callstack_ui(ui));
                         ui.separator();
-                        col(ui, next(&w), h, |ui| self.syscalls_ui(ui));
+                        col(ui, w[3], h, |ui| self.syscalls_ui(ui));
                     });
                 });
         }
@@ -643,6 +629,7 @@ impl eframe::App for App {
         self.settings_window(ctx);
         self.microscope_window(ctx);
         self.calculator_window(ctx);
+        self.predict_window(ctx);
         self.diagnosis_window(ctx);
         self.update_window(ctx);
         self.updater.poll();

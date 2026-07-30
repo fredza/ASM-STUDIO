@@ -260,6 +260,8 @@ impl App {
                     changed |= ui.checkbox(&mut self.show_instruction, tr("Instruction          Ctrl+2", "Instruction          Ctrl+2", "Instrucción          Ctrl+2")).changed();
                     changed |= ui.checkbox(&mut self.show_cpu_band, tr("Bande CPU (registres…)  Ctrl+3", "CPU band (registers…)   Ctrl+3", "Banda CPU (registros…)  Ctrl+3")).changed();
                     changed |= ui.checkbox(&mut self.show_bottom_band, tr("Bande basse (mémoire…)  Ctrl+4", "Bottom band (memory…)   Ctrl+4", "Banda inferior (memoria…)  Ctrl+4")).changed();
+                    ui.separator();
+                    ui.label(RichText::new(tr("Fenêtres", "Windows", "Ventanas")).small().weak());
                     changed |= ui.checkbox(&mut self.pedagogy_predict, tr("Prédiction              Ctrl+5", "Prediction              Ctrl+5", "Predicción              Ctrl+5")).changed();
                     ui.separator();
                     if ui.button(tr("Tout afficher", "Show all", "Mostrar todo")).clicked() {

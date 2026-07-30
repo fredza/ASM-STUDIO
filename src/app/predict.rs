@@ -10,7 +10,7 @@
 
 use eframe::egui::{self, RichText};
 
-use super::{App, CHANGED, FALSE_COL, FLAG_ON, card, panel_header, parse_hex};
+use super::{App, CHANGED, FALSE_COL, FLAG_ON, card, parse_hex};
 use crate::i18n;
 
 /// Résultat d'une prédiction résolue.
@@ -91,40 +91,53 @@ impl App {
     }
 
     /// Panneau « Prédiction » : saisie avant le pas, verdict après.
-    pub(crate) fn predict_ui(&mut self, ui: &mut egui::Ui) {
+    /// Fenêtre flottante « Prédiction ».
+    ///
+    /// Fenêtre plutôt que colonne de la bande CPU : le panneau a besoin de
+    /// hauteur (énoncé, saisie, verdict) et l'ajouter à la bande écrasait les
+    /// autres colonnes. Flottant, il se place où l'élève veut, se déplace
+    /// pendant qu'il lit son code, et ne dispute sa largeur à personne.
+    pub(crate) fn predict_window(&mut self, ctx: &egui::Context) {
+        if !self.pedagogy_predict {
+            return;
+        }
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
-        let hdr = self.c_header();
 
-        panel_header(ui, |ui| {
-            super::header_title(ui, hdr, None, tr("PRÉDICTION", "PREDICTION", "PREDICCIÓN"));
-            // Score à droite de l'en-tête : visible en permanence.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(pct) = self.pred_score.percent() {
-                    let col = match pct {
-                        p if p >= 75 => FLAG_ON,
-                        p if p >= 50 => CHANGED,
-                        _ => FALSE_COL,
-                    };
-                    ui.label(
-                        RichText::new(format!(
-                            "{}/{}  ({pct} %)",
-                            self.pred_score.right, self.pred_score.total
-                        ))
-                        .monospace()
-                        .strong()
-                        .color(col),
-                    );
-                }
+        // Score dans le titre : reste visible même fenêtre repliée.
+        let title = match self.pred_score.percent() {
+            Some(pct) => format!(
+                "🎯 {} — {}/{} ({pct} %)",
+                tr("Prédiction", "Prediction", "Predicción"),
+                self.pred_score.right,
+                self.pred_score.total
+            ),
+            None => format!("🎯 {}", tr("Prédiction", "Prediction", "Predicción")),
+        };
+
+        let mut open = true;
+        egui::Window::new(title)
+            // Id explicite : le titre contient le score et change donc en cours
+            // de partie. Sans cela, egui perdrait la position à chaque point.
+            .id(egui::Id::new("predict_window"))
+            .open(&mut open)
+            .collapsible(true)
+            .resizable(true)
+            .default_width(320.0)
+            .default_height(260.0)
+            .default_pos(ctx.screen_rect().center() + egui::vec2(180.0, -60.0))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("predict_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.predict_body(ui));
             });
-        });
 
-        // Le corps défile : sans cela son contenu pousserait la bande CPU
-        // à grandir quand la colonne PRÉDICTION est affichée.
-        egui::ScrollArea::vertical()
-            .id_salt("predict_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| self.predict_body(ui));
+        // Fermer la fenêtre décoche l'entrée du menu Affichage : un seul état.
+        if !open {
+            self.pedagogy_predict = false;
+            self.save_settings();
+        }
     }
 
     /// Corps du panneau (saisie ou verdict), rendu dans une zone défilante.
@@ -385,11 +398,10 @@ mod tests {
         assert_eq!(app.pred_score.total, 2, "le total augmente");
         assert_eq!(app.pred_score.percent(), Some(50));
 
-        // Le panneau se rend sans paniquer, verdict affiché.
+        // La fenêtre flottante se rend sans paniquer, verdict affiché.
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.predict_ui(ui));
-        });
+        let _ = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
+        assert!(app.pedagogy_predict, "la fenêtre reste ouverte");
     }
 
     /// Une prédiction déjà résolue ne doit pas être recomptée à chaque pas.
@@ -403,5 +415,49 @@ mod tests {
         app.resolve_prediction();
         app.resolve_prediction();
         assert_eq!(app.pred_score.total, 1, "pas de double comptage");
+    }
+
+    /// Fermer la fenêtre doit décocher l'entrée du menu Affichage, et la
+    /// désactiver depuis le menu doit la faire disparaître : un seul état.
+    #[test]
+    fn window_visibility_follows_the_view_menu_flag() {
+        let mut app = App::new();
+        let ctx = egui::Context::default();
+
+        // Désactivée : la fenêtre ne se rend pas du tout.
+        app.pedagogy_predict = false;
+        let out = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
+        assert!(
+            !out.shapes.iter().any(|s| s.clip_rect.width() > 0.0 && !matches!(s.shape, egui::Shape::Noop)),
+            "aucune forme ne doit être peinte quand l'option est désactivée"
+        );
+        assert!(!app.pedagogy_predict);
+
+        // Activée : elle se rend et l'état reste vrai.
+        app.pedagogy_predict = true;
+        let _ = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
+        assert!(app.pedagogy_predict, "la fenêtre ouverte garde l'option active");
+    }
+
+    /// Le titre porte le score, donc il change en cours de partie. L'Id de la
+    /// fenêtre doit rester stable, sinon egui oublie sa position à chaque point.
+    #[test]
+    fn window_id_is_stable_across_score_changes() {
+        let mut app = App::new();
+        app.pedagogy_predict = true;
+        let ctx = egui::Context::default();
+
+        let pos_of = |ctx: &egui::Context| {
+            ctx.memory(|m| m.area_rect(egui::Id::new("predict_window")).map(|r| r.min))
+        };
+
+        let _ = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
+        let first = pos_of(&ctx);
+        assert!(first.is_some(), "la fenêtre doit être enregistrée sous son Id explicite");
+
+        // Le score change → le titre change.
+        app.pred_score = Score { right: 3, total: 4 };
+        let _ = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
+        assert_eq!(pos_of(&ctx), first, "la position doit survivre au changement de titre");
     }
 }
