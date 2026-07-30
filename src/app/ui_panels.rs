@@ -565,7 +565,11 @@ impl App {
 
     pub(super) fn syscalls_ui(&self, ui: &mut egui::Ui) {
         header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.syscalls), "SYSCALLS");
-        egui::ScrollArea::vertical()
+        // Défilement sur les DEUX axes : les arguments d'un appel système sont
+        // souvent plus larges que la colonne (chemins, tampons, tailles). On les
+        // laisse déborder et on donne une barre horizontale, plutôt que de les
+        // tronquer — un argument coupé n'apprend rien.
+        egui::ScrollArea::both()
             .id_salt("syscalls_scroll")
             .stick_to_bottom(true)
             .auto_shrink([false, false])
@@ -580,7 +584,10 @@ impl App {
                         Some(_) => FLAG_ON,
                         None => self.c_bytes(),
                     };
-                    // Ligne 1 : nom  #num  ——  = ret (aligné à droite).
+                    // Ligne 1 : nom  #num  = ret. Le retour est aligné à gauche
+                    // à la suite du numéro : dans une zone qui défile
+                    // horizontalement, un alignement à droite se collerait au
+                    // bord du viewport et glisserait au défilement.
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(&s.name)
@@ -595,17 +602,16 @@ impl App {
                                 .color(self.c_bytes()),
                         );
                         if let Some(r) = s.ret {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(
-                                    RichText::new(format!("= {r}"))
-                                        .monospace()
-                                        .small()
-                                        .color(col),
-                                );
-                            });
+                            ui.label(
+                                RichText::new(format!("= {r}"))
+                                    .monospace()
+                                    .small()
+                                    .color(col),
+                            );
                         }
                     });
-                    // Ligne 2 : arguments tronqués (évite le débordement horizontal).
+                    // Ligne 2 : arguments complets, en une seule ligne que la
+                    // barre horizontale permet de parcourir.
                     if !s.args.is_empty() {
                         ui.add(
                             egui::Label::new(
@@ -614,7 +620,7 @@ impl App {
                                     .small()
                                     .weak(),
                             )
-                            .truncate(),
+                            .extend(),
                         );
                     }
                     ui.add_space(2.0);
@@ -806,6 +812,62 @@ impl App {
         let rows = size.div_ceil(16).min(16);
         egui::ScrollArea::both().id_salt("heap_scroll").auto_shrink([false, false]).show(ui, |ui| {
             hex_dump_rows(ui, addr_c, bytes_c, dbg, start, rows);
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Le panneau SYSCALLS doit se rendre sans paniquer avec des arguments
+    /// longs, et la trace doit bien contenir les appels — c'est ce contenu
+    /// large qui justifie la barre de défilement horizontale.
+    #[test]
+    fn syscalls_panel_renders_with_long_arguments() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/sysc-test.asm");
+        app.out_dir = PathBuf::from("build/sysc");
+        // write(1, msg, 60) produit une ligne d'arguments large.
+        app.source = "\
+section .data
+    msg db 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 10
+section .text
+    global _start
+_start:
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, msg
+    mov rdx, 60
+    syscall
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"
+        .to_string();
+
+        app.launch();
+        assert!(app.dbg.is_some(), "programme lancé");
+        for _ in 0..20 {
+            app.step();
+        }
+        assert!(!app.syscalls.is_empty(), "des appels système doivent être journalisés");
+        let write = &app.syscalls[0];
+        assert_eq!(write.number, 1, "premier appel = write");
+        assert!(
+            !write.args.is_empty(),
+            "les arguments doivent être conservés en entier, pas tronqués"
+        );
+
+        // Rendu headless dans une colonne étroite : c'est le cas où la barre
+        // horizontale sert, et rien ne doit paniquer.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_max_width(180.0);
+                app.syscalls_ui(ui);
+            });
         });
     }
 }
