@@ -8,73 +8,48 @@ use crate::syscall;
 
 use super::{
     App, ACCENT, ACTION, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, GUTTER,
-    badge, card, panel_header, icon_tab, icon_img,
+    badge, card, panel_header, icon_img,
 };
 
 impl App {
     // ---------- Centre : onglets Éditeur / Désassemblage ----------
 
-    pub(super) fn center_ui(&mut self, ui: &mut egui::Ui) {
+    /// Onglet « Éditeur » : nom de fichier, repère RIP, puis la zone de texte.
+    ///
+    /// Le sélecteur d'onglets a disparu — c'est la barre d'onglets de la zone
+    /// d'ancrage qui joue ce rôle désormais. Restent les deux informations que
+    /// l'élève lit sans quitter son code : quel fichier, et où en est le CPU.
+    pub(super) fn editor_tab_ui(&mut self, ui: &mut egui::Ui) {
         let hdr = self.c_header();
-        let lang = self.lang;
-        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
-        let (edit_ic, disasm_ic) = match &self.icons {
-            Some(i) => (Some(i.editor.clone()), Some(i.assembler.clone())),
-            None => (None, None),
-        };
-        // Si la vue mémoire est désactivée dans les réglages, revenir à l'éditeur.
-        if self.tab == super::Tab::MemMap && !self.pedagogy_memview {
-            self.tab = super::Tab::Editor;
-        }
-        panel_header(ui, |ui| {
-            if icon_tab(ui, edit_ic.as_ref(), tr("Éditeur", "Editor", "Editor"), self.tab == super::Tab::Editor).clicked() {
-                self.tab = super::Tab::Editor;
-            }
-            if icon_tab(ui, disasm_ic.as_ref(), tr("Désassemblage", "Disassembly", "Desensamblado"), self.tab == super::Tab::Disasm).clicked() {
-                self.tab = super::Tab::Disasm;
-            }
-            if self.pedagogy_memview {
-                if icon_tab(ui, None, tr("Vue mémoire", "Memory View", "Vista memoria"), self.tab == super::Tab::MemMap).clicked() {
-                    self.tab = super::Tab::MemMap;
-                }
-            }
-            ui.separator();
+        ui.horizontal(|ui| {
             let name = self.src_path.file_name().unwrap_or_default().to_string_lossy();
             let mark = if self.dirty { " ●" } else { "" };
             ui.label(RichText::new(format!("{name}{mark}")).color(hdr));
-        });
-        // Bandeau RIP (façon mockup) : « RIP : 0x… mnémonique opérandes ».
-        if let Some(s) = self.snap()
-            && let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip)
-        {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("▶").color(ACTION));
-                ui.label(RichText::new(format!("RIP : 0x{:X}", s.regs.rip)).monospace().color(self.c_addr()));
-                ui.label(
-                    RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
-                        .monospace()
-                        .color(self.c_mnemonic()),
-                );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.rip_banner(ui);
             });
-        }
-        ui.add_space(2.0);
-        match self.tab {
-            super::Tab::Editor => self.editor_ui(ui),
-            super::Tab::Disasm => self.disasm_ui(ui),
-            super::Tab::MemMap => self.memory_map_ui(ui),
-        }
+        });
+        ui.separator();
+        self.editor_ui(ui);
     }
 
-    /// Onglet suivant (ou précédent) parmi ceux réellement affichés.
-    /// « Vue mémoire » n'entre dans le cycle que si l'option est active.
-    pub(super) fn cycle_tab(&mut self, backwards: bool) {
-        let mut tabs = vec![super::Tab::Editor, super::Tab::Disasm];
-        if self.pedagogy_memview {
-            tabs.push(super::Tab::MemMap);
-        }
-        let i = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
-        let n = tabs.len();
-        self.tab = if backwards { tabs[(i + n - 1) % n] } else { tabs[(i + 1) % n] };
+    /// Repère « ▶ RIP : 0x… mnémonique opérandes », si un programme tourne.
+    pub(super) fn rip_banner(&self, ui: &mut egui::Ui) {
+        let Some(s) = self.snap() else { return };
+        let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) else { return };
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("▶").color(ACTION));
+            ui.label(
+                RichText::new(format!("RIP : 0x{:X}", s.regs.rip))
+                    .monospace()
+                    .color(self.c_addr()),
+            );
+            ui.label(
+                RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
+                    .monospace()
+                    .color(self.c_mnemonic()),
+            );
+        });
     }
 
     /// Déplace la sélection du désassemblage d'une instruction (clavier).
@@ -484,6 +459,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::dock::Panel;
     use crate::disasm::Insn;
 
     fn insn(addr: u64) -> Insn {
@@ -495,33 +471,38 @@ mod tests {
         }
     }
 
-    /// Ctrl+Tab ne doit proposer « Vue mémoire » que si l'option est active,
-    /// sinon le clavier atteindrait un onglet invisible.
+    /// Ctrl+Tab fait défiler les onglets DU NŒUD qui a le focus. Sans nœud
+    /// focalisé, l'appel doit rester sans effet plutôt que de paniquer.
     #[test]
-    fn tab_cycle_skips_hidden_memory_view() {
+    fn tab_cycle_is_safe_without_focus() {
         let mut app = App::new();
-        app.pedagogy_memview = false;
-        app.tab = super::super::Tab::Editor;
         app.cycle_tab(false);
-        assert_eq!(app.tab, super::super::Tab::Disasm);
-        app.cycle_tab(false);
-        assert_eq!(app.tab, super::super::Tab::Editor, "boucle sur deux onglets");
-
-        app.pedagogy_memview = true;
-        app.cycle_tab(false);
-        app.cycle_tab(false);
-        assert_eq!(app.tab, super::super::Tab::MemMap, "la vue mémoire entre dans le cycle");
-        app.cycle_tab(false);
-        assert_eq!(app.tab, super::super::Tab::Editor);
+        app.cycle_tab(true);
+        // La disposition reste intacte.
+        assert!(app.panel_is_open(Panel::Editor));
+        assert!(app.panel_is_open(Panel::Disasm));
     }
 
+    /// Après focalisation d'un panneau, le cycle change bien l'onglet actif du
+    /// nœud — Éditeur / Désassemblage / Vue mémoire partagent le même nœud.
     #[test]
-    fn tab_cycle_goes_backwards() {
+    fn tab_cycle_moves_within_the_focused_node() {
         let mut app = App::new();
-        app.pedagogy_memview = false;
-        app.tab = super::super::Tab::Editor;
-        app.cycle_tab(true);
-        assert_eq!(app.tab, super::super::Tab::Disasm, "recule = va au dernier");
+        app.focus_panel(Panel::Editor);
+        assert_eq!(app.focused_panel(), Some(Panel::Editor));
+
+        app.cycle_tab(false);
+        let after = app.focused_panel();
+        assert_ne!(after, Some(Panel::Editor), "le cycle doit changer d'onglet");
+        assert!(
+            matches!(after, Some(Panel::Disasm) | Some(Panel::MemMap)),
+            "on reste dans le nœud du centre, obtenu : {after:?}"
+        );
+
+        // Un tour complet ramène à l'éditeur.
+        app.cycle_tab(false);
+        app.cycle_tab(false);
+        assert_eq!(app.focused_panel(), Some(Panel::Editor));
     }
 
     /// Les flèches parcourent le désassemblage et s'arrêtent aux bornes.
@@ -530,10 +511,8 @@ mod tests {
         let mut app = App::new();
         app.disasm = vec![insn(0x10), insn(0x20), insn(0x30)];
 
-        // Sans sélection ni programme lancé, on part du début.
         app.move_disasm_selection(true);
         assert_eq!(app.selected, Some(0x10));
-
         app.move_disasm_selection(true);
         assert_eq!(app.selected, Some(0x20));
         app.move_disasm_selection(true);
@@ -549,7 +528,6 @@ mod tests {
         assert_eq!(app.selected, Some(0x10), "borne haute respectée");
     }
 
-    /// Sans désassemblage, la navigation ne doit pas paniquer.
     #[test]
     fn disasm_selection_is_safe_when_empty() {
         let mut app = App::new();

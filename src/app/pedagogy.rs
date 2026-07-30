@@ -643,7 +643,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::Tab;
     use std::path::PathBuf;
 
     /// et s'éteindre à la fin, sans jamais sortir de [0,1].
@@ -734,25 +733,16 @@ mod tests {
         assert!(!regions.is_empty(), "des régions mémoire doivent être détectées");
 
         let ctx = egui::Context::default();
-        app.tab = Tab::MemMap;
         // flash_time = 0 et le temps headless démarre à 0 ⇒ le clignotement est
         // actif pendant ce rendu : on exerce bien les chemins animés.
         app.flash_time = 0.0;
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.center_ui(ui));
-            egui::TopBottomPanel::bottom("test_regs").show(ctx, |ui| {
-                app.registers_ui(ui);
-                app.stack_view(ui);
-            });
-        });
+        // On rend la disposition COMPLÈTE : tous les panneaux passent par le
+        // rendu, pas seulement le centre.
+        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
+        assert!(app.dock.is_some(), "l'arbre doit être restitué après le rendu");
 
-        // La vue mémoire reste accessible, et se replie sur l'éditeur si l'option
-        // est coupée (comportement attendu du basculement dans les réglages).
-        app.pedagogy_memview = false;
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.center_ui(ui));
-        });
-        assert_eq!(app.tab, Tab::Editor, "l'onglet doit se replier sur l'éditeur");
+        // La vue mémoire reste un onglet joignable.
+        assert!(app.panel_is_open(crate::app::dock::Panel::MemMap));
     }
 
     /// Le petit-boutisme est la confusion la plus universelle : on vérifie que la

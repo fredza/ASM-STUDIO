@@ -21,6 +21,7 @@ mod ui_windows;
 mod ui_panels;
 mod ui_center;
 mod pedagogy;
+mod dock;
 mod predict;
 mod ui_exercise;
 mod widgets;
@@ -85,13 +86,6 @@ pub(super) fn changed_color2(flash: Option<f32>, base: Color32) -> Color32 {
     }
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
-pub(super) enum Tab {
-    Editor,
-    Disasm,
-    MemMap,
-}
-
 #[derive(PartialEq, Clone, Copy)]
 pub(super) enum StackTab {
     Stack,
@@ -100,8 +94,10 @@ pub(super) enum StackTab {
 
 /// Icônes de l'app (planche `src/Assets`, découpées dans `assets/icons/`),
 /// chargées une fois comme textures egui.
+///
+/// `editor` n'est plus utilisée depuis que les onglets du centre sont gérés par
+/// la barre d'onglets de la zone d'ancrage, qui n'accepte que du texte.
 pub(super) struct Icons {
-    pub(super) editor: egui::TextureHandle,
     pub(super) assembler: egui::TextureHandle,
     pub(super) run: egui::TextureHandle,
     pub(super) debug: egui::TextureHandle,
@@ -130,7 +126,6 @@ impl Icons {
             };
         }
         Icons {
-            editor: ic!("editor"),
             assembler: ic!("assembler"),
             run: ic!("run"),
             debug: ic!("debug"),
@@ -210,16 +205,9 @@ pub struct App {
     /// Position du curseur dans l'éditeur (1-based), pour la barre d'état.
     pub(super) editor_ln: usize,
     pub(super) editor_col: usize,
-
-    pub(super) tab: Tab,
     pub(super) stack_tab: StackTab,
     /// Thème sombre actif (mis à jour dans `apply_theme`) — palette de texte.
     pub(super) dark: bool,
-    /// Visibilité des panneaux (menu Affichage).
-    pub(super) show_explorer: bool,
-    pub(super) show_instruction: bool,
-    pub(super) show_cpu_band: bool,
-    pub(super) show_bottom_band: bool,
     pub(super) show_tooltips: bool,
     /// Animations « CPU vivant » (pulsation des valeurs modifiées au Step).
     pub(super) animate: bool,
@@ -248,6 +236,9 @@ pub struct App {
     pub(super) icons: Option<Icons>,
     /// Dialogue « Ouvrir » natif en cours sur un thread de fond (sinon `None`).
     /// Sondé chaque frame → l'UI ne se fige pas pendant que le sélecteur est ouvert.
+    /// Arbre des panneaux ancrables. `Option` car il est sorti de `self` le
+    /// temps du rendu : le `TabViewer` a besoin de `&mut App`.
+    pub(super) dock: Option<egui_dock::DockState<dock::Panel>>,
     /// Mode pédagogique — prédire la valeur d'un registre avant chaque pas.
     pub(super) pedagogy_predict: bool,
     /// Prédiction en cours (en attente de résolution, ou résolue et affichée).
@@ -308,13 +299,8 @@ impl App {
             editor_scroll_y: 0.0,
             editor_ln: 1,
             editor_col: 1,
-            tab: Tab::Editor,
             stack_tab: StackTab::Stack,
             dark: true,
-            show_explorer: true,
-            show_instruction: true,
-            show_cpu_band: true,
-            show_bottom_band: true,
             show_tooltips: true,
             animate: true,
             pedagogy_anim: false,
@@ -331,6 +317,7 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
+            dock: Some(dock::default_layout()),
             pedagogy_predict: false,
             prediction: None,
             pred_score: predict::Score::default(),
@@ -353,6 +340,9 @@ impl App {
         use egui::ThemePreference;
         let Some(path) = settings_path() else { return };
         let Ok(content) = std::fs::read_to_string(&path) else { return };
+        // La disposition est appliquée en dernier : elle dépend des autres
+        // réglages (langue pour les titres) et remplace l'arbre par défaut.
+        let mut saved_dock: Option<String> = None;
         for line in content.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let v = v.trim();
@@ -371,12 +361,12 @@ impl App {
                 "pedagogy_anim" => self.pedagogy_anim = v == "true",
                 "pedagogy_memview" => self.pedagogy_memview = v == "true",
                 "pedagogy_predict" => self.pedagogy_predict = v == "true",
-                "show_explorer" => self.show_explorer = v == "true",
-                "show_instruction" => self.show_instruction = v == "true",
-                "show_cpu_band" => self.show_cpu_band = v == "true",
-                "show_bottom_band" => self.show_bottom_band = v == "true",
+                "dock" => saved_dock = Some(v.to_string()),
                 _ => {}
             }
+        }
+        if let Some(layout) = saved_dock {
+            self.apply_dock_layout(&layout);
         }
     }
 
@@ -394,7 +384,7 @@ impl App {
         let content = format!(
             "theme={theme}\nlang={}\ntooltips={}\nasmstd={}\nanimate={}\n\
              pedagogy_anim={}\npedagogy_memview={}\npedagogy_predict={}\n\
-             show_explorer={}\nshow_instruction={}\nshow_cpu_band={}\nshow_bottom_band={}\n",
+             dock={}\n",
             self.lang.key(),
             self.show_tooltips,
             self.use_asmstd,
@@ -402,10 +392,7 @@ impl App {
             self.pedagogy_anim,
             self.pedagogy_memview,
             self.pedagogy_predict,
-            self.show_explorer,
-            self.show_instruction,
-            self.show_cpu_band,
-            self.show_bottom_band,
+            self.dock_layout_string(),
         );
         let _ = std::fs::write(&path, content);
     }
@@ -539,90 +526,9 @@ impl eframe::App for App {
         self.toolbar(ctx);
         self.status_bar(ctx);
 
-        // Marge interne unique pour TOUS les panneaux (bandes, latéraux, centre)
-        // → rythme vertical cohérent et séparateurs d'en-tête alignés.
-        let pad = egui::Margin::symmetric(8.0, 6.0);
-        let band_frame = egui::Frame::central_panel(&ctx.style()).inner_margin(pad);
-
-        // Bande basse : MEMORY | TIMELINE | CONSOLE.
-        if self.show_bottom_band {
-            egui::TopBottomPanel::bottom("bottom_band")
-                .resizable(true)
-                .default_height(196.0)
-                .frame(band_frame)
-                .show(ctx, |ui| {
-                    let h = ui.available_height();
-                    let cw = ((ui.available_width() - 20.0) / 3.0).max(60.0);
-                    ui.horizontal_top(|ui| {
-                        col(ui, cw, h, |ui| self.memory_ui(ui));
-                        ui.separator();
-                        col(ui, cw, h, |ui| self.timeline_col_ui(ui));
-                        ui.separator();
-                        col(ui, ui.available_width(), h, |ui| self.console_ui(ui));
-                    });
-                });
-        }
-
-        // Bande centrale : REGISTERS | STACK | CALL STACK | SYSCALLS.
-        // (FLAGS est désormais au bas du panneau INSTRUCTION ; le désassemblage
-        // a son propre onglet au centre.)
-        if self.show_cpu_band {
-            egui::TopBottomPanel::bottom("mid_band")
-                .resizable(true)
-                .default_height(226.0)
-                .frame(band_frame)
-                .show(ctx, |ui| {
-                    let h = ui.available_height();
-                    // Poids relatifs des quatre colonnes, normalisés par
-                    // `band_widths` : additionner des multiplicateurs choisis à
-                    // la main faisait dépasser la largeur et poussait SYSCALLS
-                    // hors de l'écran. La prédiction, elle, est une fenêtre
-                    // flottante — elle ne dispute plus sa place à la bande.
-                    let weights: &[f32] = &[1.40, 1.30, 0.90, 0.90];
-                    let sep_w = ui.spacing().item_spacing.x * 2.0 + 1.0;
-                    let w = band_widths(ui.available_width(), sep_w, weights);
-                    ui.horizontal_top(|ui| {
-                        col(ui, w[0], h, |ui| self.registers_ui(ui));
-                        ui.separator();
-                        col(ui, w[1], h, |ui| self.stack_ui(ui));
-                        ui.separator();
-                        col(ui, w[2], h, |ui| self.callstack_ui(ui));
-                        ui.separator();
-                        col(ui, w[3], h, |ui| self.syscalls_ui(ui));
-                    });
-                });
-        }
-
-        // Explorateur à gauche, INSTRUCTION à droite, éditeur au centre.
-        // Marge interne IDENTIQUE pour les trois → leurs en-têtes (et donc les
-        // séparateurs sous EXPLORER / onglets éditeur / INSTRUCTION) s'alignent.
-        if self.show_explorer {
-            egui::SidePanel::left("explorer_panel")
-                .resizable(true)
-                .default_width(180.0)
-                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
-                .show(ctx, |ui| self.explorer_ui(ui));
-        }
-        // Panneau EXERCICE : seulement si le fichier déclare des attentes.
-        // Déclaré après INSTRUCTION ⇒ il se place plus près de l'éditeur, à côté
-        // du code que l'élève est en train d'écrire.
-        if self.show_instruction {
-            egui::SidePanel::right("instruction_panel")
-                .resizable(true)
-                .default_width(272.0)
-                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
-                .show(ctx, |ui| self.instruction_ui(ui));
-        }
-        if self.has_exercise() {
-            egui::SidePanel::right("exercise_panel")
-                .resizable(true)
-                .default_width(240.0)
-                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
-                .show(ctx, |ui| self.exercise_ui(ui));
-        }
-        egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(pad))
-            .show(ctx, |ui| self.center_ui(ui));
+        // Toute la zone centrale est un arbre de panneaux ancrables : chaque
+        // panneau est un onglet que l'on déplace, empile ou détache en fenêtre.
+        self.dock_ui(ctx);
 
         self.about_window(ctx);
         self.shortcuts_window(ctx);

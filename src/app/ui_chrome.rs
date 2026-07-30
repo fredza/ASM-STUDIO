@@ -58,7 +58,60 @@ impl App {
         // --- Navigation clavier ---
         // F6 : ramène le focus dans l'éditeur (point d'entrée du clavier).
         if ctx.input(|i| i.key_pressed(Key::F6)) {
-            self.tab = super::Tab::Editor;
+            self.focus_panel(super::dock::Panel::Editor);
+            ctx.memory_mut(|m| m.request_focus(super::editor_id()));
+        }
+        // Ctrl+Tab / Ctrl+Maj+Tab : fait défiler les onglets du centre.
+        let (tab_next, tab_prev) = ctx.input(|i| {
+            let t = i.modifiers.ctrl && i.key_pressed(Key::Tab);
+            (t && !i.modifiers.shift, t && i.modifiers.shift)
+        });
+        if tab_next || tab_prev {
+            self.cycle_tab(tab_prev);
+        }
+        if step {
+            self.step();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+            self.show_shortcuts = true;
+        }
+        // Affichage : Ctrl+1..5 bascule un panneau de la disposition.
+        use super::dock::Panel;
+        let quick: [(egui::Key, Panel); 4] = [
+            (Key::Num1, Panel::Explorer),
+            (Key::Num2, Panel::Instruction),
+            (Key::Num3, Panel::Registers),
+            (Key::Num4, Panel::Memory),
+        ];
+        let mut toggled = false;
+        for (key, panel) in quick {
+            if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(key)) {
+                self.toggle_panel(panel);
+                toggled = true;
+            }
+        }
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::Num5)) {
+            self.pedagogy_predict = !self.pedagogy_predict;
+            toggled = true;
+        }
+        if toggled {
+            self.save_settings();
+        }
+
+        // Échap : d'abord sortir du champ de saisie, sinon arrêter le programme.
+        // Sans cette priorité, un utilisateur au clavier reste piégé dans l'éditeur.
+        let esc = ctx.input(|i| i.key_pressed(Key::Escape));
+        let focused = ctx.memory(|m| m.focused().is_some());
+        if esc && focused {
+            ctx.memory_mut(|m| m.surrender_focus(m.focused().unwrap()));
+        } else if stop || esc {
+            self.stop();
+        }
+
+        // --- Navigation clavier ---
+        // F6 : ramène le focus dans l'éditeur (point d'entrée du clavier).
+        if ctx.input(|i| i.key_pressed(Key::F6)) {
+            self.focus_panel(super::dock::Panel::Editor);
             ctx.memory_mut(|m| m.request_focus(super::editor_id()));
         }
         // Ctrl+Tab / Ctrl+Maj+Tab : fait défiler les onglets du centre.
@@ -76,40 +129,15 @@ impl App {
             self.show_shortcuts = true;
         }
         // Affichage : Ctrl+1..5 bascule chaque panneau.
-        let (t_expl, t_instr, t_cpu, t_bottom, t_pred) = ctx.input(|i| {
-            let c = i.modifiers.ctrl;
-            (
-                c && i.key_pressed(Key::Num1),
-                c && i.key_pressed(Key::Num2),
-                c && i.key_pressed(Key::Num3),
-                c && i.key_pressed(Key::Num4),
-                c && i.key_pressed(Key::Num5),
-            )
-        });
-        if t_expl {
-            self.show_explorer = !self.show_explorer;
-        }
-        if t_instr {
-            self.show_instruction = !self.show_instruction;
-        }
-        if t_cpu {
-            self.show_cpu_band = !self.show_cpu_band;
-        }
-        if t_bottom {
-            self.show_bottom_band = !self.show_bottom_band;
-        }
-        if t_pred {
-            self.pedagogy_predict = !self.pedagogy_predict;
-        }
-        if t_expl || t_instr || t_cpu || t_bottom || t_pred {
-            self.save_settings();
-        }
         // Timeline seulement si l'éditeur n'a pas le focus (évite le conflit ←/→).
         let editing = ctx.memory(|m| m.focused().is_some());
 
         // ↑/↓ parcourent le désassemblage quand son onglet est actif ; Entrée
         // ouvre le microscope sur l'instruction retenue.
-        if self.tab == super::Tab::Disasm && !editing && !self.disasm.is_empty() {
+        if self.focused_panel() == Some(super::dock::Panel::Disasm)
+            && !editing
+            && !self.disasm.is_empty()
+        {
             let (up, down, enter) = ctx.input(|i| {
                 (
                     i.key_pressed(Key::ArrowUp),
@@ -255,25 +283,62 @@ impl App {
                 });
                 ui.menu_button(tr("Affichage", "View", "Vista"), |ui| {
                     ui.label(RichText::new(tr("Panneaux", "Panels", "Paneles")).small().weak());
-                    let mut changed = false;
-                    changed |= ui.checkbox(&mut self.show_explorer, tr("Explorateur          Ctrl+1", "Explorer             Ctrl+1", "Explorador          Ctrl+1")).changed();
-                    changed |= ui.checkbox(&mut self.show_instruction, tr("Instruction          Ctrl+2", "Instruction          Ctrl+2", "Instrucción          Ctrl+2")).changed();
-                    changed |= ui.checkbox(&mut self.show_cpu_band, tr("Bande CPU (registres…)  Ctrl+3", "CPU band (registers…)   Ctrl+3", "Banda CPU (registros…)  Ctrl+3")).changed();
-                    changed |= ui.checkbox(&mut self.show_bottom_band, tr("Bande basse (mémoire…)  Ctrl+4", "Bottom band (memory…)   Ctrl+4", "Banda inferior (memoria…)  Ctrl+4")).changed();
+                    ui.label(
+                        RichText::new(tr(
+                            "Glissez un onglet pour le déplacer, l'empiler ou le détacher.",
+                            "Drag a tab to move, stack or detach it.",
+                            "Arrastre una pestaña para moverla, apilarla o desacoplarla.",
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                    ui.add_space(3.0);
+                    // Une case par panneau : cochée = présent quelque part dans
+                    // la disposition (ancré ou en fenêtre).
+                    let mut toggle: Option<super::dock::Panel> = None;
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        for p in super::dock::Panel::ALL {
+                            let mut open = self.panel_is_open(p);
+                            if ui.checkbox(&mut open, p.title(lang)).changed() {
+                                toggle = Some(p);
+                            }
+                        }
+                    });
+                    if let Some(p) = toggle {
+                        self.toggle_panel(p);
+                        self.save_settings();
+                    }
+
                     ui.separator();
                     ui.label(RichText::new(tr("Fenêtres", "Windows", "Ventanas")).small().weak());
-                    changed |= ui.checkbox(&mut self.pedagogy_predict, tr("Prédiction              Ctrl+5", "Prediction              Ctrl+5", "Predicción              Ctrl+5")).changed();
+                    if ui
+                        .checkbox(&mut self.pedagogy_predict, tr("Prédiction              Ctrl+5", "Prediction              Ctrl+5", "Predicción              Ctrl+5"))
+                        .changed()
+                    {
+                        self.save_settings();
+                    }
+
                     ui.separator();
                     if ui.button(tr("Tout afficher", "Show all", "Mostrar todo")).clicked() {
-                        self.show_explorer = true;
-                        self.show_instruction = true;
-                        self.show_cpu_band = true;
-                        self.show_bottom_band = true;
-                        changed = true;
+                        for p in super::dock::Panel::ALL {
+                            if !self.panel_is_open(p) {
+                                self.show_panel(p);
+                            }
+                        }
+                        self.save_settings();
                         ui.close_menu();
                     }
-                    if changed {
-                        self.save_settings();
+                    if ui
+                        .button(tr("Réinitialiser la disposition", "Reset layout", "Restablecer disposición"))
+                        .on_hover_text(tr(
+                            "Remet les panneaux à leur place d'origine.",
+                            "Puts every panel back in its original place.",
+                            "Devuelve cada panel a su lugar original.",
+                        ))
+                        .clicked()
+                    {
+                        self.reset_dock_layout();
+                        ui.close_menu();
                     }
                 });
                 ui.menu_button(tr("Aide", "Help", "Ayuda"), |ui| {

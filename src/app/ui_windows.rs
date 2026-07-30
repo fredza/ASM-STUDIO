@@ -702,7 +702,7 @@ impl App {
 
         if goto_line {
             // Bascule sur l'éditeur : la ligne est déjà surlignée par le suivi RIP.
-            self.tab = super::Tab::Editor;
+            self.focus_panel(super::dock::Panel::Editor);
         }
         if !open || close {
             self.diagnosis = None;

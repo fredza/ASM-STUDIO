@@ -133,7 +133,6 @@ impl App {
     }
 
     pub(super) fn open_file(&mut self, path: PathBuf) {
-        use super::Tab;
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 self.source = content;
@@ -144,7 +143,7 @@ impl App {
                 self.dbg = None;
                 self.disasm.clear();
                 self.binary = None;
-                self.tab = Tab::Editor;
+                self.show_panel(super::dock::Panel::Editor);
                 self.reload_exercise();
                 self.status = format!("{} {}", i18n::tr(self.lang, "Ouvert :", "Opened:"), self.src_path.display());
             }
@@ -153,7 +152,6 @@ impl App {
     }
 
     pub(super) fn new_file(&mut self) {
-        use super::Tab;
         self.source = "section .data\n\nsection .text\n    global _start\n_start:\n    mov rax, 60      ; sys_exit\n    xor rdi, rdi     ; code 0\n    syscall\n".to_string();
         // Le nouveau fichier vise le dossier actuellement affiché dans l'explorateur.
         self.src_path = self.explorer_dir.join("sans-titre.asm");
@@ -161,7 +159,7 @@ impl App {
         self.dbg = None;
         self.disasm.clear();
         self.binary = None;
-        self.tab = Tab::Editor;
+        self.show_panel(super::dock::Panel::Editor);
         self.status = i18n::tr(self.lang, "Nouveau fichier", "New file").to_string();
     }
 

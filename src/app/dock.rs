@@ -1,0 +1,507 @@
+//! Disposition ancrable : chaque panneau est un onglet déplaçable.
+//!
+//! Les panneaux vivaient dans des `SidePanel` / `TopBottomPanel` figés : leur
+//! place et leur taille étaient décidées dans le code, et l'élève ne pouvait que
+//! les masquer. Ici, chaque panneau devient un onglet d'un arbre `egui_dock` —
+//! on le glisse ailleurs, on l'empile avec un autre, ou on le sort en fenêtre
+//! flottante, à la manière de Photoshop.
+//!
+//! Le rendu de chaque panneau n'a pas bougé : [`TabViewer::ui`] appelle les
+//! mêmes méthodes `App::*_ui` qu'avant. Seul le conteneur change.
+
+use eframe::egui::{self, WidgetText};
+use egui_dock::{DockState, NodeIndex, SurfaceIndex, TabViewer};
+
+use super::App;
+use crate::i18n::{self, Lang};
+
+/// Un panneau ancrable. Chaque variante correspond à une méthode `App::*_ui`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Panel {
+    Editor,
+    Disasm,
+    MemMap,
+    Explorer,
+    Instruction,
+    Flags,
+    Registers,
+    Stack,
+    Memory,
+    Timeline,
+    Console,
+    CallStack,
+    Syscalls,
+    Exercise,
+}
+
+impl Panel {
+    /// Tous les panneaux, dans l'ordre du menu Affichage.
+    pub(crate) const ALL: [Panel; 14] = [
+        Panel::Editor,
+        Panel::Disasm,
+        Panel::MemMap,
+        Panel::Explorer,
+        Panel::Instruction,
+        Panel::Flags,
+        Panel::Registers,
+        Panel::Stack,
+        Panel::Memory,
+        Panel::Timeline,
+        Panel::Console,
+        Panel::CallStack,
+        Panel::Syscalls,
+        Panel::Exercise,
+    ];
+
+    /// Titre affiché sur l'onglet.
+    pub(crate) fn title(self, lang: Lang) -> String {
+        let t = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        match self {
+            Panel::Editor => t("Éditeur", "Editor", "Editor"),
+            Panel::Disasm => t("Désassemblage", "Disassembly", "Desensamblado"),
+            Panel::MemMap => t("Vue mémoire", "Memory View", "Vista memoria"),
+            Panel::Explorer => t("Explorateur", "Explorer", "Explorador"),
+            Panel::Instruction => t("Instruction", "Instruction", "Instrucción"),
+            Panel::Flags => "Flags",
+            Panel::Registers => t("Registres", "Registers", "Registros"),
+            Panel::Stack => t("Pile / Tas", "Stack / Heap", "Pila / Montículo"),
+            Panel::Memory => t("Mémoire", "Memory", "Memoria"),
+            Panel::Timeline => t("Timeline", "Timeline", "Línea de tiempo"),
+            Panel::Console => "Console",
+            Panel::CallStack => t("Pile d'appels", "Call stack", "Pila de llamadas"),
+            Panel::Syscalls => t("Appels système", "Syscalls", "Llamadas al sistema"),
+            Panel::Exercise => t("Exercice", "Exercise", "Ejercicio"),
+        }
+        .to_string()
+    }
+
+    /// Clé stable pour la persistance de la disposition (indépendante de la langue).
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Panel::Editor => "editor",
+            Panel::Disasm => "disasm",
+            Panel::MemMap => "memmap",
+            Panel::Explorer => "explorer",
+            Panel::Instruction => "instruction",
+            Panel::Flags => "flags",
+            Panel::Registers => "registers",
+            Panel::Stack => "stack",
+            Panel::Memory => "memory",
+            Panel::Timeline => "timeline",
+            Panel::Console => "console",
+            Panel::CallStack => "callstack",
+            Panel::Syscalls => "syscalls",
+            Panel::Exercise => "exercise",
+        }
+    }
+
+    pub(crate) fn from_key(k: &str) -> Option<Panel> {
+        Panel::ALL.into_iter().find(|p| p.key() == k)
+    }
+}
+
+/// Disposition par défaut : reproduit l'agencement historique de l'application,
+/// pour que rien ne dépayse au premier lancement.
+///
+/// ```text
+///   ┌──────────┬────────────────────────┬─────────────┐
+///   │ EXPLORER │  Éditeur / Désasm /    │ INSTRUCTION │
+///   │          │  Vue mémoire           │ ─────────── │
+///   │          ├────────────────────────┤ FLAGS       │
+///   │          │ Registres│Pile│Appels… │             │
+///   │          ├────────────────────────┤             │
+///   │          │ Mémoire │Timeline│Cons.│             │
+///   └──────────┴────────────────────────┴─────────────┘
+/// ```
+pub(crate) fn default_layout() -> DockState<Panel> {
+    // Surface principale : le centre, avec ses trois onglets empilés.
+    let mut state = DockState::new(vec![Panel::Editor, Panel::Disasm, Panel::MemMap]);
+    let surface = state.main_surface_mut();
+
+    // Explorateur à gauche du centre.
+    let [center, _explorer] = surface.split_left(NodeIndex::root(), 0.16, vec![Panel::Explorer]);
+    // Instruction + Flags à droite.
+    let [center, instruction] =
+        surface.split_right(center, 0.78, vec![Panel::Instruction, Panel::Exercise]);
+    surface.split_below(instruction, 0.62, vec![Panel::Flags]);
+    // Bande CPU sous le centre.
+    let [center, cpu] = surface.split_below(
+        center,
+        0.52,
+        vec![Panel::Registers, Panel::Stack, Panel::CallStack, Panel::Syscalls],
+    );
+    // Bande basse sous la bande CPU.
+    surface.split_below(cpu, 0.52, vec![Panel::Memory, Panel::Timeline, Panel::Console]);
+    let _ = center;
+    state
+}
+
+/// Adaptateur entre `egui_dock` et les méthodes de rendu de [`App`].
+pub(super) struct Viewer<'a> {
+    pub(super) app: &'a mut App,
+}
+
+impl TabViewer for Viewer<'_> {
+    type Tab = Panel;
+
+    fn title(&mut self, tab: &mut Panel) -> WidgetText {
+        tab.title(self.app.lang).into()
+    }
+
+    /// Id stable et indépendant de la langue : changer de langue ne doit pas
+    /// faire perdre sa place à un onglet.
+    fn id(&mut self, tab: &mut Panel) -> egui::Id {
+        egui::Id::new(("dock_panel", tab.key()))
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Panel) {
+        let app = &mut *self.app;
+        match tab {
+            Panel::Editor => app.editor_tab_ui(ui),
+            Panel::Disasm => app.disasm_ui(ui),
+            Panel::MemMap => app.memory_map_ui(ui),
+            Panel::Explorer => app.explorer_ui(ui),
+            Panel::Instruction => app.instruction_ui(ui),
+            Panel::Flags => app.flags_ui(ui),
+            Panel::Registers => app.registers_ui(ui),
+            Panel::Stack => app.stack_ui(ui),
+            Panel::Memory => app.memory_ui(ui),
+            Panel::Timeline => app.timeline_col_ui(ui),
+            Panel::Console => app.console_ui(ui),
+            Panel::CallStack => app.callstack_ui(ui),
+            Panel::Syscalls => app.syscalls_ui(ui),
+            Panel::Exercise => app.exercise_ui(ui),
+        }
+    }
+
+    /// Tout panneau peut être fermé : on le rouvre depuis le menu Affichage.
+    fn closeable(&mut self, _tab: &mut Panel) -> bool {
+        true
+    }
+
+    /// Tout panneau peut être détaché en fenêtre flottante.
+    fn allowed_in_windows(&self, _tab: &mut Panel) -> bool {
+        true
+    }
+}
+
+impl App {
+    /// Panneau actuellement ouvert quelque part dans la disposition ?
+    pub(super) fn panel_is_open(&self, panel: Panel) -> bool {
+        self.dock
+            .as_ref()
+            .is_some_and(|d| d.iter_all_tabs().any(|(_, t)| *t == panel))
+    }
+
+    /// Affiche le panneau : le met au premier plan s'il existe déjà, sinon
+    /// l'ajoute en fenêtre flottante (sans bousculer la disposition en place).
+    pub(super) fn show_panel(&mut self, panel: Panel) {
+        let Some(dock) = self.dock.as_mut() else { return };
+        if let Some((surface, node, tab)) = dock.find_tab(&panel) {
+            dock.set_active_tab((surface, node, tab));
+        } else {
+            dock.add_window(vec![panel]);
+        }
+    }
+
+    /// Ferme toutes les occurrences d'un panneau.
+    pub(super) fn hide_panel(&mut self, panel: Panel) {
+        let Some(dock) = self.dock.as_mut() else { return };
+        while let Some(loc) = dock.find_tab(&panel) {
+            dock.remove_tab(loc);
+        }
+    }
+
+    pub(super) fn toggle_panel(&mut self, panel: Panel) {
+        if self.panel_is_open(panel) {
+            self.hide_panel(panel);
+        } else {
+            self.show_panel(panel);
+        }
+    }
+
+    /// Panneau actif du nœud qui a le focus clavier.
+    pub(super) fn focused_panel(&mut self) -> Option<Panel> {
+        self.dock.as_mut()?.find_active_focused().map(|(_, t)| *t)
+    }
+
+    /// Fait défiler les onglets du nœud qui a le focus (Ctrl+Tab).
+    ///
+    /// Cycle DANS le nœud plutôt qu'entre panneaux quelconques : c'est le
+    /// comportement attendu d'une barre d'onglets, et il suit l'utilisateur
+    /// quand il réorganise sa disposition.
+    pub(super) fn cycle_tab(&mut self, backwards: bool) {
+        let Some(dock) = self.dock.as_mut() else { return };
+        let Some((surface, node)) = dock.focused_leaf() else { return };
+        let n = dock[surface][node].tabs_count();
+        if n < 2 {
+            return;
+        }
+        let active = match &dock[surface][node] {
+            egui_dock::Node::Leaf { active, .. } => active.0,
+            _ => return,
+        };
+        let next = if backwards { (active + n - 1) % n } else { (active + 1) % n };
+        dock.set_active_tab((surface, node, egui_dock::TabIndex(next)));
+    }
+
+    /// Donne le focus clavier au panneau et le met au premier plan.
+    pub(super) fn focus_panel(&mut self, panel: Panel) {
+        let Some(dock) = self.dock.as_mut() else { return };
+        if let Some((surface, node, tab)) = dock.find_tab(&panel) {
+            dock.set_active_tab((surface, node, tab));
+            dock.set_focused_node_and_surface((surface, node));
+        }
+    }
+
+    /// Rend la zone d'ancrage.
+    ///
+    /// Le `DockState` est sorti de `self` le temps du rendu : `TabViewer` a
+    /// besoin de `&mut App`, et l'état ne peut pas être emprunté deux fois.
+    pub(super) fn dock_ui(&mut self, ctx: &egui::Context) {
+        let Some(mut dock) = self.dock.take() else { return };
+        let mut style = egui_dock::Style::from_egui(&ctx.style());
+        style.tab_bar.fill_tab_bar = true;
+        style.tab.tab_body.stroke.width = 0.0;
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(0.0))
+            .show(ctx, |ui| {
+                egui_dock::DockArea::new(&mut dock)
+                    .style(style)
+                    .draggable_tabs(true)
+                    .show_close_buttons(true)
+                    .show_inside(ui, &mut Viewer { app: self });
+            });
+
+        self.dock = Some(dock);
+    }
+
+    /// Sérialise la disposition : une ligne par onglet, `surface:clé`.
+    ///
+    /// On n'enregistre pas la géométrie exacte de l'arbre (l'API d'egui_dock ne
+    /// l'expose pas sans serde) mais l'essentiel pour l'élève : quels panneaux
+    /// sont ouverts, et lesquels flottent.
+    pub(super) fn dock_layout_string(&self) -> String {
+        let Some(dock) = self.dock.as_ref() else { return String::new() };
+        dock.iter_all_tabs()
+            .map(|((surface, _), t)| {
+                let kind = if surface == SurfaceIndex::main() { "d" } else { "w" };
+                format!("{kind}:{}", t.key())
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Reconstruit une disposition depuis [`App::dock_layout_string`] : on part
+    /// de la disposition par défaut, on retire ce qui n'y figure plus, et on
+    /// ajoute en fenêtre ce qui était détaché.
+    pub(super) fn apply_dock_layout(&mut self, saved: &str) {
+        if saved.trim().is_empty() {
+            return;
+        }
+        let mut wanted_docked = Vec::new();
+        let mut wanted_windowed = Vec::new();
+        for entry in saved.split(',') {
+            let Some((kind, key)) = entry.split_once(':') else { continue };
+            let Some(p) = Panel::from_key(key.trim()) else { continue };
+            if kind.trim() == "w" {
+                wanted_windowed.push(p);
+            } else {
+                wanted_docked.push(p);
+            }
+        }
+        if wanted_docked.is_empty() && wanted_windowed.is_empty() {
+            return;
+        }
+        self.dock = Some(default_layout());
+        for p in Panel::ALL {
+            if !wanted_docked.contains(&p) {
+                self.hide_panel(p);
+            }
+        }
+        for p in wanted_windowed {
+            if let Some(dock) = self.dock.as_mut() {
+                dock.add_window(vec![p]);
+            }
+        }
+    }
+
+    /// Remet la disposition d'origine.
+    pub(super) fn reset_dock_layout(&mut self) {
+        self.dock = Some(default_layout());
+        self.save_settings();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_panel_has_a_unique_stable_key() {
+        let mut keys: Vec<&str> = Panel::ALL.iter().map(|p| p.key()).collect();
+        keys.sort_unstable();
+        let n = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), n, "clés de panneaux dupliquées");
+        // Aller-retour clé → panneau.
+        for p in Panel::ALL {
+            assert_eq!(Panel::from_key(p.key()), Some(p), "{p:?}");
+        }
+        assert_eq!(Panel::from_key("inconnu"), None);
+    }
+
+    #[test]
+    fn panel_titles_exist_in_every_language() {
+        for p in Panel::ALL {
+            for lang in [Lang::Fr, Lang::En, Lang::Es] {
+                assert!(!p.title(lang).is_empty(), "{p:?} sans titre en {lang:?}");
+            }
+        }
+    }
+
+    /// La disposition par défaut doit contenir TOUS les panneaux : sinon un
+    /// panneau serait injoignable au premier lancement.
+    #[test]
+    fn default_layout_contains_every_panel() {
+        let state = default_layout();
+        let present: Vec<Panel> = state.iter_all_tabs().map(|(_, t)| *t).collect();
+        for p in Panel::ALL {
+            assert!(present.contains(&p), "{p:?} absent de la disposition par défaut");
+        }
+        assert_eq!(present.len(), Panel::ALL.len(), "panneau dupliqué : {present:?}");
+    }
+
+    /// Le centre doit rester la zone principale, avec l'éditeur au premier plan.
+    #[test]
+    fn default_layout_focuses_the_editor() {
+        let mut state = default_layout();
+        let found = state.find_tab(&Panel::Editor);
+        assert!(found.is_some(), "l'éditeur doit être présent");
+        let (surface, _, _) = found.unwrap();
+        assert_eq!(surface, SurfaceIndex::main(), "l'éditeur est dans la surface principale");
+    }
+
+    /// Fermer puis rouvrir un panneau doit fonctionner pour chacun d'eux : c'est
+    /// le contrat du menu Affichage.
+    #[test]
+    fn every_panel_can_be_closed_and_reopened() {
+        let mut app = App::new();
+        for p in Panel::ALL {
+            assert!(app.panel_is_open(p), "{p:?} devrait être ouvert au départ");
+            app.hide_panel(p);
+            assert!(!app.panel_is_open(p), "{p:?} devrait être fermé");
+            app.show_panel(p);
+            assert!(app.panel_is_open(p), "{p:?} devrait être rouvert");
+        }
+    }
+
+    /// `hide_panel` retire TOUTES les occurrences : un panneau ajouté deux fois
+    /// ne doit pas rester à moitié ouvert.
+    #[test]
+    fn hiding_removes_every_occurrence() {
+        let mut app = App::new();
+        if let Some(d) = app.dock.as_mut() {
+            d.add_window(vec![Panel::Console]);
+        }
+        let count = |app: &App| {
+            app.dock
+                .as_ref()
+                .map(|d| d.iter_all_tabs().filter(|(_, t)| **t == Panel::Console).count())
+                .unwrap_or(0)
+        };
+        assert_eq!(count(&app), 2, "console présente deux fois");
+        app.hide_panel(Panel::Console);
+        assert_eq!(count(&app), 0, "toutes les occurrences doivent partir");
+    }
+
+    /// La disposition survit à un aller-retour par la chaîne de persistance,
+    /// y compris la distinction ancré / détaché.
+    #[test]
+    fn layout_round_trips_through_settings() {
+        let mut app = App::new();
+        app.hide_panel(Panel::Console);
+        app.hide_panel(Panel::MemMap);
+        if let Some(d) = app.dock.as_mut() {
+            d.add_window(vec![Panel::Timeline]);
+        }
+        app.hide_panel(Panel::Timeline);
+        if let Some(d) = app.dock.as_mut() {
+            d.add_window(vec![Panel::Timeline]);
+        }
+        let saved = app.dock_layout_string();
+        assert!(saved.contains("w:timeline"), "la timeline détachée : {saved}");
+        assert!(!saved.contains("console"), "console fermée : {saved}");
+
+        let mut restored = App::new();
+        restored.apply_dock_layout(&saved);
+        assert!(!restored.panel_is_open(Panel::Console), "console doit rester fermée");
+        assert!(!restored.panel_is_open(Panel::MemMap), "vue mémoire doit rester fermée");
+        assert!(restored.panel_is_open(Panel::Timeline), "timeline doit être restaurée");
+        assert!(restored.panel_is_open(Panel::Editor), "éditeur toujours là");
+    }
+
+    /// Une disposition vide ou illisible ne doit pas effacer les panneaux :
+    /// on garde la disposition par défaut plutôt qu'un écran nu.
+    #[test]
+    fn corrupt_layout_falls_back_to_default() {
+        for saved in ["", "   ", "n_importe_quoi", "x:zzz,y:www"] {
+            let mut app = App::new();
+            app.apply_dock_layout(saved);
+            assert!(
+                app.panel_is_open(Panel::Editor),
+                "disposition « {saved} » ne doit pas vider l'écran"
+            );
+        }
+    }
+
+    /// Réinitialiser rétablit tous les panneaux.
+    #[test]
+    fn reset_restores_every_panel() {
+        let mut app = App::new();
+        for p in Panel::ALL {
+            app.hide_panel(p);
+        }
+        assert!(!app.panel_is_open(Panel::Editor));
+        app.dock = Some(default_layout());
+        for p in Panel::ALL {
+            assert!(app.panel_is_open(p), "{p:?} manquant après réinitialisation");
+        }
+    }
+
+    /// La chaîne écrite dans les réglages doit être exactement celle que le
+    /// lecteur sait reprendre. On ne passe PAS par le fichier réel : `App::new`
+    /// lit `XDG_CONFIG_HOME`, et le modifier depuis un test rendrait tous les
+    /// autres dépendants de l'ordre d'exécution.
+    #[test]
+    fn serialized_layout_matches_the_parser() {
+        let mut app = App::new();
+        app.hide_panel(Panel::Console);
+        app.hide_panel(Panel::Syscalls);
+        if let Some(d) = app.dock.as_mut() {
+            d.add_window(vec![Panel::Timeline]);
+        }
+
+        let saved = app.dock_layout_string();
+        // Format attendu : « d:clé » ancré, « w:clé » détaché, séparés par des virgules.
+        for entry in saved.split(',') {
+            let (kind, key) = entry.split_once(':').unwrap_or_else(|| panic!("entrée mal formée : {entry}"));
+            assert!(matches!(kind, "d" | "w"), "préfixe inattendu : {kind}");
+            assert!(Panel::from_key(key).is_some(), "clé inconnue : {key}");
+        }
+        assert!(!saved.contains(":console"), "panneau fermé listé : {saved}");
+        assert!(!saved.contains(":syscalls"), "panneau fermé listé : {saved}");
+
+        // Et le lecteur restitue exactement cet ensemble.
+        let mut restored = App::new();
+        restored.apply_dock_layout(&saved);
+        for p in Panel::ALL {
+            assert_eq!(
+                restored.panel_is_open(p),
+                app.panel_is_open(p),
+                "{p:?} : état non restitué"
+            );
+        }
+    }
+}

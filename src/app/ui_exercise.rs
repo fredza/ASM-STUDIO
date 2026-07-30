@@ -1,11 +1,12 @@
 //! Panneau EXERCICE : énoncé et attentes vérifiées.
 //!
-//! Ne s'affiche que si le fichier courant déclare des attentes (`;@attendu`).
-//! Un fichier ordinaire ne perd donc aucune place à l'écran.
+//! Onglet ancrable comme les autres. Il s'ouvre tout seul quand le fichier
+//! chargé déclare des attentes (`;@attendu`), et explique comment en écrire
+//! quand ce n'est pas le cas.
 
 use eframe::egui::{self, RichText};
 
-use super::{App, ACTION, FALSE_COL, FLAG_ON, card, panel_header};
+use super::{App, ACTION, FALSE_COL, FLAG_ON, card};
 use crate::exercise;
 use crate::i18n;
 
@@ -20,12 +21,64 @@ impl App {
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let hdr = self.c_header();
 
+        // Le panneau est un onglet permanent : quand le fichier courant n'est
+        // pas un exercice, il explique comment en écrire un plutôt que de
+        // rester vide.
+        if !self.has_exercise() {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(tr(
+                    "Ce fichier ne déclare aucune attente.",
+                    "This file declares no expectation.",
+                    "Este archivo no declara ninguna expectativa.",
+                ))
+                .strong()
+                .color(hdr),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(tr(
+                    "Ajoute des directives en commentaire pour qu'ASM Studio corrige ton \
+                     programme automatiquement :",
+                    "Add comment directives so ASM Studio checks your program automatically:",
+                    "Añade directivas en comentarios para que ASM Studio corrija tu programa:",
+                ))
+                .small(),
+            );
+            ui.add_space(4.0);
+            card(ui, |ui| {
+                ui.label(
+                    RichText::new(
+                        ";@titre Somme de 1 à 10\n\
+                         ;@enonce Laisse 55 dans RBX.\n\
+                         ;@attendu rbx == 55\n\
+                         ;@attendu exit == 0",
+                    )
+                    .monospace()
+                    .small(),
+                );
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(tr(
+                    "Les attentes portent sur « exit » ou sur un registre que le programme \
+                     n'écrase pas — RAX vaut 60 au moment du sys_exit.",
+                    "Expectations target \"exit\" or a register the program does not clobber — \
+                     RAX holds 60 at the sys_exit.",
+                    "Las expectativas apuntan a «exit» o a un registro que el programa no \
+                     sobrescribe — RAX vale 60 en el sys_exit.",
+                ))
+                .small()
+                .weak(),
+            );
+            return;
+        }
+
         let (done, total) = exercise::tally(&self.checks);
         let verified = !self.checks.is_empty();
         let all_ok = verified && done == total;
 
-        panel_header(ui, |ui| {
-            super::header_title(ui, hdr, None, tr("EXERCICE", "EXERCISE", "EJERCICIO"));
+        ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if verified {
                     let col = if all_ok { FLAG_ON } else { FALSE_COL };
