@@ -210,6 +210,11 @@ impl App {
         });
         ui.separator();
 
+        // Explication du petit-boutisme, repliée : elle éclaire le vidage juste
+        // en dessous sans encombrer ceux qui n'en ont pas besoin.
+        self.endianness_ui(ui);
+        ui.add_space(2.0);
+
         let (addr_c, bytes_c) = (self.c_addr(), self.c_bytes());
         let dbg = self.dbg.as_ref().unwrap();
         egui::ScrollArea::both()

@@ -517,6 +517,101 @@ impl App {
                 }
             });
     }
+
+    // ---------- Petit-boutisme ----------
+
+    /// Explique pourquoi une valeur apparaît « à l'envers » dans le vidage hexa.
+    ///
+    /// C'est la confusion la plus universelle du débutant : `0x12345678` s'affiche
+    /// `78 56 34 12`. Plutôt que de l'énoncer, on décompose les octets réellement
+    /// lus à l'adresse courante et on montre leur poids.
+    pub(super) fn endianness_ui(&self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let Some(dbg) = self.dbg.as_ref().filter(|_| self.can_read_memory()) else { return };
+        let Ok(bytes) = dbg.read_mem(self.mem_addr, 8) else { return };
+        if bytes.len() < 8 {
+            return;
+        }
+
+        let (hdr, addr_c, bytes_c) = (self.c_header(), self.c_addr(), self.c_bytes());
+        // Little-endian : l'octet d'adresse la plus basse est le moins significatif.
+        let qword = u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]);
+
+        egui::CollapsingHeader::new(
+            RichText::new(tr(
+                "🔤 Petit-boutisme — pourquoi c'est « à l'envers »",
+                "🔤 Little-endian — why it looks \"backwards\"",
+                "🔤 Little-endian — por qué se ve «al revés»",
+            ))
+            .small()
+            .color(hdr),
+        )
+        .id_salt("endian_explain")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(tr(
+                    "x86-64 range l'octet de poids FAIBLE à l'adresse la PLUS BASSE.",
+                    "x86-64 stores the LEAST significant byte at the LOWEST address.",
+                    "x86-64 guarda el byte MENOS significativo en la dirección MÁS BAJA.",
+                ))
+                .small(),
+            );
+            ui.add_space(4.0);
+
+            // Ligne 1 : décalages, ligne 2 : octets tels qu'en mémoire.
+            egui::Grid::new("endian_grid").num_columns(8).spacing([6.0, 1.0]).show(ui, |ui| {
+                for i in 0..8 {
+                    ui.label(RichText::new(format!("+{i}")).small().monospace().color(bytes_c));
+                }
+                ui.end_row();
+                for (i, b) in bytes.iter().enumerate().take(8) {
+                    // Dégradé : vif pour le poids faible, pâle pour le poids fort.
+                    let t = i as f32 / 7.0;
+                    let col = lerp_color(super::ACTION, super::ACCENT, t);
+                    ui.label(RichText::new(format!("{b:02X}")).monospace().strong().color(col));
+                }
+                ui.end_row();
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr("↑ poids faible", "↑ least significant", "↑ menos significativo"))
+                    .small().color(super::ACTION));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(tr("poids fort ↑", "most significant ↑", "más significativo ↑"))
+                        .small().color(super::ACCENT));
+                });
+            });
+
+            ui.add_space(6.0);
+            ui.label(RichText::new(tr("Relu comme un nombre :", "Read back as a number:", "Leído como número:"))
+                .small().strong().color(hdr));
+            egui::Grid::new("endian_values").num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
+                let mut row = |k: &str, v: String| {
+                    ui.label(RichText::new(k).monospace().small().color(bytes_c));
+                    ui.label(RichText::new(v).monospace().color(addr_c));
+                    ui.end_row();
+                };
+                row("qword", format!("0x{qword:016X}"));
+                row("dword", format!("0x{:08X}", qword as u32));
+                row("word ", format!("0x{:04X}", qword as u16));
+                row("byte ", format!("0x{:02X}", qword as u8));
+            });
+
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(tr(
+                    "Les octets se lisent donc de droite à gauche pour reconstituer le nombre.",
+                    "So the bytes read right-to-left to rebuild the number.",
+                    "Por eso los bytes se leen de derecha a izquierda para reconstruir el número.",
+                ))
+                .small()
+                .weak(),
+            );
+        });
+    }
 }
 
 #[cfg(test)]
@@ -632,5 +727,48 @@ mod tests {
             egui::CentralPanel::default().show(ctx, |ui| app.center_ui(ui));
         });
         assert_eq!(app.tab, Tab::Editor, "l'onglet doit se replier sur l'éditeur");
+    }
+
+    /// Le petit-boutisme est la confusion la plus universelle : on vérifie que la
+    /// recomposition des octets correspond bien à ce que l'UI annonce, et que le
+    /// panneau se rend sans paniquer avec un vrai processus.
+    #[test]
+    fn endianness_view_decomposes_correctly() {
+        use std::path::PathBuf;
+
+        // La règle affichée : octet de poids faible à l'adresse la plus basse.
+        let bytes = [0x78u8, 0x56, 0x34, 0x12, 0, 0, 0, 0];
+        let q = u64::from_le_bytes(bytes);
+        assert_eq!(q, 0x1234_5678, "78 56 34 12 se relit 0x12345678");
+        assert_eq!(q as u32, 0x1234_5678);
+        assert_eq!(q as u16, 0x5678);
+        assert_eq!(q as u8, 0x78, "l'octet à +0 est le poids faible");
+
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/endian-test.asm");
+        app.out_dir = PathBuf::from("build/endian");
+        app.source = "section .text\n global _start\n_start:\n mov rax, 0x12345678\n \
+                       push rax\n mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+        app.launch();
+        for _ in 0..2 {
+            app.step();
+        }
+        // Pointe le vidage sur le sommet de pile : il contient la valeur poussée.
+        app.mem_addr = app.snap().unwrap().regs.rsp;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.endianness_ui(ui));
+        });
+
+        // Et les octets réellement en mémoire suivent bien l'ordre annoncé.
+        if let Some(d) = app.dbg.as_ref()
+            && let Ok(m) = d.read_mem(app.mem_addr, 8)
+        {
+            assert_eq!(m[0], 0x78, "poids faible à l'adresse la plus basse");
+            assert_eq!(m[1], 0x56);
+            assert_eq!(m[2], 0x34);
+            assert_eq!(m[3], 0x12);
+        }
     }
 }
