@@ -3,6 +3,7 @@ mod assemble;
 mod debugger;
 mod diagnostic;
 mod disasm;
+mod exercise;
 mod explain;
 mod i18n;
 mod srcmap;

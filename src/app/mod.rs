@@ -22,6 +22,7 @@ mod ui_panels;
 mod ui_center;
 mod pedagogy;
 mod predict;
+mod ui_exercise;
 mod widgets;
 mod paths;
 mod parse;
@@ -251,6 +252,11 @@ pub struct App {
     pub(super) pred_reg: &'static str,
     /// Saisie hexa de la valeur prédite.
     pub(super) pred_input: String,
+    /// Énoncé et attentes extraits du source courant (vide si ce n'est pas un
+    /// exercice). Recalculé à chaque chargement/enregistrement du fichier.
+    pub(super) exercise: crate::exercise::Exercise,
+    /// Résultat de la dernière vérification, à la sortie du programme.
+    pub(super) checks: Vec<crate::exercise::Check>,
     /// Diagnostic de la faute courante (plantage), s'il y en a un.
     /// Recalculé au moment de la faute, effacé au (re)lancement.
     pub(super) diagnosis: Option<crate::diagnostic::Diagnosis>,
@@ -324,6 +330,8 @@ impl App {
             pred_score: predict::Score::default(),
             pred_reg: "RAX",
             pred_input: String::new(),
+            exercise: crate::exercise::Exercise::default(),
+            checks: Vec::new(),
             diagnosis: None,
             updater: Updater::new(),
             pending_open: None,
@@ -589,12 +597,22 @@ impl eframe::App for App {
                 .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
                 .show(ctx, |ui| self.explorer_ui(ui));
         }
+        // Panneau EXERCICE : seulement si le fichier déclare des attentes.
+        // Déclaré après INSTRUCTION ⇒ il se place plus près de l'éditeur, à côté
+        // du code que l'élève est en train d'écrire.
         if self.show_instruction {
             egui::SidePanel::right("instruction_panel")
                 .resizable(true)
                 .default_width(272.0)
                 .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
                 .show(ctx, |ui| self.instruction_ui(ui));
+        }
+        if self.has_exercise() {
+            egui::SidePanel::right("exercise_panel")
+                .resizable(true)
+                .default_width(240.0)
+                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
+                .show(ctx, |ui| self.exercise_ui(ui));
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(pad))

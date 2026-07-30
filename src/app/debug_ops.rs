@@ -33,8 +33,32 @@ impl App {
         }
     }
 
+    /// Relit l'énoncé d'exercice depuis le source courant. Appelé à l'ouverture
+    /// d'un fichier et à chaque lancement (le source a pu être édité entre-temps).
+    pub(super) fn reload_exercise(&mut self) {
+        self.exercise = crate::exercise::parse(&self.source);
+        self.checks.clear();
+        for e in &self.exercise.errors.clone() {
+            self.log(&format!("⚠ énoncé : {e}"));
+        }
+    }
+
+    /// Vérifie les attentes de l'exercice contre l'état final observé.
+    fn verify_exercise(&mut self, exit_code: Option<i32>) {
+        if !self.exercise.is_exercise() {
+            return;
+        }
+        let Some(d) = self.dbg.as_ref() else { return };
+        let regs = d.regs().clone();
+        self.checks = crate::exercise::check(&self.exercise, &regs, exit_code);
+        let summary = crate::exercise::summary(&self.checks, self.lang);
+        self.log(&summary);
+        self.status = summary;
+    }
+
     pub(super) fn launch(&mut self) {
         self.build();
+        self.reload_exercise();
         let Some(bin) = self.binary.clone() else {
             return;
         };
@@ -112,12 +136,20 @@ impl App {
                 let d = self.dbg.as_ref().unwrap();
                 self.status = format!("{} {} — RIP @ 0x{:X}", i18n::tr(self.lang, "Étape", "Step"), d.steps(), d.regs().rip);
             }
-            Some(RunState::Exited(code)) => self.status = format!("{} (exit {code})", i18n::tr(self.lang, "Terminé", "Terminated")),
-            Some(RunState::Signaled) => self.status = i18n::tr(self.lang, "Terminé (signal)", "Terminated (signal)").to_string(),
+            Some(RunState::Exited(code)) => {
+                self.status = format!("{} (exit {code})", i18n::tr(self.lang, "Terminé", "Terminated"));
+                self.verify_exercise(Some(code));
+            }
+            Some(RunState::Signaled) => {
+                self.status = i18n::tr(self.lang, "Terminé (signal)", "Terminated (signal)").to_string();
+                self.verify_exercise(None);
+            }
             // Faute matérielle : on diagnostique tout de suite et on ouvre la
             // fenêtre d'explication (l'ancien code laissait RIP figé en silence).
             Some(RunState::Faulted(_)) => {
                 self.diagnose_fault();
+                // Un plantage fait échouer l'exercice : pas de code de sortie.
+                self.verify_exercise(None);
             }
             None => {}
         }

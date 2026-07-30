@@ -77,6 +77,11 @@ pub(super) fn setup_examples() {
         ("longueur_chaine.asm", include_str!("../../examples_seed/longueur_chaine.asm")),
         ("pile_demo.asm",       include_str!("../../examples_seed/pile_demo.asm")),
         ("lire_ecrire.asm",     include_str!("../../examples_seed/lire_ecrire.asm")),
+        // Exercices auto-corrigés : squelettes à compléter (voir src/exercise.rs).
+        ("ex_code_sortie.asm",  include_str!("../../examples_seed/ex_code_sortie.asm")),
+        ("ex_somme.asm",        include_str!("../../examples_seed/ex_somme.asm")),
+        ("ex_maximum.asm",      include_str!("../../examples_seed/ex_maximum.asm")),
+        ("ex_puissance.asm",    include_str!("../../examples_seed/ex_puissance.asm")),
     ];
     for (name, content) in files {
         let _ = std::fs::write(dir.join(name), content);

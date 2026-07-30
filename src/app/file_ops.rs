@@ -145,6 +145,7 @@ impl App {
                 self.disasm.clear();
                 self.binary = None;
                 self.tab = Tab::Editor;
+                self.reload_exercise();
                 self.status = format!("{} {}", i18n::tr(self.lang, "Ouvert :", "Opened:"), self.src_path.display());
             }
             Err(e) => self.log(&format!("{} {}: {e}", i18n::tr(self.lang, "Impossible d'ouvrir", "Cannot open"), path.display())),
