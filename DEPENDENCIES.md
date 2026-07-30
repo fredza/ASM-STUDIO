@@ -38,9 +38,16 @@ mais ne figurent **pas** dans la sortie `ldd`.
 
 | Outil | Rôle | Paquet Fedora / DNF | Paquet Ubuntu / APT |
 |---|---|---|---|
-| `nasm` ≥ 2.16 | Assembleur — requis pour compiler les `.asm` | `nasm` | `nasm` |
+| `nasm` ≥ 2.16 | Assembleur — traduit le `.asm` en fichier objet | `nasm` | `nasm` |
+| `ld` | Éditeur de liens — produit l'exécutable final | `binutils` | `binutils` |
 
-Sans `nasm` dans le `PATH`, le bouton **Assembler** retourne une erreur.
+Les deux sont **indispensables** : `assemble.rs` les invoque à la suite
+(`nasm -f elf64 … -o x.o` puis `ld -o x x.o`). Si l'un manque du `PATH`, le
+bouton **Assembler** retourne « impossible de lancer nasm » ou
+« impossible de lancer ld ».
+
+`binutils` est presque toujours déjà installé (c'est une dépendance de la
+chaîne de compilation C), mais une image de conteneur minimale peut en manquer.
 
 ---
 
@@ -63,14 +70,14 @@ fenêtre (la commande tombe en timeout silencieusement).
 ## Installation rapide — Fedora / DNF
 
 ```bash
-sudo dnf install nasm wayland mesa-libEGL libxkbcommon \
+sudo dnf install nasm binutils wayland mesa-libEGL libxkbcommon \
                  xdg-desktop-portal xdg-desktop-portal-gnome
 ```
 
 ## Installation rapide — Ubuntu / Debian / APT
 
 ```bash
-sudo apt install nasm libwayland-client0 libegl1 libxkbcommon0 \
+sudo apt install nasm binutils libwayland-client0 libegl1 libxkbcommon0 \
                  xdg-desktop-portal xdg-desktop-portal-gnome
 ```
 
@@ -79,8 +86,9 @@ sudo apt install nasm libwayland-client0 libegl1 libxkbcommon0 \
 ## Vérification rapide
 
 ```bash
-# Nasm disponible ?
+# Nasm et ld disponibles ?
 nasm --version
+ld --version | head -1
 
 # Portail XDG actif ?
 systemctl --user status xdg-desktop-portal
