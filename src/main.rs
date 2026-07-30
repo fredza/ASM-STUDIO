@@ -7,12 +7,15 @@ mod i18n;
 mod srcmap;
 mod syntax;
 mod syscall;
+mod updater;
 
 fn main() -> eframe::Result {
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_inner_size([1100.0, 700.0])
-        .with_title("ASM Studio");
-    // Icône d'application (planche fournie, découpée dans assets/icon.png).
+        .with_title("ASM Studio")
+        // app_id utilisé par Wayland/GNOME pour associer la fenêtre au .desktop :
+        // ~/.local/share/applications/asm-studio.desktop  +  icône asm-studio.png
+        .with_app_id("asm-studio");
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }

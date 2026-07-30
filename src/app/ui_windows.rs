@@ -38,7 +38,7 @@ impl App {
         let (hdr, mnem_c, addr_c, bytes_c) =
             (self.c_header(), self.c_mnemonic(), self.c_addr(), self.c_bytes());
         let lang = self.lang;
-        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mut open = true;
         let mut close = false;
         egui::Window::new(format!("🔬 Microscope — {} {}", insn.mnemonic, insn.operands))
@@ -46,37 +46,38 @@ impl App {
             .resizable(true)
             .default_width(580.0)
             .default_height(560.0)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().id_salt("microscope_scroll").show(ui, |ui| {
                     // --- Identité de l'instruction ---
                     egui::Grid::new("micro_id").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
-                        ui.label(RichText::new(tr("Adresse", "Address")).strong());
+                        ui.label(RichText::new(tr("Adresse", "Address", "Dirección")).strong());
                         ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(addr_c));
                         ui.end_row();
-                        ui.label(RichText::new(tr("Octets machine", "Machine bytes")).strong());
+                        ui.label(RichText::new(tr("Octets machine", "Machine bytes", "Bytes de máquina")).strong());
                         ui.label(RichText::new(insn.bytes_hex()).monospace().color(bytes_c));
                         ui.end_row();
-                        ui.label(RichText::new(tr("Décodage", "Decoding")).strong());
+                        ui.label(RichText::new(tr("Décodage", "Decoding", "Decodificación")).strong());
                         ui.label(
                             RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
                                 .monospace()
                                 .color(mnem_c),
                         );
                         ui.end_row();
-                        ui.label(RichText::new(tr("Catégorie", "Category")).strong());
+                        ui.label(RichText::new(tr("Catégorie", "Category", "Categoría")).strong());
                         ui.label(e.category);
                         ui.end_row();
-                        ui.label(RichText::new(tr("Cycles estimés", "Estimated cycles")).strong());
+                        ui.label(RichText::new(tr("Cycles estimés", "Estimated cycles", "Ciclos estimados")).strong());
                         ui.label(RichText::new(cycles).color(CHANGED))
-                            .on_hover_text(tr("Ordre de grandeur pédagogique, pas une mesure exacte.", "Educational ballpark, not an exact measurement."));
+                            .on_hover_text(tr("Ordre de grandeur pédagogique, pas une mesure exacte.", "Educational ballpark, not an exact measurement.", "Orden de magnitud pedagógico, no una medida exacta."));
                         ui.end_row();
                         // Ligne syscall dans la grille d'identité (si applicable).
                         if insn.mnemonic == "syscall"
                             && let Some((before, _, _)) = &dynamics
                         {
-                            ui.label(RichText::new(tr("Appel système", "System call")).strong());
+                            ui.label(RichText::new(tr("Appel système", "System call", "Llamada al sistema")).strong());
                             ui.horizontal(|ui| {
                                 ui.label(
                                     RichText::new(format!("#{}", before.rax))
@@ -91,7 +92,7 @@ impl App {
                                 );
                             });
                             ui.end_row();
-                            ui.label(RichText::new(tr("Arguments", "Arguments")).strong());
+                            ui.label(RichText::new(tr("Arguments", "Arguments", "Argumentos")).strong());
                             ui.label(
                                 RichText::new(syscall::format_call(before))
                                     .monospace()
@@ -102,15 +103,15 @@ impl App {
                     });
 
                     ui.add_space(8.0);
-                    ui.label(RichText::new(tr("Que fait cette instruction ?", "What does this instruction do?")).strong().color(hdr));
+                    ui.label(RichText::new(tr("Que fait cette instruction ?", "What does this instruction do?", "¿Qué hace esta instrucción?")).strong().color(hdr));
                     ui.label(&e.description);
 
                     ui.add_space(6.0);
                     ui.hyperlink_to(
-                        format!("📖 {} {} (felixcloutier.com)", tr("Référence Intel de", "Intel reference for"), insn.mnemonic.to_uppercase()),
+                        format!("📖 {} {} (felixcloutier.com)", tr("Référence Intel de", "Intel reference for", "Referencia Intel de"), insn.mnemonic.to_uppercase()),
                         explain::doc_url(&insn.mnemonic),
                     )
-                    .on_hover_text(tr("Ouvre la page de l'instruction dans le navigateur\n(mirror du manuel Intel SDM).", "Opens the instruction page in the browser\n(mirror of the Intel SDM manual)."));
+                    .on_hover_text(tr("Ouvre la page de l'instruction dans le navigateur\n(mirror du manuel Intel SDM).", "Opens the instruction page in the browser\n(mirror of the Intel SDM manual).", "Abre la página de la instrucción en el navegador\n(espejo del manual Intel SDM)."));
 
                     ui.add_space(8.0);
                     ui.separator();
@@ -120,13 +121,13 @@ impl App {
                             // ΔRSP + écriture/lecture pile.
                             let d = after.rsp as i128 - before.rsp as i128;
                             if d != 0 {
-                                ui.label(RichText::new(tr("Pile (RSP)", "Stack (RSP)")).strong().color(hdr));
+                                ui.label(RichText::new(tr("Pile (RSP)", "Stack (RSP)", "Pila (RSP)")).strong().color(hdr));
                                 if d < 0 {
                                     ui.colored_label(
                                         PUSH_COL,
                                         format!(
                                             "RSP : 0x{:X} → 0x{:X}  (−{} {}, PUSH)",
-                                            before.rsp, after.rsp, -d, tr("octets", "bytes")
+                                            before.rsp, after.rsp, -d, tr("octets", "bytes", "bytes")
                                         ),
                                     );
                                 } else {
@@ -134,7 +135,7 @@ impl App {
                                         POP_COL,
                                         format!(
                                             "RSP : 0x{:X} → 0x{:X}  (+{} {}, POP)",
-                                            before.rsp, after.rsp, d, tr("octets", "bytes")
+                                            before.rsp, after.rsp, d, tr("octets", "bytes", "bytes")
                                         ),
                                     );
                                 }
@@ -142,7 +143,7 @@ impl App {
                             }
 
                             // Registres modifiés.
-                            ui.label(RichText::new(tr("Registres modifiés", "Modified registers")).strong().color(hdr));
+                            ui.label(RichText::new(tr("Registres modifiés", "Modified registers", "Registros modificados")).strong().color(hdr));
                             let mut any = false;
                             egui::Grid::new("micro_regs").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
                                 for ((n, ov), (_, nv)) in
@@ -159,7 +160,7 @@ impl App {
                                 }
                             });
                             if !any {
-                                ui.weak(tr("aucun registre modifié.", "no register modified."));
+                                ui.weak(tr("aucun registre modifié.", "no register modified.", "ningún registro modificado."));
                             }
 
                             ui.add_space(6.0);
@@ -180,15 +181,15 @@ impl App {
                                 }
                             });
                             if !fchanged {
-                                ui.weak(tr("aucun flag modifié.", "no flag modified."));
+                                ui.weak(tr("aucun flag modifié.", "no flag modified.", "ningún flag modificado."));
                             }
 
                             ui.add_space(8.0);
                             // Schéma pile avant / après.
-                            ui.label(RichText::new(tr("Pile — avant / après", "Stack — before / after")).strong().color(hdr));
+                            ui.label(RichText::new(tr("Pile — avant / après", "Stack — before / after", "Pila — antes / después")).strong().color(hdr));
                             ui.columns(2, |c| {
-                                micro_stack(&mut c[0], addr_c, tr("avant", "before"), before.rsp, _bstack);
-                                micro_stack(&mut c[1], addr_c, tr("après", "after"), after.rsp, _astack);
+                                micro_stack(&mut c[0], addr_c, tr("avant", "before", "antes"), before.rsp, _bstack);
+                                micro_stack(&mut c[1], addr_c, tr("après", "after", "después"), after.rsp, _astack);
                             });
                         }
                         Some((_before, _bstack, None)) => {
@@ -197,8 +198,10 @@ impl App {
                                  pour voir ses effets dynamiques.",
                                 "Instruction to run at the current step — advance one step (Next) \
                                  to see its dynamic effects.",
+                                "Instrucción a ejecutar en el paso actual — avance un paso (Siguiente) \
+                                 para ver sus efectos dinámicos.",
                             ));
-                            micro_static_flags(ui, hdr, &e, tr("Flags positionnés", "Flags set"), tr("Cette instruction ne modifie aucun flag.", "This instruction modifies no flag."));
+                            micro_static_flags(ui, hdr, &e, tr("Flags positionnés", "Flags set", "Flags activos"), tr("Cette instruction ne modifie aucun flag.", "This instruction modifies no flag.", "Esta instrucción no modifica ningún flag."));
                         }
                         None => {
                             ui.weak(tr(
@@ -206,15 +209,17 @@ impl App {
                                  (effets dynamiques indisponibles).",
                                 "This instruction has not been executed yet in the history \
                                  (dynamic effects unavailable).",
+                                "Esta instrucción aún no ha sido ejecutada en el historial \
+                                 (efectos dinámicos no disponibles).",
                             ));
-                            micro_static_flags(ui, hdr, &e, tr("Flags positionnés", "Flags set"), tr("Cette instruction ne modifie aucun flag.", "This instruction modifies no flag."));
+                            micro_static_flags(ui, hdr, &e, tr("Flags positionnés", "Flags set", "Flags activos"), tr("Cette instruction ne modifie aucun flag.", "This instruction modifies no flag.", "Esta instrucción no modifica ningún flag."));
                         }
                     }
 
                     ui.add_space(10.0);
                     ui.separator();
                     ui.vertical_centered(|ui| {
-                        if ui.button(tr("Fermer", "Close")).clicked() {
+                        if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
                             close = true;
                         }
                     });
@@ -230,19 +235,44 @@ impl App {
             return;
         }
         let lang = self.lang;
-        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mnem = self.c_mnemonic();
         let mut open = true;
-        egui::Window::new(tr("À propos", "About"))
+        egui::Window::new(tr("À propos", "About", "Acerca de"))
             .collapsible(false)
             .resizable(true)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.heading(RichText::new("ASM Studio").color(mnem));
-                    ui.label(tr("IDE pédagogique NASM x86-64", "Educational NASM x86-64 IDE"));
+                    ui.label(tr("IDE pédagogique NASM x86-64", "Educational NASM x86-64 IDE", "IDE educativo NASM x86-64"));
                 });
+                ui.add_space(6.0);
+                // Bandeau alpha
+                egui::Frame::default()
+                    .fill(egui::Color32::from_rgb(180, 60, 20))
+                    .rounding(egui::Rounding::same(6.0))
+                    .inner_margin(egui::Margin::symmetric(12.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                RichText::new(tr("⚠  VERSION ALPHA", "⚠  ALPHA VERSION", "⚠  VERSIÓN ALFA"))
+                                    .strong()
+                                    .color(egui::Color32::WHITE),
+                            );
+                            ui.label(
+                                RichText::new(tr(
+                                    "Logiciel en cours de développement — à des fins de test uniquement.\nNe pas utiliser en production.",
+                                    "Software under development — for testing purposes only.\nNot suitable for production use.",
+                                    "Software en desarrollo — solo para pruebas.\nNo apto para uso en producción.",
+                                ))
+                                .small()
+                                .color(egui::Color32::from_rgb(255, 210, 200)),
+                            );
+                        });
+                    });
                 ui.add_space(8.0);
                 ui.separator();
                 egui::Grid::new("about_grid")
@@ -258,15 +288,18 @@ impl App {
                         ui.label("Date");
                         ui.label(RichText::new(env!("BUILD_DATE")).monospace());
                         ui.end_row();
-                        ui.label(tr("Licence", "License"));
-                        ui.hyperlink_to(tr("MIT (explication)", "MIT (explanation)"), "https://opensource.org/license/mit")
-                            .on_hover_text(tr("Ouvrir le texte officiel de la licence MIT", "Open the official MIT license text"));
+                        ui.label(tr("Auteur", "Author", "Autor"));
+                        ui.label(RichText::new("Frédéric Z.").strong());
+                        ui.end_row();
+                        ui.label(tr("Licence", "License", "Licencia"));
+                        ui.hyperlink_to(tr("MIT (explication)", "MIT (explanation)", "MIT (explicación)"), "https://opensource.org/license/mit")
+                            .on_hover_text(tr("Ouvrir le texte officiel de la licence MIT", "Open the official MIT license text", "Abrir el texto oficial de la licencia MIT"));
                         ui.end_row();
                     });
                 ui.separator();
                 ui.add_space(6.0);
                 ui.vertical_centered(|ui| {
-                    if ui.button(tr("Fermer", "Close")).clicked() {
+                    if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
                         self.show_about = false;
                     }
                 });
@@ -283,54 +316,74 @@ impl App {
         use egui::ThemePreference;
         // Libellés traduits précalculés (évite d'emprunter self pendant que les
         // widgets empruntent ses champs en écriture).
-        let t_title = self.tr("Réglages", "Settings");
-        let t_lang = self.tr("Langue", "Language");
-        let t_theme = self.tr("Thème", "Theme");
-        let t_sys = self.tr("Système (suit l'OS)", "System (follow OS)");
-        let t_dark = self.tr("Sombre", "Dark");
-        let t_light = self.tr("Clair", "Light");
-        let t_theme_note = self.tr(
+        let t_title = self.tr3("Réglages", "Settings", "Configuración");
+        let t_lang = self.tr3("Langue", "Language", "Idioma");
+        let t_theme = self.tr3("Thème", "Theme", "Tema");
+        let t_sys = self.tr3("Système (suit l'OS)", "System (follow OS)", "Sistema (sigue el SO)");
+        let t_dark = self.tr3("Sombre", "Dark", "Oscuro");
+        let t_light = self.tr3("Clair", "Light", "Claro");
+        let t_theme_note = self.tr3(
             "Note : la coloration du code est optimisée pour le thème sombre.",
             "Note: syntax colors are tuned for the dark theme.",
+            "Nota: los colores de sintaxis están optimizados para el tema oscuro.",
         );
-        let t_iface = self.tr("Interface", "Interface");
-        let t_tooltips = self.tr(
+        let t_iface = self.tr3("Interface", "Interface", "Interfaz");
+        let t_tooltips = self.tr3(
             "Afficher les infobulles des raccourcis (au survol des boutons)",
             "Show shortcut tooltips (on button hover)",
+            "Mostrar tooltips de atajos (al pasar el cursor sobre los botones)",
         );
-        let t_anim = self.tr(
+        let t_anim = self.tr3(
             "Animations « CPU vivant » (pulsation des valeurs modifiées)",
             "\"Live CPU\" animations (pulse changed values)",
+            "Animaciones «CPU vivo» (pulso de valores modificados)",
         );
-        let t_asmstd_h = self.tr("Bibliothèque asmstd", "asmstd library");
-        let t_asmstd = self.tr(
+        let t_asmstd_h = self.tr3("Bibliothèque asmstd", "asmstd library", "Biblioteca asmstd");
+        let t_asmstd = self.tr3(
             "Activer asmstd (call asm.write, asm.exit, asm.mkdir…)",
             "Enable asmstd (call asm.write, asm.exit, asm.mkdir…)",
+            "Activar asmstd (call asm.write, asm.exit, asm.mkdir…)",
         );
-        let t_asmstd_tip = self.tr(
+        let t_asmstd_tip = self.tr3(
             "Rend asmstd.inc disponible pour %include depuis n'importe quel fichier.\n\
              Masque les numéros de syscalls derrière des noms lisibles.",
             "Makes asmstd.inc available for %include from any file.\n\
              Hides syscall numbers behind readable names.",
+            "Hace asmstd.inc disponible para %include desde cualquier archivo.\n\
+             Oculta los números de syscall detrás de nombres legibles.",
         );
-        let t_asmstd_note = self.tr(
+        let t_asmstd_note = self.tr3(
             "Dans le code : %include \"asmstd.inc\" puis call asm.write",
             "In code: %include \"asmstd.inc\" then call asm.write",
+            "En el código: %include \"asmstd.inc\" luego call asm.write",
         );
-        let t_close = self.tr("Fermer", "Close");
+        let t_pedagogy_h = self.tr3("Mode pédagogique", "Pedagogical mode", "Modo pedagógico");
+        let t_pedagogy_anim = self.tr3(
+            "Animations enrichies (flèches ↑↓ sur les registres et la pile modifiés)",
+            "Enhanced animations (↑↓ arrows on changed registers and stack)",
+            "Animaciones enriquecidas (flechas ↑↓ en registros y pila modificados)",
+        );
+        let t_pedagogy_memview = self.tr3(
+            "Vue mémoire unifiée (onglet « Vue mémoire » — registres → zones pointées)",
+            "Unified memory view (\"Memory View\" tab — registers → pointed zones)",
+            "Vista de memoria unificada (pestaña «Vista memoria» — registros → zonas apuntadas)",
+        );
+        let t_close = self.tr3("Fermer", "Close", "Cerrar");
 
         let mut open = true;
         let mut changed = false;
         egui::Window::new(t_title)
             .collapsible(false)
             .resizable(true)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label(RichText::new(t_lang).strong());
                 ui.add_space(4.0);
                 changed |= ui.radio_value(&mut self.lang, crate::i18n::Lang::Fr, "Français").changed();
                 changed |= ui.radio_value(&mut self.lang, crate::i18n::Lang::En, "English").changed();
+                changed |= ui.radio_value(&mut self.lang, crate::i18n::Lang::Es, "Español").changed();
                 ui.separator();
 
                 ui.label(RichText::new(t_theme).strong());
@@ -357,6 +410,12 @@ impl App {
                 ui.weak(t_asmstd_note);
                 ui.separator();
 
+                ui.label(RichText::new(t_pedagogy_h).strong());
+                ui.add_space(4.0);
+                changed |= ui.checkbox(&mut self.pedagogy_anim, t_pedagogy_anim).changed();
+                changed |= ui.checkbox(&mut self.pedagogy_memview, t_pedagogy_memview).changed();
+                ui.separator();
+
                 ui.vertical_centered(|ui| {
                     if ui.button(t_close).clicked() {
                         self.show_settings = false;
@@ -376,30 +435,31 @@ impl App {
             return;
         }
         let lang = self.lang;
-        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mnem = self.c_mnemonic();
         let mut open = true;
-        egui::Window::new(tr("Raccourcis clavier", "Keyboard shortcuts"))
+        egui::Window::new(tr("Raccourcis clavier", "Keyboard shortcuts", "Atajos de teclado"))
             .collapsible(false)
             .resizable(true)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 let rows = [
-                    ("F1", tr("Aide / raccourcis", "Help / shortcuts")),
-                    ("F5", tr("Lancer / Restart", "Run / Restart")),
-                    ("F10 / F8", tr("Instruction suivante (Next)", "Next instruction (Next)")),
-                    ("Échap / Maj+F5", tr("Stop", "Stop")),
-                    ("Ctrl+B", tr("Assembler + Lier", "Assemble + Link")),
-                    ("Ctrl+S", tr("Enregistrer", "Save")),
-                    ("Ctrl+O", tr("Ouvrir", "Open")),
-                    ("Ctrl+N", tr("Nouveau", "New")),
-                    ("← / →", tr("Timeline : précédent / suivant", "Timeline: previous / next")),
-                    ("Home / End", tr("Timeline : début / fin", "Timeline: start / end")),
-                    ("Ctrl+1", tr("Afficher/masquer l'explorateur", "Show/hide the explorer")),
-                    ("Ctrl+2", tr("Afficher/masquer l'instruction", "Show/hide the instruction panel")),
-                    ("Ctrl+3", tr("Afficher/masquer la bande CPU", "Show/hide the CPU band")),
-                    ("Ctrl+4", tr("Afficher/masquer la bande basse", "Show/hide the bottom band")),
+                    ("F1", tr("Aide / raccourcis", "Help / shortcuts", "Ayuda / atajos")),
+                    ("F5", tr("Lancer / Restart", "Run / Restart", "Ejecutar / Reiniciar")),
+                    ("F10 / F8", tr("Instruction suivante (Next)", "Next instruction (Next)", "Instrucción siguiente (Siguiente)")),
+                    ("Échap / Maj+F5", tr("Stop", "Stop", "Detener")),
+                    ("Ctrl+B", tr("Assembler + Lier", "Assemble + Link", "Ensamblar + Enlazar")),
+                    ("Ctrl+S", tr("Enregistrer", "Save", "Guardar")),
+                    ("Ctrl+O", tr("Ouvrir", "Open", "Abrir")),
+                    ("Ctrl+N", tr("Nouveau", "New", "Nuevo")),
+                    ("← / →", tr("Timeline : précédent / suivant", "Timeline: previous / next", "Línea de tiempo: anterior / siguiente")),
+                    ("Home / End", tr("Timeline : début / fin", "Timeline: start / end", "Línea de tiempo: inicio / fin")),
+                    ("Ctrl+1", tr("Afficher/masquer l'explorateur", "Show/hide the explorer", "Mostrar/ocultar el explorador")),
+                    ("Ctrl+2", tr("Afficher/masquer l'instruction", "Show/hide the instruction panel", "Mostrar/ocultar el panel de instrucción")),
+                    ("Ctrl+3", tr("Afficher/masquer la bande CPU", "Show/hide the CPU band", "Mostrar/ocultar la banda CPU")),
+                    ("Ctrl+4", tr("Afficher/masquer la bande basse", "Show/hide the bottom band", "Mostrar/ocultar la banda inferior")),
                 ];
                 egui::Grid::new("shortcuts_grid")
                     .num_columns(2)
@@ -413,7 +473,7 @@ impl App {
                     });
                 ui.separator();
                 ui.vertical_centered(|ui| {
-                    if ui.button(tr("Fermer", "Close")).clicked() {
+                    if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
                         self.show_shortcuts = false;
                     }
                 });
@@ -430,20 +490,21 @@ impl App {
             return;
         }
         let lang = self.lang;
-        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mnem = self.c_mnemonic();
         let hdr = self.c_header();
         let mut open = true;
-        egui::Window::new(tr("Calculatrice", "Calculator"))
+        egui::Window::new(tr("Calculatrice", "Calculator", "Calculadora"))
             .collapsible(false)
             .resizable(false)
             .default_width(360.0)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 // Sélecteur de base d'entrée.
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(tr("Base d'entrée :", "Input base:")).color(hdr));
+                    ui.label(RichText::new(tr("Base d'entrée :", "Input base:", "Base de entrada:")).color(hdr));
                     ui.radio_value(&mut self.calc_base, 10, "Dec");
                     ui.radio_value(&mut self.calc_base, 16, "Hex");
                     ui.radio_value(&mut self.calc_base, 2, "Bin");
@@ -502,13 +563,129 @@ impl App {
                 ui.add_space(6.0);
                 ui.separator();
                 ui.vertical_centered(|ui| {
-                    if ui.button(tr("Fermer", "Close")).clicked() {
+                    if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
                         self.show_calculator = false;
                     }
                 });
             });
         if !open {
             self.show_calculator = false;
+        }
+    }
+
+    // ---------- Fenêtre de mise à jour ----------
+
+    pub(super) fn update_window(&mut self, ctx: &egui::Context) {
+        use crate::updater::UpdateState;
+
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+
+        let show = matches!(
+            self.updater.state,
+            UpdateState::Checking
+                | UpdateState::Available(_)
+                | UpdateState::Downloading(_)
+                | UpdateState::Done
+                | UpdateState::Error(_)
+        );
+        if !show {
+            return;
+        }
+
+        let title = tr("Mise à jour", "Update", "Actualización");
+        let mut open = true;
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
+            .open(&mut open)
+            .show(ctx, |ui| {
+                match &self.updater.state.clone() {
+                    UpdateState::Checking => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(tr("Vérification en cours…", "Checking…", "Verificando…"));
+                        });
+                    }
+                    UpdateState::UpToDate => {
+                        ui.label(tr(
+                            "✔  Vous utilisez la dernière version.",
+                            "✔  You are on the latest version.",
+                            "✔  Está usando la última versión.",
+                        ));
+                    }
+                    UpdateState::Available(info) => {
+                        let info = info.clone();
+                        ui.label(RichText::new(format!(
+                            "{}  {}",
+                            tr("Nouvelle version disponible :", "New version available:", "Nueva versión disponible:"),
+                            info.tag
+                        )).strong());
+                        ui.add_space(4.0);
+                        if !info.notes.is_empty() {
+                            egui::ScrollArea::vertical()
+                                .id_salt("update_notes")
+                                .max_height(160.0)
+                                .show(ui, |ui| {
+                                    ui.label(&info.notes);
+                                });
+                            ui.add_space(4.0);
+                        }
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button(RichText::new(tr(
+                                "⬇  Installer et redémarrer",
+                                "⬇  Install and restart",
+                                "⬇  Instalar y reiniciar",
+                            )).strong()).clicked() {
+                                self.updater.install(info);
+                            }
+                            if ui.button(tr("Plus tard", "Later", "Más tarde")).clicked() {
+                                self.updater.state = UpdateState::UpToDate;
+                            }
+                        });
+                    }
+                    UpdateState::Downloading(progress) => {
+                        let p = *progress;
+                        ui.label(tr("Téléchargement en cours…", "Downloading…", "Descargando…"));
+                        ui.add_space(4.0);
+                        let bar = egui::widgets::ProgressBar::new(p)
+                            .show_percentage()
+                            .animate(true);
+                        ui.add(bar);
+                    }
+                    UpdateState::Done => {
+                        ui.label(RichText::new(tr(
+                            "✔  Mise à jour installée. Relancez l'application.",
+                            "✔  Update installed. Please restart the application.",
+                            "✔  Actualización instalada. Reinicie la aplicación.",
+                        )).strong());
+                        ui.add_space(6.0);
+                        ui.vertical_centered(|ui| {
+                            if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
+                                self.updater.state = UpdateState::UpToDate;
+                            }
+                        });
+                    }
+                    UpdateState::Error(msg) => {
+                        let msg = msg.clone();
+                        ui.colored_label(egui::Color32::from_rgb(220, 80, 60),
+                            format!("✘  {}", tr("Erreur :", "Error:", "Error:")));
+                        ui.label(&msg);
+                        ui.add_space(4.0);
+                        ui.vertical_centered(|ui| {
+                            if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
+                                self.updater.state = UpdateState::UpToDate;
+                            }
+                        });
+                    }
+                }
+            });
+        if !open {
+            self.updater.state = UpdateState::UpToDate;
         }
     }
 }

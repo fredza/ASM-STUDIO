@@ -22,6 +22,8 @@ mod ui_windows;
 mod ui_panels;
 mod ui_center;
 
+use crate::updater::Updater;
+
 // --- Palette ---
 pub(super) const ACCENT: Color32 = Color32::from_rgb(0x4C, 0x8B, 0xF5); // bleu d'accent
 pub(super) const ACTION: Color32 = Color32::from_rgb(0xE8, 0x8A, 0x2E); // orange d'action (Run/Step)
@@ -56,6 +58,43 @@ pub(super) fn changed_color(flash: Option<f32>) -> Color32 {
     changed_color2(flash, CHANGED)
 }
 
+/// Nombre de clignotements pendant la durée de l'animation pédagogique.
+pub(super) const BLINK_COUNT: f32 = 3.0;
+/// Durée du clignotement pédagogique (plus long que `FLASH_DUR` pour être vu).
+pub(super) const BLINK_DUR: f64 = 1.4;
+
+/// Onde de clignotement : `1.0` au pic lumineux, `0.0` au creux, sur
+/// `BLINK_COUNT` oscillations réparties sur `[0,1]`, atténuées vers la fin
+/// (le clignotement s'estompe au lieu de s'arrêter net).
+pub(super) fn blink_wave(p: f32) -> f32 {
+    let osc = (p * BLINK_COUNT * std::f32::consts::TAU).cos();
+    let up = (1.0 - osc) * 0.5; // 0 → 1 → 0 …
+    up * (1.0 - p) // enveloppe décroissante
+}
+
+/// Couleurs des régions mémoire (vue unifiée) — un code couleur stable que
+/// l'élève peut mémoriser : bleu = code, violet = données, vert = tas, orange = pile.
+pub(super) fn region_color(kind: crate::debugger::RegionKind) -> Color32 {
+    use crate::debugger::RegionKind as K;
+    match kind {
+        K::Code => Color32::from_rgb(0x4C, 0x8B, 0xF5),
+        K::Rodata => Color32::from_rgb(0x5A, 0xA6, 0xB8),
+        K::Data => Color32::from_rgb(0xA0, 0x72, 0xD8),
+        K::Heap => Color32::from_rgb(0x5F, 0xBF, 0x69),
+        K::Stack => Color32::from_rgb(0xE8, 0x8A, 0x2E),
+    }
+}
+
+/// Palette cyclique pour distinguer les fils registre→mémoire les uns des autres.
+pub(super) const WIRE_COLORS: [Color32; 6] = [
+    Color32::from_rgb(0x6E, 0xB4, 0xE8),
+    Color32::from_rgb(0xF5, 0xA6, 0x23),
+    Color32::from_rgb(0x5F, 0xBF, 0x69),
+    Color32::from_rgb(0xD9, 0x7B, 0xD9),
+    Color32::from_rgb(0x5A, 0xD0, 0xC8),
+    Color32::from_rgb(0xE0, 0x6C, 0x6C),
+];
+
 /// Comme [`changed_color`] mais vers une couleur de base arbitraire.
 pub(super) fn changed_color2(flash: Option<f32>, base: Color32) -> Color32 {
     match flash {
@@ -64,10 +103,11 @@ pub(super) fn changed_color2(flash: Option<f32>, base: Color32) -> Color32 {
     }
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub(super) enum Tab {
     Editor,
     Disasm,
+    MemMap,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -201,6 +241,10 @@ pub struct App {
     pub(super) show_tooltips: bool,
     /// Animations « CPU vivant » (pulsation des valeurs modifiées au Step).
     pub(super) animate: bool,
+    /// Mode pédagogique — animations enrichies (flèches, fondu directionnel).
+    pub(super) pedagogy_anim: bool,
+    /// Mode pédagogique — vue mémoire unifiée registres→zones pointées.
+    pub(super) pedagogy_memview: bool,
     /// Rend `asmstd.inc` disponible partout (ajoute son dossier aux includes nasm).
     pub(super) use_asmstd: bool,
     /// Instant (temps egui) du dernier Step, pour animer le fondu.
@@ -222,6 +266,7 @@ pub struct App {
     pub(super) icons: Option<Icons>,
     /// Dialogue « Ouvrir » natif en cours sur un thread de fond (sinon `None`).
     /// Sondé chaque frame → l'UI ne se fige pas pendant que le sélecteur est ouvert.
+    pub(super) updater: Updater,
     pub(super) pending_open: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
     /// Dialogue « Enregistrer sous » natif en cours sur un thread de fond.
     pub(super) pending_saveas: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
@@ -229,15 +274,17 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        let src_path = PathBuf::from("examples/test.asm");
+        setup_examples();
+        let src_path = data_dir().join("examples").join("hello_world.asm");
         let source = std::fs::read_to_string(&src_path).unwrap_or_else(|_| {
             "section .text\n    global _start\n_start:\n    mov rax, 60\n    xor rdi, rdi\n    syscall\n"
                 .to_string()
         });
         let explorer_dir = abs_dir_of(&src_path);
+        let out_dir = data_dir().join("build");
         let mut app = App {
             src_path,
-            out_dir: PathBuf::from("build"),
+            out_dir,
             source,
             dirty: false,
             binary: None,
@@ -270,6 +317,8 @@ impl App {
             show_bottom_band: true,
             show_tooltips: true,
             animate: true,
+            pedagogy_anim: false,
+            pedagogy_memview: false,
             use_asmstd: false,
             flash_time: 0.0,
             pending_flash: false,
@@ -282,6 +331,7 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
+            updater: Updater::new(),
             pending_open: None,
             pending_saveas: None,
         };
@@ -310,6 +360,8 @@ impl App {
                 "tooltips" => self.show_tooltips = v == "true",
                 "asmstd" => self.use_asmstd = v == "true",
                 "animate" => self.animate = v == "true",
+                "pedagogy_anim" => self.pedagogy_anim = v == "true",
+                "pedagogy_memview" => self.pedagogy_memview = v == "true",
                 "show_explorer" => self.show_explorer = v == "true",
                 "show_instruction" => self.show_instruction = v == "true",
                 "show_cpu_band" => self.show_cpu_band = v == "true",
@@ -332,11 +384,14 @@ impl App {
         };
         let content = format!(
             "theme={theme}\nlang={}\ntooltips={}\nasmstd={}\nanimate={}\n\
+             pedagogy_anim={}\npedagogy_memview={}\n\
              show_explorer={}\nshow_instruction={}\nshow_cpu_band={}\nshow_bottom_band={}\n",
             self.lang.key(),
             self.show_tooltips,
             self.use_asmstd,
             self.animate,
+            self.pedagogy_anim,
+            self.pedagogy_memview,
             self.show_explorer,
             self.show_instruction,
             self.show_cpu_band,
@@ -360,6 +415,26 @@ impl App {
         }
         ui.ctx().request_repaint();
         Some((elapsed / FLASH_DUR) as f32)
+    }
+
+    /// Progression du clignotement pédagogique : `Some(0.0..=1.0)` tant que
+    /// l'animation enrichie tourne. `None` si l'option est désactivée.
+    /// Plus long que `flash_progress` pour laisser le temps de voir les 3 pulses.
+    pub(super) fn blink_progress(&self, ui: &egui::Ui) -> Option<f32> {
+        if !self.animate || !self.pedagogy_anim {
+            return None;
+        }
+        let elapsed = ui.input(|i| i.time) - self.flash_time;
+        if !(0.0..BLINK_DUR).contains(&elapsed) {
+            return None;
+        }
+        ui.ctx().request_repaint();
+        Some((elapsed / BLINK_DUR) as f32)
+    }
+
+    /// Intensité du clignotement (0 = repos, 1 = pic lumineux) à cet instant.
+    pub(super) fn blink_intensity(&self, ui: &egui::Ui) -> f32 {
+        self.blink_progress(ui).map(blink_wave).unwrap_or(0.0)
     }
 
     pub(super) fn snap(&self) -> Option<&Snapshot> {
@@ -413,9 +488,8 @@ impl App {
         }
     }
 
-    /// Traduit selon la langue courante : `tr(français, anglais)`.
-    pub(super) fn tr(&self, fr: &'static str, en: &'static str) -> &'static str {
-        i18n::tr(self.lang, fr, en)
+    pub(super) fn tr3(&self, fr: &'static str, en: &'static str, es: &'static str) -> &'static str {
+        i18n::tr3(self.lang, fr, en, es)
     }
 
     // ---------- Palette de texte sensible au thème ----------
@@ -453,6 +527,11 @@ impl eframe::App for App {
         if self.icons.is_none() {
             self.icons = Some(Icons::load(ctx));
         }
+        // Workaround egui#5008 : sur Linux, egui-winit active l'IME quand un TextEdit
+        // a le focus mais ignore ensuite les événements IME → les dead keys (accents)
+        // sont avalés. On désactive l'IME : xkbcommon compose les accents directement
+        // dans les événements clavier sans passer par le protocole IME.
+        ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(false));
         self.apply_theme(ctx);
         // Récupère le résultat d'un dialogue fichier natif (thread de fond) et,
         // tant qu'il est ouvert, force un repaint périodique pour continuer à sonder.
@@ -543,6 +622,8 @@ impl eframe::App for App {
         self.settings_window(ctx);
         self.microscope_window(ctx);
         self.calculator_window(ctx);
+        self.update_window(ctx);
+        self.updater.poll();
     }
 }
 
@@ -847,7 +928,47 @@ pub(super) fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
         });
 }
 
-/// Chemin du fichier de réglages persistants (XDG : ~/.config/asm_studio/settings.conf).
+/// Répertoire de données utilisateur XDG : `~/.local/share/asm_studio/`.
+/// Cohérent avec les settings dans `~/.config/asm_studio/`, toujours accessible
+/// en écriture quelle que soit la position de l'exécutable.
+pub(super) fn data_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("asm_studio")
+}
+
+/// Crée `~/.local/share/asm_studio/examples/` avec les programmes de démonstration
+/// au premier lancement. Sentinelle = présence de `hello_world.asm` pour éviter
+/// le faux positif causé par `target/debug/examples/` créé par Cargo.
+fn setup_examples() {
+    let dir = data_dir().join("examples");
+    if dir.join("hello_world.asm").exists() {
+        return;
+    }
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+
+    let files: &[(&str, &str)] = &[
+        ("asmstd.inc",          include_str!("../../examples/asmstd.inc")),
+        ("hello_world.asm",     include_str!("../../examples_seed/hello_world.asm")),
+        ("exit_code.asm",       include_str!("../../examples_seed/exit_code.asm")),
+        ("arithmetic.asm",      include_str!("../../examples_seed/arithmetic.asm")),
+        ("boucle.asm",          include_str!("../../examples_seed/boucle.asm")),
+        ("conditionnels.asm",   include_str!("../../examples_seed/conditionnels.asm")),
+        ("fibonacci.asm",       include_str!("../../examples_seed/fibonacci.asm")),
+        ("factorielle.asm",     include_str!("../../examples_seed/factorielle.asm")),
+        ("longueur_chaine.asm", include_str!("../../examples_seed/longueur_chaine.asm")),
+        ("pile_demo.asm",       include_str!("../../examples_seed/pile_demo.asm")),
+        ("lire_ecrire.asm",     include_str!("../../examples_seed/lire_ecrire.asm")),
+    ];
+    for (name, content) in files {
+        let _ = std::fs::write(dir.join(name), content);
+    }
+}
+
 pub(super) fn settings_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -855,9 +976,9 @@ pub(super) fn settings_path() -> Option<PathBuf> {
     Some(base.join("asm_studio").join("settings.conf"))
 }
 
-/// Répertoire contenant l'`asmstd.inc` fourni, s'il est trouvable.
+/// Répertoire contenant `asmstd.inc` dans les données utilisateur.
 pub(super) fn asmstd_dir() -> Option<PathBuf> {
-    let dir = PathBuf::from("examples");
+    let dir = data_dir().join("examples");
     dir.join("asmstd.inc").exists().then_some(dir)
 }
 
@@ -942,6 +1063,79 @@ mod tests {
         let v = 0xCAFE;
         assert_eq!(calc_parse("CAFE", 16), Some(v));
         assert_eq!(calc_format(v, 16), "0xCAFE");
+    }
+
+    /// Rendu headless des panneaux pédagogiques avec un vrai processus tracé :
+    /// garantit que le code de peinture (courbes de Bézier, bandes de bits, voies
+    /// mémoire, mini-cartes) ne panique pas et que la vue mémoire trouve bien des
+    /// fils à tracer (RIP→.text, RSP→[stack]).
+    #[test]
+    fn pedagogy_panels_render_headless() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/ped-test.asm");
+        app.out_dir = PathBuf::from("build/ped");
+        app.source = "section .text\n global _start\n_start:\n mov rax,5\n push rax\n \
+                       pop rbx\n mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+        app.pedagogy_anim = true;
+        app.pedagogy_memview = true;
+        app.animate = true;
+
+        app.launch();
+        assert!(app.dbg.is_some(), "le programme doit être lancé");
+        // push puis pop : garantit des changements de registres ET de pile à animer.
+        for _ in 0..3 {
+            app.step();
+        }
+        // Les régions doivent être classées, sinon le schéma n'aurait rien à relier.
+        let regions = app.dbg.as_ref().unwrap().mem_regions();
+        assert!(!regions.is_empty(), "des régions mémoire doivent être détectées");
+
+        let ctx = egui::Context::default();
+        app.tab = Tab::MemMap;
+        // flash_time = 0 et le temps headless démarre à 0 ⇒ le clignotement est
+        // actif pendant ce rendu : on exerce bien les chemins animés.
+        app.flash_time = 0.0;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.center_ui(ui));
+            egui::TopBottomPanel::bottom("test_regs").show(ctx, |ui| {
+                app.registers_ui(ui);
+                app.stack_view(ui);
+            });
+        });
+
+        // La vue mémoire reste accessible, et se replie sur l'éditeur si l'option
+        // est coupée (comportement attendu du basculement dans les réglages).
+        app.pedagogy_memview = false;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.center_ui(ui));
+        });
+        assert_eq!(app.tab, Tab::Editor, "l'onglet doit se replier sur l'éditeur");
+    }
+
+    /// Le clignotement pédagogique doit vraiment osciller (pas un simple fondu)
+    /// et s'éteindre à la fin, sans jamais sortir de [0,1].
+    #[test]
+    fn blink_wave_oscillates_and_fades_out() {
+        assert!(blink_wave(0.0).abs() < 1e-3, "démarre au creux");
+        assert!(blink_wave(1.0).abs() < 1e-3, "se termine éteint");
+        // Toujours dans [0,1] sur tout l'intervalle.
+        for i in 0..=100 {
+            let v = blink_wave(i as f32 / 100.0);
+            assert!((0.0..=1.0).contains(&v), "blink_wave({i}%) = {v} hors bornes");
+        }
+        // Compte les pics : autant que BLINK_COUNT (c'est ce qui rend le
+        // clignotement visible plutôt qu'un fondu unique).
+        let samples: Vec<f32> = (0..600).map(|i| blink_wave(i as f32 / 600.0)).collect();
+        let peaks = samples
+            .windows(3)
+            .filter(|w| w[1] > w[0] && w[1] >= w[2] && w[1] > 0.05)
+            .count();
+        assert_eq!(peaks, BLINK_COUNT as usize, "il doit y avoir {BLINK_COUNT} pulses");
+        // L'enveloppe décroît : le premier pic est plus fort que le dernier.
+        let first = samples[..200].iter().cloned().fold(0.0_f32, f32::max);
+        let last = samples[400..].iter().cloned().fold(0.0_f32, f32::max);
+        assert!(first > last, "l'intensité doit décroître ({first} > {last})");
     }
 
     #[test]

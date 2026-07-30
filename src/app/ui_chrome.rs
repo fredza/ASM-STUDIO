@@ -160,64 +160,64 @@ impl App {
 
     pub(super) fn menu_bar(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
-        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button(tr("Fichier", "File"), |ui| {
-                    if ui.button(tr("Nouveau            Ctrl+N", "New                Ctrl+N")).clicked() {
+                ui.menu_button(tr("Fichier", "File", "Archivo"), |ui| {
+                    if ui.button(tr("Nouveau            Ctrl+N", "New                Ctrl+N", "Nuevo               Ctrl+N")).clicked() {
                         self.new_file();
                         ui.close_menu();
                     }
-                    if ui.button(tr("Ouvrir…            Ctrl+O", "Open…              Ctrl+O")).clicked() {
+                    if ui.button(tr("Ouvrir…            Ctrl+O", "Open…              Ctrl+O", "Abrir…              Ctrl+O")).clicked() {
                         self.open_browser();
                         ui.close_menu();
                     }
-                    if ui.button(tr("Enregistrer        Ctrl+S", "Save               Ctrl+S")).clicked() {
+                    if ui.button(tr("Enregistrer        Ctrl+S", "Save               Ctrl+S", "Guardar            Ctrl+S")).clicked() {
                         self.save_source();
                         ui.close_menu();
                     }
-                    if ui.button(tr("Enregistrer sous…", "Save As…")).clicked() {
+                    if ui.button(tr("Enregistrer sous…", "Save As…", "Guardar como…")).clicked() {
                         self.open_saveas();
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button(tr("Quitter", "Quit")).clicked() {
+                    if ui.button(tr("Quitter", "Quit", "Salir")).clicked() {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
                 ui.menu_button("Build", |ui| {
-                    if ui.button(tr("Assembler + Lier   Ctrl+B", "Assemble + Link    Ctrl+B")).clicked() {
+                    if ui.button(tr("Assembler + Lier   Ctrl+B", "Assemble + Link    Ctrl+B", "Ensamblar + Enlazar   Ctrl+B")).clicked() {
                         self.build();
                         ui.close_menu();
                     }
-                    if ui.button(tr("Exécuter (Lancer)  F5", "Run                F5")).clicked() {
+                    if ui.button(tr("Exécuter (Lancer)  F5", "Run                F5", "Ejecutar           F5")).clicked() {
                         self.launch();
                         ui.close_menu();
                     }
                 });
                 ui.menu_button("Debug", |ui| {
-                    if ui.button(tr("Lancer / Restart   F5", "Run / Restart      F5")).clicked() {
+                    if ui.button(tr("Lancer / Restart   F5", "Run / Restart      F5", "Ejecutar / Reiniciar  F5")).clicked() {
                         self.launch();
                         ui.close_menu();
                     }
-                    if ui.button(tr("Pas à pas          F10", "Step               F10")).clicked() {
+                    if ui.button(tr("Pas à pas          F10", "Step               F10", "Paso a paso         F10")).clicked() {
                         self.step();
                         ui.close_menu();
                     }
-                    if ui.button(tr("Stop               Échap", "Stop               Esc")).clicked() {
+                    if ui.button(tr("Stop               Échap", "Stop               Esc", "Detener             Esc")).clicked() {
                         self.stop();
                         ui.close_menu();
                     }
                 });
-                ui.menu_button(tr("Affichage", "View"), |ui| {
-                    ui.label(RichText::new(tr("Panneaux", "Panels")).small().weak());
+                ui.menu_button(tr("Affichage", "View", "Vista"), |ui| {
+                    ui.label(RichText::new(tr("Panneaux", "Panels", "Paneles")).small().weak());
                     let mut changed = false;
-                    changed |= ui.checkbox(&mut self.show_explorer, tr("Explorateur          Ctrl+1", "Explorer             Ctrl+1")).changed();
-                    changed |= ui.checkbox(&mut self.show_instruction, tr("Instruction          Ctrl+2", "Instruction          Ctrl+2")).changed();
-                    changed |= ui.checkbox(&mut self.show_cpu_band, tr("Bande CPU (registres…)  Ctrl+3", "CPU band (registers…)   Ctrl+3")).changed();
-                    changed |= ui.checkbox(&mut self.show_bottom_band, tr("Bande basse (mémoire…)  Ctrl+4", "Bottom band (memory…)   Ctrl+4")).changed();
+                    changed |= ui.checkbox(&mut self.show_explorer, tr("Explorateur          Ctrl+1", "Explorer             Ctrl+1", "Explorador          Ctrl+1")).changed();
+                    changed |= ui.checkbox(&mut self.show_instruction, tr("Instruction          Ctrl+2", "Instruction          Ctrl+2", "Instrucción          Ctrl+2")).changed();
+                    changed |= ui.checkbox(&mut self.show_cpu_band, tr("Bande CPU (registres…)  Ctrl+3", "CPU band (registers…)   Ctrl+3", "Banda CPU (registros…)  Ctrl+3")).changed();
+                    changed |= ui.checkbox(&mut self.show_bottom_band, tr("Bande basse (mémoire…)  Ctrl+4", "Bottom band (memory…)   Ctrl+4", "Banda inferior (memoria…)  Ctrl+4")).changed();
                     ui.separator();
-                    if ui.button(tr("Tout afficher", "Show all")).clicked() {
+                    if ui.button(tr("Tout afficher", "Show all", "Mostrar todo")).clicked() {
                         self.show_explorer = true;
                         self.show_instruction = true;
                         self.show_cpu_band = true;
@@ -229,21 +229,37 @@ impl App {
                         self.save_settings();
                     }
                 });
-                ui.menu_button(tr("Aide", "Help"), |ui| {
-                    if ui.button(tr("Réglages…", "Settings…")).clicked() {
+                ui.menu_button(tr("Aide", "Help", "Ayuda"), |ui| {
+                    if ui.button(tr("Réglages…", "Settings…", "Configuración…")).clicked() {
                         self.show_settings = true;
                         ui.close_menu();
                     }
-                    if ui.button(tr("Raccourcis clavier…", "Keyboard shortcuts…")).clicked() {
+                    if ui.button(tr("Raccourcis clavier…", "Keyboard shortcuts…", "Accesos directos…")).clicked() {
                         self.show_shortcuts = true;
                         ui.close_menu();
                     }
-                    if ui.button(tr("Calculatrice…", "Calculator…")).clicked() {
+                    if ui.button(tr("Calculatrice…", "Calculator…", "Calculadora…")).clicked() {
                         self.show_calculator = true;
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button(tr("À propos ASM Studio…", "About ASM Studio…")).clicked() {
+                    if ui.button(tr("Vérifier les mises à jour…", "Check for updates…", "Buscar actualizaciones…")).clicked() {
+                        self.updater.check();
+                        ui.close_menu();
+                    }
+                    #[cfg(debug_assertions)]
+                    {
+                        if ui.button(
+                            egui::RichText::new("🧪 Simuler une mise à jour")
+                                .color(egui::Color32::from_rgb(180, 140, 60))
+                                .italics(),
+                        ).clicked() {
+                            self.updater.simulate();
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+                    if ui.button(tr("À propos ASM Studio…", "About ASM Studio…", "Acerca de ASM Studio…")).clicked() {
                         self.show_about = true;
                         ui.close_menu();
                     }
@@ -259,7 +275,7 @@ impl App {
             ui.add_space(3.0);
             ui.horizontal(|ui| {
                 let lang = self.lang;
-                let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+                let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
                 let running = self.dbg.as_ref().is_some_and(|d| d.is_alive());
                 let can_step = self.can_step();
                 // Handles clonés (Arc bon marché) => pas d'emprunt de self dans la barre.
@@ -270,7 +286,7 @@ impl App {
 
                 // Run : accent quand inactif, grisé quand un programme tourne.
                 if self
-                    .tip(accent_button(ui, ic_run.as_ref(), "Run", !running), tr("Lancer (F5)", "Run (F5)"))
+                    .tip(accent_button(ui, ic_run.as_ref(), "Run", !running), tr("Lancer (F5)", "Run (F5)", "Ejecutar (F5)"))
                     .clicked()
                 {
                     self.launch();
@@ -278,27 +294,26 @@ impl App {
                 // Pause : non implémenté (step-by-step uniquement), toujours grisé.
                 ui.add_enabled(false, icon_btn_widget(ic_pause.as_ref(), "Pause"));
                 // Next : exécute l'instruction suivante (accent quand disponible).
-                // Remplace l'ancien couple Step/Next qui faisait doublon.
                 if self
-                    .tip(accent_button(ui, ic_debug.as_ref(), "Next", can_step), tr("Instruction suivante (F10)", "Next instruction (F10)"))
+                    .tip(accent_button(ui, ic_debug.as_ref(), "Next", can_step), tr("Instruction suivante (F10)", "Next instruction (F10)", "Instrucción siguiente (F10)"))
                     .clicked()
                 {
                     self.step();
                 }
                 // Stop.
-                if self.tip(bordered_button(ui, ic_stop.as_ref(), "Stop", running), tr("Arrêter (Échap)", "Stop (Esc)")).clicked() {
+                if self.tip(bordered_button(ui, ic_stop.as_ref(), "Stop", running), tr("Arrêter (Échap)", "Stop (Esc)", "Detener (Esc)")).clicked() {
                     self.stop();
                 }
                 // Restart = relancer depuis le début.
                 if self
-                    .tip(icon_button(ui, ic_restart.as_ref(), "Restart"), tr("Relancer (F5)", "Restart (F5)"))
+                    .tip(icon_button(ui, ic_restart.as_ref(), "Restart"), tr("Relancer (F5)", "Restart (F5)", "Reiniciar (F5)"))
                     .clicked()
                 {
                     self.launch();
                 }
                 ui.separator();
                 if self
-                    .tip(icon_button(ui, ic_build.as_ref(), "Build"), tr("Assembler + Lier (Ctrl+B)", "Assemble + Link (Ctrl+B)"))
+                    .tip(icon_button(ui, ic_build.as_ref(), "Build"), tr("Assembler + Lier (Ctrl+B)", "Assemble + Link (Ctrl+B)", "Ensamblar + Enlazar (Ctrl+B)"))
                     .clicked()
                 {
                     self.build();
@@ -315,7 +330,7 @@ impl App {
 
     pub(super) fn status_bar(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
-        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mut kill_requested = false;
         egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -328,9 +343,10 @@ impl App {
                             .on_hover_text(tr(
                                 "Clic droit pour Kill · Esc pour Stop",
                                 "Right-click to Kill · Esc to Stop",
+                                "Clic derecho para Matar · Esc para Detener",
                             ))
                             .context_menu(|ui| {
-                                if ui.button(tr("🗙 Kill (SIGKILL)", "🗙 Kill (SIGKILL)")).clicked() {
+                                if ui.button(tr("🗙 Kill (SIGKILL)", "🗙 Kill (SIGKILL)", "🗙 Matar (SIGKILL)")).clicked() {
                                     kill_requested = true;
                                     ui.close_menu();
                                 }
@@ -340,24 +356,24 @@ impl App {
                         RunState::Exited(0) => {
                             ui.colored_label(
                                 FLAG_ON,
-                                RichText::new(format!("✔ {} 0", tr("Exit", "Exit"))).strong(),
+                                RichText::new(format!("✔ {} 0", tr("Exit", "Exit", "Salir"))).strong(),
                             );
                         }
                         RunState::Exited(c) => {
                             ui.colored_label(
                                 FALSE_COL,
-                                RichText::new(format!("✘ {} {c}", tr("Exit", "Exit"))).strong(),
+                                RichText::new(format!("✘ {} {c}", tr("Exit", "Exit", "Salir"))).strong(),
                             );
                         }
                         RunState::Signaled => {
-                            ui.colored_label(FALSE_COL, RichText::new(tr("✘ Signal", "✘ Signal")).strong());
+                            ui.colored_label(FALSE_COL, RichText::new(tr("✘ Signal", "✘ Signal", "✘ Señal")).strong());
                         }
                         RunState::Stopped => {
-                            ui.colored_label(FLAG_OFF, format!("○ {}", tr("Arrêté", "Stopped")));
+                            ui.colored_label(FLAG_OFF, format!("○ {}", tr("Arrêté", "Stopped", "Detenido")));
                         }
                     },
                     None => {
-                        ui.colored_label(FLAG_OFF, format!("○ {}", tr("Prêt", "Ready")));
+                        ui.colored_label(FLAG_OFF, format!("○ {}", tr("Prêt", "Ready", "Listo")));
                     }
                 }
                 ui.separator();
@@ -366,10 +382,10 @@ impl App {
                 ui.label(RichText::new("Mode : 64-bit").color(self.c_header()));
                 if let Some(s) = self.snap() {
                     ui.separator();
-                    ui.label(format!("{} : 0x{:X}", tr("Arrêté à", "Stopped at"), s.regs.rip));
+                    ui.label(format!("{} : 0x{:X}", tr("Arrêté à", "Stopped at", "Detenido en"), s.regs.rip));
                     if let Some(next) = self.next_addr() {
                         ui.separator();
-                        ui.colored_label(CHANGED, format!("{} : 0x{next:X}", tr("Suivant", "Next")));
+                        ui.colored_label(CHANGED, format!("{} : 0x{next:X}", tr("Suivant", "Next", "Siguiente")));
                     }
                 }
                 // Dernier message d'action (Enregistré, Build OK, erreurs…).

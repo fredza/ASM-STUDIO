@@ -133,6 +133,53 @@ pub enum RunState {
 /// Nombre de mots de pile capturés dans chaque snapshot (à partir de RSP).
 pub const STACK_WINDOW: usize = 16;
 
+/// Nature d'une région mémoire, pour le code couleur de la vue mémoire unifiée.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionKind {
+    /// Segment exécutable (`.text`).
+    Code,
+    /// Segment inscriptible (`.data` / `.bss`).
+    Data,
+    /// Segment en lecture seule (`.rodata`).
+    Rodata,
+    /// Tas (`[heap]`), croît vers les adresses hautes.
+    Heap,
+    /// Pile (`[stack]`), croît vers les adresses basses.
+    Stack,
+}
+
+impl RegionKind {
+    /// Libellé court affiché sur le schéma.
+    pub fn label(self) -> &'static str {
+        match self {
+            RegionKind::Code => ".text",
+            RegionKind::Data => ".data/.bss",
+            RegionKind::Rodata => ".rodata",
+            RegionKind::Heap => "[heap]",
+            RegionKind::Stack => "[stack]",
+        }
+    }
+}
+
+/// Une région mappée dans l'espace d'adressage du processus.
+#[derive(Debug, Clone)]
+pub struct MemRegion {
+    pub start: u64,
+    pub end: u64,
+    pub kind: RegionKind,
+    /// Permissions brutes de `/proc/<pid>/maps`, ex. « rw-p ».
+    pub perms: String,
+}
+
+impl MemRegion {
+    pub fn contains(&self, addr: u64) -> bool {
+        (self.start..self.end).contains(&addr)
+    }
+    pub fn size(&self) -> u64 {
+        self.end - self.start
+    }
+}
+
 /// État complet du CPU à une étape donnée, conservé pour la timeline (M5).
 #[derive(Clone)]
 pub struct Snapshot {
@@ -291,6 +338,52 @@ impl Debugger {
         Ok(())
     }
 
+    /// Toutes les régions mappées du processus (`/proc/<pid>/maps`), pour la vue
+    /// mémoire unifiée. Les régions sans intérêt pédagogique (bibliothèques
+    /// partagées, vvar/vdso) sont écartées afin de garder un schéma lisible.
+    pub fn mem_regions(&self) -> Vec<MemRegion> {
+        let Ok(maps) = std::fs::read_to_string(format!("/proc/{}/maps", self.child.as_raw())) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for line in maps.lines() {
+            let mut it = line.split_whitespace();
+            let Some(range) = it.next() else { continue };
+            let Some(perms) = it.next() else { continue };
+            let Some((s, e)) = range.split_once('-') else { continue };
+            let (Ok(start), Ok(end)) = (u64::from_str_radix(s, 16), u64::from_str_radix(e, 16))
+            else {
+                continue;
+            };
+            // 6e champ = chemin ou pseudo-nom entre crochets (absent pour l'anonyme).
+            let path = line.split_whitespace().nth(5).unwrap_or("");
+            let kind = match path {
+                "[stack]" => RegionKind::Stack,
+                "[heap]" => RegionKind::Heap,
+                "[vvar]" | "[vdso]" | "[vsyscall]" => continue,
+                p if p.contains(".so") => continue,
+                _ => {
+                    // Segments de l'exécutable : x → code, w → données, sinon lecture seule.
+                    if perms.contains('x') {
+                        RegionKind::Code
+                    } else if perms.contains('w') {
+                        RegionKind::Data
+                    } else {
+                        RegionKind::Rodata
+                    }
+                }
+            };
+            out.push(MemRegion {
+                start,
+                end,
+                kind,
+                perms: perms.to_string(),
+            });
+        }
+        out.sort_by_key(|r| r.start);
+        out
+    }
+
     /// Bornes (début, fin) du segment `[heap]` d'après `/proc/<pid>/maps`,
     /// ou `None` si le programme n'a pas encore de tas.
     pub fn heap_range(&self) -> Option<(u64, u64)> {
@@ -447,6 +540,48 @@ mod tests {
         assert!(dbg.is_alive(), "le programme doit encore tourner");
         let (start, end) = dbg.heap_range().expect("le tas doit exister après brk");
         assert!(end > start, "le tas doit avoir une taille non nulle");
+    }
+
+    /// La vue mémoire unifiée a besoin des régions classées : au minimum du code
+    /// exécutable et une pile, et RIP/RSP doivent tomber dans les bonnes régions.
+    #[test]
+    fn mem_regions_classify_code_and_stack() {
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/test.asm"),
+            Path::new("build/test-regions"),
+            &[],
+        )
+        .expect("assemblage");
+        let dbg = Debugger::launch(&out.binary).expect("launch");
+        let regions = dbg.mem_regions();
+
+        assert!(!regions.is_empty(), "au moins une région mappée");
+        assert!(
+            regions.iter().any(|r| r.kind == RegionKind::Code),
+            "le segment exécutable doit être détecté"
+        );
+        assert!(
+            regions.iter().any(|r| r.kind == RegionKind::Stack),
+            "la pile doit être détectée"
+        );
+        // Les régions sont triées et non vides.
+        assert!(regions.windows(2).all(|w| w[0].start <= w[1].start), "régions triées");
+        assert!(regions.iter().all(|r| r.size() > 0), "taille non nulle");
+
+        // RIP pointe dans du code, RSP dans la pile : c'est ce que le schéma relie.
+        let regs = dbg.regs();
+        let rip_region = regions.iter().find(|r| r.contains(regs.rip));
+        assert_eq!(
+            rip_region.map(|r| r.kind),
+            Some(RegionKind::Code),
+            "RIP doit tomber dans le segment exécutable"
+        );
+        let rsp_region = regions.iter().find(|r| r.contains(regs.rsp));
+        assert_eq!(
+            rsp_region.map(|r| r.kind),
+            Some(RegionKind::Stack),
+            "RSP doit tomber dans la pile"
+        );
     }
 
     /// Laboratoire mémoire : éditer un registre et écrire en mémoire.

@@ -17,17 +17,26 @@ impl App {
     pub(super) fn center_ui(&mut self, ui: &mut egui::Ui) {
         let hdr = self.c_header();
         let lang = self.lang;
-        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let (edit_ic, disasm_ic) = match &self.icons {
             Some(i) => (Some(i.editor.clone()), Some(i.assembler.clone())),
             None => (None, None),
         };
+        // Si la vue mémoire est désactivée dans les réglages, revenir à l'éditeur.
+        if self.tab == super::Tab::MemMap && !self.pedagogy_memview {
+            self.tab = super::Tab::Editor;
+        }
         panel_header(ui, |ui| {
-            if icon_tab(ui, edit_ic.as_ref(), tr("Éditeur", "Editor"), self.tab == super::Tab::Editor).clicked() {
+            if icon_tab(ui, edit_ic.as_ref(), tr("Éditeur", "Editor", "Editor"), self.tab == super::Tab::Editor).clicked() {
                 self.tab = super::Tab::Editor;
             }
-            if icon_tab(ui, disasm_ic.as_ref(), tr("Désassemblage", "Disassembly"), self.tab == super::Tab::Disasm).clicked() {
+            if icon_tab(ui, disasm_ic.as_ref(), tr("Désassemblage", "Disassembly", "Desensamblado"), self.tab == super::Tab::Disasm).clicked() {
                 self.tab = super::Tab::Disasm;
+            }
+            if self.pedagogy_memview {
+                if icon_tab(ui, None, tr("Vue mémoire", "Memory View", "Vista memoria"), self.tab == super::Tab::MemMap).clicked() {
+                    self.tab = super::Tab::MemMap;
+                }
             }
             ui.separator();
             let name = self.src_path.file_name().unwrap_or_default().to_string_lossy();
@@ -52,6 +61,7 @@ impl App {
         match self.tab {
             super::Tab::Editor => self.editor_ui(ui),
             super::Tab::Disasm => self.disasm_ui(ui),
+            super::Tab::MemMap => self.memory_map_ui(ui),
         }
     }
 
@@ -135,9 +145,10 @@ impl App {
 
     pub(super) fn disasm_ui(&mut self, ui: &mut egui::Ui) {
         if self.disasm.is_empty() {
-            ui.label(i18n::tr(self.lang,
+            ui.label(i18n::tr3(self.lang,
                 "Cliquez sur « Lancer » pour assembler, lier et exécuter votre programme.",
                 "Click \"Run\" to assemble, link and execute your program.",
+                "Haga clic en «Ejecutar» para ensamblar, enlazar y ejecutar su programa.",
             ));
             return;
         }
@@ -191,7 +202,7 @@ impl App {
         let bulb_ic = self.icons.as_ref().map(|i| i.instruction.clone());
         let hdr = self.c_header();
         let lang = self.lang;
-        let tr = |fr: &'static str, en: &'static str| i18n::tr(lang, fr, en);
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         panel_header(ui, |ui| {
             super::header_title(ui, hdr, None, "INSTRUCTION");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -210,6 +221,7 @@ impl App {
             ui.label(tr(
                 "Lancez le programme, puis cliquez une instruction.",
                 "Run the program, then click an instruction.",
+                "Ejecute el programa y luego haga clic en una instrucción.",
             ));
             return;
         };
@@ -226,8 +238,8 @@ impl App {
             ui.label(RichText::new(&e.title).size(16.0).strong().color(mnem_col));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button(tr("🔬 Microscope", "🔬 Microscope"))
-                    .on_hover_text(tr("Tout voir sur cette seule instruction", "See everything about this one instruction"))
+                    .button(tr("🔬 Microscope", "🔬 Microscope", "🔬 Microscopio"))
+                    .on_hover_text(tr("Tout voir sur cette seule instruction", "See everything about this one instruction", "Ver todo sobre esta instrucción"))
                     .clicked()
                 {
                     self.microscope = Some(addr);
@@ -239,9 +251,9 @@ impl App {
             ui.label(RichText::new(e.category).italics().weak().size(12.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let tag = if self.selected.is_some() {
-                    tr("(sélection)", "(selection)")
+                    tr("(sélection)", "(selection)", "(selección)")
                 } else {
-                    tr("(instruction courante)", "(current instruction)")
+                    tr("(instruction courante)", "(current instruction)", "(instrucción actual)")
                 };
                 ui.label(RichText::new(tag).small().weak());
             });
@@ -271,26 +283,27 @@ impl App {
         });
         ui.add_space(6.0);
         ui.hyperlink_to(
-            format!("📖 {} {} ↗", tr("Référence Intel de", "Intel reference for"), insn.mnemonic.to_uppercase()),
+            format!("📖 {} {} ↗", tr("Référence Intel de", "Intel reference for", "Referencia Intel de"), insn.mnemonic.to_uppercase()),
             explain::doc_url(&insn.mnemonic),
         )
         .on_hover_text(tr(
             "Ouvre la page de l'instruction (manuel Intel SDM, felixcloutier.com)",
             "Opens the instruction page (Intel SDM manual, felixcloutier.com)",
+            "Abre la página de la instrucción (manual Intel SDM, felixcloutier.com)",
         ));
 
         if let Some(cond) = &e.condition {
             ui.add_space(4.0);
-            ui.label(RichText::new(tr("Condition", "Condition")).strong());
+            ui.label(RichText::new(tr("Condition", "Condition", "Condición")).strong());
             ui.label(RichText::new(cond).monospace());
             // Effet : où mène le saut si la condition est vraie.
             if !insn.operands.is_empty() {
                 ui.add_space(4.0);
-                ui.label(RichText::new(tr("Effet", "Effect")).strong());
+                ui.label(RichText::new(tr("Effet", "Effect", "Efecto")).strong());
                 ui.label(
                     RichText::new(format!(
                         "{} {}.",
-                        tr("Si la condition est vraie, RIP =", "If the condition is true, RIP ="),
+                        tr("Si la condition est vraie, RIP =", "If the condition is true, RIP =", "Si la condición es verdadera, RIP ="),
                         insn.operands
                     ))
                     .monospace(),
@@ -299,7 +312,7 @@ impl App {
             ui.add_space(4.0);
             let hdr2 = self.c_header();
             card(ui, |ui| {
-                    ui.label(RichText::new(tr("État actuel", "Current state")).small().strong().color(hdr2));
+                    ui.label(RichText::new(tr("État actuel", "Current state", "Estado actual")).small().strong().color(hdr2));
                     ui.horizontal(|ui| {
                         for (name, val) in &e.relevant_flags {
                             let c = if *val { FLAG_ON } else { FLAG_OFF };
@@ -313,9 +326,9 @@ impl App {
                     if let Some(taken) = e.taken {
                         ui.add_space(4.0);
                         let (txt, col) = if taken {
-                            (tr("✔ Condition vraie — le saut sera pris.", "✔ Condition true — the jump will be taken."), FLAG_ON)
+                            (tr("✔ Condition vraie — le saut sera pris.", "✔ Condition true — the jump will be taken.", "✔ Condición verdadera — el salto se tomará."), FLAG_ON)
                         } else {
-                            (tr("✘ Condition fausse — pas de saut.", "✘ Condition false — no jump."), FALSE_COL)
+                            (tr("✘ Condition fausse — pas de saut.", "✘ Condition false — no jump.", "✘ Condición falsa — sin salto."), FALSE_COL)
                         };
                         let fill = if taken {
                             FLAG_ON.linear_multiply(0.12)
@@ -334,7 +347,7 @@ impl App {
         }
         if !e.affects_flags.is_empty() {
             ui.add_space(6.0);
-            ui.label(RichText::new(tr("Flags positionnés", "Flags set")).strong());
+            ui.label(RichText::new(tr("Flags positionnés", "Flags set", "Flags activos")).strong());
             ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
         }
     }
