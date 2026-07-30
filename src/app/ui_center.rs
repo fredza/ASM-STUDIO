@@ -307,6 +307,103 @@ impl App {
             });
         }
 
+        // Étape de cadre d'appel : replace l'instruction dans la mécanique du
+        // prologue/épilogue, que le panneau CALL STACK ne raconte pas.
+        if let Some(phase) = crate::abi::frame_phase(&insn.mnemonic, &insn.operands) {
+            ui.add_space(6.0);
+            egui::Frame::default()
+                .fill(ACTION.linear_multiply(0.12))
+                .stroke(egui::Stroke::new(1.0_f32, ACTION.linear_multiply(0.6)))
+                .rounding(egui::Rounding::same(5.0))
+                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(
+                        RichText::new(tr("🧱 Cadre d'appel", "🧱 Call frame", "🧱 Marco de llamada"))
+                            .small()
+                            .strong()
+                            .color(ACTION),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(phase.explain(self.lang)).size(12.5));
+                });
+        }
+
+        // Registres d'arguments d'un appel de fonction : sur un « call », c'est
+        // là que l'ordre System V prend son sens.
+        if insn.mnemonic == "call"
+            && let Some(snap) = self.snap()
+        {
+            let hdr2 = self.c_header();
+            let regs = snap.regs.clone();
+            ui.add_space(6.0);
+            card(ui, |ui| {
+                ui.label(
+                    RichText::new(tr("Arguments (ABI System V)", "Arguments (System V ABI)", "Argumentos (ABI System V)"))
+                        .small()
+                        .strong()
+                        .color(hdr2),
+                );
+                egui::Grid::new("abi_call_args").num_columns(3).spacing([8.0, 2.0]).show(ui, |ui| {
+                    for (i, rn) in crate::abi::ARG_REGS.iter().enumerate() {
+                        let v = regs.named().iter().find(|(n, _)| n == rn).map(|(_, v)| *v).unwrap_or(0);
+                        ui.label(RichText::new(format!("arg{}", i + 1)).small().weak());
+                        ui.label(RichText::new(*rn).monospace().small().color(hdr2));
+                        ui.label(RichText::new(format!("0x{v:X}")).monospace().small());
+                        ui.end_row();
+                    }
+                });
+                ui.label(
+                    RichText::new(tr(
+                        "La valeur de retour reviendra dans RAX. RBX, R12–R15 seront intacts ; \
+                         les autres peuvent être écrasés.",
+                        "The return value will come back in RAX. RBX, R12–R15 will be intact; \
+                         the others may be clobbered.",
+                        "El valor de retorno volverá en RAX. RBX, R12–R15 quedarán intactos; \
+                         los demás pueden ser sobrescritos.",
+                    ))
+                    .small()
+                    .weak(),
+                );
+            });
+        }
+
+        // Registres d'arguments pour un appel système : donne le sens des
+        // valeurs plutôt que de laisser l'élève deviner l'ordre.
+        if insn.mnemonic == "syscall"
+            && let Some(snap) = self.snap()
+        {
+            let hdr2 = self.c_header();
+            let regs = snap.regs.clone();
+            ui.add_space(6.0);
+            card(ui, |ui| {
+                ui.label(
+                    RichText::new(tr("Arguments (ABI syscall)", "Arguments (syscall ABI)", "Argumentos (ABI syscall)"))
+                        .small()
+                        .strong()
+                        .color(hdr2),
+                );
+                egui::Grid::new("abi_syscall_args").num_columns(3).spacing([8.0, 2.0]).show(ui, |ui| {
+                    for (i, rn) in crate::abi::SYSCALL_ARG_REGS.iter().enumerate() {
+                        let v = regs.named().iter().find(|(n, _)| n == rn).map(|(_, v)| *v).unwrap_or(0);
+                        ui.label(RichText::new(format!("arg{}", i + 1)).small().weak());
+                        ui.label(RichText::new(*rn).monospace().small().color(hdr2));
+                        ui.label(RichText::new(format!("0x{v:X}")).monospace().small());
+                        ui.end_row();
+                    }
+                });
+                ui.label(
+                    RichText::new(tr(
+                        "syscall écrase RCX et R11 : le 4e argument passe par R10.",
+                        "syscall clobbers RCX and R11: the 4th argument goes through R10.",
+                        "syscall sobrescribe RCX y R11: el 4.º argumento pasa por R10.",
+                    ))
+                    .small()
+                    .weak(),
+                );
+            });
+        }
+
         // Description pédagogique + lien vers la référence officielle.
         ui.add_space(8.0);
         card(ui, |ui| {

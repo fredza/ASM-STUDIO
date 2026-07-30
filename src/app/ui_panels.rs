@@ -297,7 +297,20 @@ impl App {
                 egui::Grid::new("regs_grid").num_columns(4).spacing([20.0, 6.0]).show(ui, |ui| {
                     for (i, (name, val, pval)) in rows.iter().enumerate() {
                         let (name, val, pval) = (*name, *val, *pval);
-                        ui.label(RichText::new(name).monospace().strong().color(hdr));
+                        // Rôle ABI en infobulle : « survit-il à un call ? » est la
+                        // question que se pose l'élève dont une valeur disparaît.
+                        let r = crate::abi::role(name);
+                        let role_tip = format!(
+                            "{name} — {}\n{}",
+                            r.label(lang),
+                            if r.survives_call() {
+                                tr("✔ conservé à travers un call", "✔ preserved across a call", "✔ conservado a través de un call")
+                            } else {
+                                tr("✘ peut être écrasé par un call", "✘ may be clobbered by a call", "✘ puede ser sobrescrito por un call")
+                            }
+                        );
+                        ui.label(RichText::new(name).monospace().strong().color(hdr))
+                            .on_hover_text(role_tip);
                         if self.edit_reg == Some(name) {
                             // Édition : champ hexa + ✓ (valider) / ✗ (annuler).
                             let focus_now = std::mem::take(&mut self.edit_focus);
@@ -634,6 +647,7 @@ impl App {
     }
 
     pub(super) fn stack_view(&self, ui: &mut egui::Ui) {
+        let lang = self.lang;
         let Some(snap) = self.snap() else {
             ui.label("—");
             return;
@@ -726,6 +740,20 @@ impl App {
                                         .strong()
                                         .color(if addr == rsp { PUSH_COL } else { ACTION }),
                                 );
+                            }
+                            // Rôle de la case dans le cadre d'appel : c'est ce qui
+                            // transforme une colonne d'adresses en structure lisible.
+                            if let Some(kind) = crate::abi::classify_slot(addr, rbp) {
+                                let (txt, col) = match kind {
+                                    crate::abi::SlotKind::ReturnAddress => {
+                                        (kind.label(lang), FALSE_COL)
+                                    }
+                                    crate::abi::SlotKind::SavedFramePointer => {
+                                        (kind.label(lang), ACTION)
+                                    }
+                                    _ => (kind.label(lang), self.c_bytes()),
+                                };
+                                ui.label(RichText::new(txt).small().italics().color(col));
                             }
                         });
                 });

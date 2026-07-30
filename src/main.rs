@@ -1,3 +1,4 @@
+mod abi;
 mod app;
 mod assemble;
 mod debugger;
