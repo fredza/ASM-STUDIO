@@ -49,6 +49,7 @@ impl App {
         self.selected = None;
         self.syscalls.clear();
         self.call_stack.clear();
+        self.diagnosis = None;
         self.view_index = 0;
         self.dbg = None;
         match Debugger::launch(&bin) {
@@ -109,8 +110,41 @@ impl App {
             }
             Some(RunState::Exited(code)) => self.status = format!("{} (exit {code})", i18n::tr(self.lang, "Terminé", "Terminated")),
             Some(RunState::Signaled) => self.status = i18n::tr(self.lang, "Terminé (signal)", "Terminated (signal)").to_string(),
+            // Faute matérielle : on diagnostique tout de suite et on ouvre la
+            // fenêtre d'explication (l'ancien code laissait RIP figé en silence).
+            Some(RunState::Faulted(_)) => {
+                self.diagnose_fault();
+            }
             None => {}
         }
+    }
+
+    /// Analyse la faute courante, met à jour la barre d'état et ouvre la fenêtre
+    /// de diagnostic. Idempotent : rappelé sans effet si le diagnostic existe.
+    pub(super) fn diagnose_fault(&mut self) {
+        if self.diagnosis.is_some() {
+            return;
+        }
+        let Some(d) = self.dbg.as_ref() else { return };
+        let Some(fault) = d.fault() else { return };
+        let regions = d.mem_regions();
+
+        // L'instruction fautive écrivait-elle ? Le désassemblage le dit.
+        let is_write = self
+            .disasm
+            .iter()
+            .find(|i| i.address == fault.rip)
+            .is_some_and(|i| crate::diagnostic::writes_memory(&i.mnemonic, &i.operands));
+        let line = self.src_map.get(&fault.rip).copied();
+
+        let diag = crate::diagnostic::diagnose(&fault, &regions, is_write, line, self.lang);
+        self.status = format!(
+            "✘ {} — {}",
+            diag.title,
+            crate::diagnostic::cause_label(diag.cause, self.lang)
+        );
+        self.log(&format!("✘ {} : {}", diag.title, diag.explanation));
+        self.diagnosis = Some(diag);
     }
 
     pub(super) fn resume_here(&mut self) {

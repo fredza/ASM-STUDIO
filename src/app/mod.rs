@@ -240,6 +240,9 @@ pub struct App {
     pub(super) icons: Option<Icons>,
     /// Dialogue « Ouvrir » natif en cours sur un thread de fond (sinon `None`).
     /// Sondé chaque frame → l'UI ne se fige pas pendant que le sélecteur est ouvert.
+    /// Diagnostic de la faute courante (plantage), s'il y en a un.
+    /// Recalculé au moment de la faute, effacé au (re)lancement.
+    pub(super) diagnosis: Option<crate::diagnostic::Diagnosis>,
     pub(super) updater: Updater,
     pub(super) pending_open: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
     /// Dialogue « Enregistrer sous » natif en cours sur un thread de fond.
@@ -305,6 +308,7 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
+            diagnosis: None,
             updater: Updater::new(),
             pending_open: None,
             pending_saveas: None,
@@ -576,6 +580,7 @@ impl eframe::App for App {
         self.settings_window(ctx);
         self.microscope_window(ctx);
         self.calculator_window(ctx);
+        self.diagnosis_window(ctx);
         self.update_window(ctx);
         self.updater.poll();
     }
@@ -620,6 +625,35 @@ mod tests {
 
     /// Vérifie que la logique timeline (head-follow + clamp min/max) est correcte,
     /// indépendamment du rendu egui.
+    /// Un plantage doit produire un diagnostic affichable, et la fenêtre doit se
+    /// rendre sans paniquer. C'est le remplacement de l'ancien « Terminé (signal) ».
+    #[test]
+    fn crash_produces_renderable_diagnosis() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/crash-test.asm");
+        app.out_dir = PathBuf::from("build/crash");
+        app.source = "section .text\n global _start\n_start:\n xor rax, rax\n \
+                       mov rbx, [rax]\n mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+
+        app.launch();
+        assert!(app.dbg.is_some(), "le programme doit être lancé");
+        for _ in 0..6 {
+            app.step();
+        }
+
+        let diag = app.diagnosis.as_ref().expect("un diagnostic doit être produit");
+        assert_eq!(diag.cause, crate::diagnostic::Cause::NullPointer);
+        assert!(!diag.title.is_empty() && !diag.hint.is_empty());
+        // La barre d'état ne dit plus juste « signal ».
+        assert!(app.status.contains(&diag.title), "statut = {}", app.status);
+
+        // La fenêtre se rend sans paniquer.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.diagnosis_window(ctx));
+        assert!(app.diagnosis.is_some(), "la fenêtre reste ouverte tant qu'on ne ferme pas");
+    }
+
     #[test]
     fn timeline_view_index_clamps_and_follows_head() {
         let mut app = App::new();

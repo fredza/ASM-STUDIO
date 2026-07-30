@@ -128,6 +128,40 @@ pub enum RunState {
     Exited(i32),
     /// Tué par un signal.
     Signaled,
+    /// Arrêté par une faute matérielle (SIGSEGV, SIGFPE, SIGILL, SIGBUS).
+    ///
+    /// L'exécution ne peut pas reprendre : réinjecter le signal tuerait le
+    /// processus, le supprimer ferait refauter la même instruction en boucle
+    /// (c'est exactement ce que faisait l'ancien code — RIP restait figé et
+    /// l'élève ne voyait rien du tout).
+    Faulted(Fault),
+}
+
+/// Une faute matérielle capturée au moment où elle survient, avec le contexte
+/// nécessaire pour l'expliquer à l'élève.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Fault {
+    /// Signal reçu (`SIGSEGV`, `SIGFPE`, `SIGILL`, `SIGBUS`).
+    pub signal: nix::sys::signal::Signal,
+    /// Adresse qui a provoqué la faute (`siginfo_t::si_addr`).
+    /// `None` si le noyau ne l'a pas renseignée.
+    pub addr: Option<u64>,
+    /// RIP de l'instruction fautive.
+    pub rip: u64,
+}
+
+impl Fault {
+    /// Nom court du signal, tel qu'affiché à l'élève.
+    pub fn signal_name(&self) -> &'static str {
+        use nix::sys::signal::Signal::*;
+        match self.signal {
+            SIGSEGV => "SIGSEGV",
+            SIGFPE => "SIGFPE",
+            SIGILL => "SIGILL",
+            SIGBUS => "SIGBUS",
+            _ => "signal",
+        }
+    }
 }
 
 /// Nombre de mots de pile capturés dans chaque snapshot (à partir de RSP).
@@ -248,6 +282,21 @@ impl Debugger {
             WaitStatus::Signaled(_, _, _) => {
                 self.state = RunState::Signaled;
             }
+            // Arrêt sur livraison de signal. SIGTRAP = fin normale du
+            // single-step ; tout le reste est une faute matérielle qu'il faut
+            // capturer AVANT de retenter, sinon l'instruction refaute sans fin.
+            WaitStatus::Stopped(_, sig) if is_fault(sig) => {
+                let regs = read_regs(self.child)?;
+                // Le snapshot de l'instant de la faute est conservé : l'élève
+                // doit pouvoir inspecter les registres qui l'ont causée.
+                let snap = snapshot_of(self.child, &regs);
+                self.history.push(snap);
+                self.state = RunState::Faulted(Fault {
+                    signal: sig,
+                    addr: fault_addr(self.child),
+                    rip: regs.rip,
+                });
+            }
             _ => {
                 let regs = read_regs(self.child)?;
                 let snap = snapshot_of(self.child, &regs);
@@ -255,6 +304,14 @@ impl Debugger {
             }
         }
         Ok(())
+    }
+
+    /// Faute matérielle en cours, si l'exécution s'est arrêtée dessus.
+    pub fn fault(&self) -> Option<Fault> {
+        match self.state {
+            RunState::Faulted(f) => Some(f),
+            _ => None,
+        }
     }
 
     /// Snapshot de tête (état courant).
@@ -410,6 +467,25 @@ impl Drop for Debugger {
             let _ = waitpid(self.child, None);
         }
     }
+}
+
+/// Vrai si ce signal traduit une faute matérielle (et non la fin normale d'un
+/// single-step, signalée par `SIGTRAP`).
+fn is_fault(sig: nix::sys::signal::Signal) -> bool {
+    use nix::sys::signal::Signal::*;
+    matches!(sig, SIGSEGV | SIGFPE | SIGILL | SIGBUS)
+}
+
+/// Adresse fautive (`siginfo_t::si_addr`) via `PTRACE_GETSIGINFO`.
+///
+/// C'est la seule source fiable : pour un déréférencement, RIP donne
+/// l'instruction, mais seul `si_addr` donne l'adresse *visée*.
+fn fault_addr(pid: Pid) -> Option<u64> {
+    let info = ptrace::getsiginfo(pid).ok()?;
+    // si_addr vit dans une union ; sur Linux/x86-64 il occupe le premier champ
+    // du variant _sigfault, aligné après si_signo/si_errno/si_code.
+    let addr = unsafe { info.si_addr() } as u64;
+    Some(addr)
 }
 
 fn read_regs(pid: Pid) -> Result<Registers, String> {

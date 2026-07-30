@@ -6,7 +6,7 @@ use crate::i18n;
 use crate::syscall;
 
 use super::{
-    App, CHANGED, PUSH_COL, POP_COL,
+    App, ACTION, CHANGED, FALSE_COL, PUSH_COL, POP_COL,
     micro_stack, micro_static_flags,
     calc_parse, calc_format,
 };
@@ -574,6 +574,133 @@ impl App {
     }
 
     // ---------- Fenêtre de mise à jour ----------
+
+    /// Fenêtre de diagnostic de plantage : ce que l'élève voit à la place de
+    /// l'ancien « Terminé (signal) ». Cause nommée, explication, piste de
+    /// correction, et le contexte technique replié pour qui veut creuser.
+    pub(super) fn diagnosis_window(&mut self, ctx: &egui::Context) {
+        let Some(diag) = self.diagnosis.clone() else { return };
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+
+        let mut open = true;
+        let mut goto_line = false;
+        let mut close = false;
+        egui::Window::new(tr("🛑 Le programme a planté", "🛑 The program crashed", "🛑 El programa falló"))
+            .collapsible(false)
+            .resizable(true)
+            .default_width(520.0)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
+            .open(&mut open)
+            .show(ctx, |ui| {
+                // Bandeau de cause, en rouge.
+                egui::Frame::default()
+                    .fill(FALSE_COL.linear_multiply(0.16))
+                    .stroke(egui::Stroke::new(1.0_f32, FALSE_COL))
+                    .rounding(egui::Rounding::same(5.0))
+                    .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(&diag.title).size(15.0).strong().color(FALSE_COL));
+                    });
+                ui.add_space(8.0);
+
+                // Explication : le cœur pédagogique.
+                super::card(ui, |ui| {
+                    ui.label(RichText::new(&diag.explanation).size(13.0));
+                });
+                ui.add_space(8.0);
+
+                // Piste de correction.
+                ui.label(RichText::new(tr("💡 Comment corriger", "💡 How to fix it", "💡 Cómo corregirlo")).strong().color(ACTION));
+                ui.add_space(3.0);
+                egui::Frame::default()
+                    .fill(ACTION.linear_multiply(0.12))
+                    .rounding(egui::Rounding::same(5.0))
+                    .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(&diag.hint).size(13.0));
+                    });
+                ui.add_space(8.0);
+
+                // Aller à la ligne fautive, quand le mapping la connaît.
+                if let Some(line) = diag.line {
+                    if ui
+                        .button(RichText::new(format!(
+                            "→ {} {line}",
+                            tr("Voir la ligne", "Go to line", "Ver la línea")
+                        )))
+                        .clicked()
+                    {
+                        goto_line = true;
+                    }
+                    ui.add_space(4.0);
+                }
+
+                // Contexte technique, replié : utile mais secondaire.
+                egui::CollapsingHeader::new(
+                    RichText::new(tr("Détails techniques", "Technical details", "Detalles técnicos")).small(),
+                )
+                .default_open(false)
+                .show(ui, |ui| {
+                    let hdr = self.c_header();
+                    egui::Grid::new("diag_grid").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
+                        let mut row = |k: &str, v: String| {
+                            ui.label(RichText::new(k).small().color(hdr));
+                            ui.label(RichText::new(v).monospace().small());
+                            ui.end_row();
+                        };
+                        if let Some(f) = self.dbg.as_ref().and_then(|d| d.fault()) {
+                            row(tr("Signal", "Signal", "Señal"), f.signal_name().to_string());
+                            row("RIP", format!("0x{:016X}", f.rip));
+                        }
+                        match diag.addr {
+                            Some(a) => row(tr("Adresse fautive", "Faulting address", "Dirección fallida"), format!("0x{a:016X}")),
+                            None => row(tr("Adresse fautive", "Faulting address", "Dirección fallida"), "—".into()),
+                        }
+                        row(
+                            tr("Région", "Region", "Región"),
+                            diag.region.map(|k| k.label().to_string()).unwrap_or_else(|| {
+                                tr("non mappée", "unmapped", "no mapeada").to_string()
+                            }),
+                        );
+                    });
+                });
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(tr(
+                            "La timeline s'est arrêtée sur la faute : tu peux remonter en arrière \
+                             pour voir d'où vient la valeur fautive.",
+                            "The timeline stopped on the fault: you can step back to see where the \
+                             bad value came from.",
+                            "La línea de tiempo se detuvo en el fallo: puedes retroceder para ver \
+                             de dónde viene el valor.",
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.vertical_centered(|ui| {
+                    if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if goto_line {
+            // Bascule sur l'éditeur : la ligne est déjà surlignée par le suivi RIP.
+            self.tab = super::Tab::Editor;
+        }
+        if !open || close {
+            self.diagnosis = None;
+        }
+    }
 
     pub(super) fn update_window(&mut self, ctx: &egui::Context) {
         use crate::updater::UpdateState;

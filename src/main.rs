@@ -1,6 +1,7 @@
 mod app;
 mod assemble;
 mod debugger;
+mod diagnostic;
 mod disasm;
 mod explain;
 mod i18n;

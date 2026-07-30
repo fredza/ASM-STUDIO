@@ -368,6 +368,12 @@ impl App {
                         RunState::Signaled => {
                             ui.colored_label(FALSE_COL, RichText::new(tr("✘ Signal", "✘ Signal", "✘ Señal")).strong());
                         }
+                        RunState::Faulted(f) => {
+                            ui.colored_label(
+                                FALSE_COL,
+                                RichText::new(format!("✘ {}", f.signal_name())).strong(),
+                            );
+                        }
                         RunState::Stopped => {
                             ui.colored_label(FLAG_OFF, format!("○ {}", tr("Arrêté", "Stopped", "Detenido")));
                         }
