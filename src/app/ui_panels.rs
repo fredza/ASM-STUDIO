@@ -545,18 +545,25 @@ impl App {
             return;
         }
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(self.lang, fr, en, es);
-        egui::ScrollArea::vertical().id_salt("callstack_scroll").auto_shrink([false, false]).show(ui, |ui| {
+        // Défilement sur les deux axes, comme SYSCALLS : une frame s'écrit
+        // « #2  0x004000B5  (courant) » et dépasse vite une colonne étroite.
+        // `.extend()` empêche le repli du texte, sans quoi la barre horizontale
+        // n'aurait rien à faire défiler.
+        egui::ScrollArea::both().id_salt("callstack_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            let line = |ui: &mut egui::Ui, txt: RichText| {
+                ui.add(egui::Label::new(txt).extend());
+            };
             // Frame courante en haut (RIP), puis les retours empilés.
             let mut depth = self.call_stack.len();
             if let Some(rip) = self.view_rip() {
-                ui.label(RichText::new(format!("#{depth}  0x{rip:08X}  {}", tr("(courant)", "(current)", "(actual)"))).monospace().color(CHANGED));
+                line(ui, RichText::new(format!("#{depth}  0x{rip:08X}  {}", tr("(courant)", "(current)", "(actual)"))).monospace().color(CHANGED));
             }
             for addr in self.call_stack.iter().rev() {
                 depth = depth.saturating_sub(1);
-                ui.label(RichText::new(format!("#{depth}  0x{addr:08X}")).monospace().color(self.c_addr()));
+                line(ui, RichText::new(format!("#{depth}  0x{addr:08X}")).monospace().color(self.c_addr()));
             }
             if self.call_stack.is_empty() {
-                ui.weak(tr("(aucun appel en cours)", "(no active call)", "(ninguna llamada activa)"));
+                line(ui, RichText::new(tr("(aucun appel en cours)", "(no active call)", "(ninguna llamada activa)")).weak());
             }
         });
     }
@@ -866,6 +873,53 @@ _start:
         let _ = ctx.run(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.set_max_width(180.0);
+                app.syscalls_ui(ui);
+            });
+        });
+    }
+
+    /// CALL STACK doit lui aussi défiler horizontalement : une frame s'écrit
+    /// « #2  0x004000B5  (courant) » et dépasse une colonne étroite. On vérifie
+    /// que la pile d'appels est bien peuplée et que le rendu tient dans 150 px.
+    #[test]
+    fn callstack_panel_renders_in_a_narrow_column() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/cs-test.asm");
+        app.out_dir = PathBuf::from("build/cs");
+        // Deux niveaux d'appel imbriqués : la pile a de la profondeur à montrer.
+        app.source = "\
+section .text
+    global _start
+_start:
+    call niveau1
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+niveau1:
+    call niveau2
+    ret
+niveau2:
+    mov rax, 1
+    ret
+"
+        .to_string();
+
+        app.launch();
+        assert!(app.dbg.is_some(), "programme lancé");
+        // Avance jusqu'à être au plus profond des appels.
+        let mut deepest = 0;
+        for _ in 0..12 {
+            app.step();
+            deepest = deepest.max(app.call_stack.len());
+        }
+        assert!(deepest >= 2, "deux appels imbriqués attendus, vu {deepest}");
+
+        // Rendu headless des DEUX panneaux dans une colonne étroite.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_max_width(150.0);
+                app.callstack_ui(ui);
                 app.syscalls_ui(ui);
             });
         });
