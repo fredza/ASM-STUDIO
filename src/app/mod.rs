@@ -21,6 +21,7 @@ mod ui_chrome;
 mod ui_windows;
 mod ui_panels;
 mod ui_center;
+mod pedagogy;
 
 use crate::updater::Updater;
 
@@ -58,42 +59,6 @@ pub(super) fn changed_color(flash: Option<f32>) -> Color32 {
     changed_color2(flash, CHANGED)
 }
 
-/// Nombre de clignotements pendant la durée de l'animation pédagogique.
-pub(super) const BLINK_COUNT: f32 = 3.0;
-/// Durée du clignotement pédagogique (plus long que `FLASH_DUR` pour être vu).
-pub(super) const BLINK_DUR: f64 = 1.4;
-
-/// Onde de clignotement : `1.0` au pic lumineux, `0.0` au creux, sur
-/// `BLINK_COUNT` oscillations réparties sur `[0,1]`, atténuées vers la fin
-/// (le clignotement s'estompe au lieu de s'arrêter net).
-pub(super) fn blink_wave(p: f32) -> f32 {
-    let osc = (p * BLINK_COUNT * std::f32::consts::TAU).cos();
-    let up = (1.0 - osc) * 0.5; // 0 → 1 → 0 …
-    up * (1.0 - p) // enveloppe décroissante
-}
-
-/// Couleurs des régions mémoire (vue unifiée) — un code couleur stable que
-/// l'élève peut mémoriser : bleu = code, violet = données, vert = tas, orange = pile.
-pub(super) fn region_color(kind: crate::debugger::RegionKind) -> Color32 {
-    use crate::debugger::RegionKind as K;
-    match kind {
-        K::Code => Color32::from_rgb(0x4C, 0x8B, 0xF5),
-        K::Rodata => Color32::from_rgb(0x5A, 0xA6, 0xB8),
-        K::Data => Color32::from_rgb(0xA0, 0x72, 0xD8),
-        K::Heap => Color32::from_rgb(0x5F, 0xBF, 0x69),
-        K::Stack => Color32::from_rgb(0xE8, 0x8A, 0x2E),
-    }
-}
-
-/// Palette cyclique pour distinguer les fils registre→mémoire les uns des autres.
-pub(super) const WIRE_COLORS: [Color32; 6] = [
-    Color32::from_rgb(0x6E, 0xB4, 0xE8),
-    Color32::from_rgb(0xF5, 0xA6, 0x23),
-    Color32::from_rgb(0x5F, 0xBF, 0x69),
-    Color32::from_rgb(0xD9, 0x7B, 0xD9),
-    Color32::from_rgb(0x5A, 0xD0, 0xC8),
-    Color32::from_rgb(0xE0, 0x6C, 0x6C),
-];
 
 /// Comme [`changed_color`] mais vers une couleur de base arbitraire.
 pub(super) fn changed_color2(flash: Option<f32>, base: Color32) -> Color32 {
@@ -415,26 +380,6 @@ impl App {
         }
         ui.ctx().request_repaint();
         Some((elapsed / FLASH_DUR) as f32)
-    }
-
-    /// Progression du clignotement pédagogique : `Some(0.0..=1.0)` tant que
-    /// l'animation enrichie tourne. `None` si l'option est désactivée.
-    /// Plus long que `flash_progress` pour laisser le temps de voir les 3 pulses.
-    pub(super) fn blink_progress(&self, ui: &egui::Ui) -> Option<f32> {
-        if !self.animate || !self.pedagogy_anim {
-            return None;
-        }
-        let elapsed = ui.input(|i| i.time) - self.flash_time;
-        if !(0.0..BLINK_DUR).contains(&elapsed) {
-            return None;
-        }
-        ui.ctx().request_repaint();
-        Some((elapsed / BLINK_DUR) as f32)
-    }
-
-    /// Intensité du clignotement (0 = repos, 1 = pic lumineux) à cet instant.
-    pub(super) fn blink_intensity(&self, ui: &egui::Ui) -> f32 {
-        self.blink_progress(ui).map(blink_wave).unwrap_or(0.0)
     }
 
     pub(super) fn snap(&self) -> Option<&Snapshot> {
@@ -1114,30 +1059,6 @@ mod tests {
     }
 
     /// Le clignotement pédagogique doit vraiment osciller (pas un simple fondu)
-    /// et s'éteindre à la fin, sans jamais sortir de [0,1].
-    #[test]
-    fn blink_wave_oscillates_and_fades_out() {
-        assert!(blink_wave(0.0).abs() < 1e-3, "démarre au creux");
-        assert!(blink_wave(1.0).abs() < 1e-3, "se termine éteint");
-        // Toujours dans [0,1] sur tout l'intervalle.
-        for i in 0..=100 {
-            let v = blink_wave(i as f32 / 100.0);
-            assert!((0.0..=1.0).contains(&v), "blink_wave({i}%) = {v} hors bornes");
-        }
-        // Compte les pics : autant que BLINK_COUNT (c'est ce qui rend le
-        // clignotement visible plutôt qu'un fondu unique).
-        let samples: Vec<f32> = (0..600).map(|i| blink_wave(i as f32 / 600.0)).collect();
-        let peaks = samples
-            .windows(3)
-            .filter(|w| w[1] > w[0] && w[1] >= w[2] && w[1] > 0.05)
-            .count();
-        assert_eq!(peaks, BLINK_COUNT as usize, "il doit y avoir {BLINK_COUNT} pulses");
-        // L'enveloppe décroît : le premier pic est plus fort que le dernier.
-        let first = samples[..200].iter().cloned().fold(0.0_f32, f32::max);
-        let last = samples[400..].iter().cloned().fold(0.0_f32, f32::max);
-        assert!(first > last, "l'intensité doit décroître ({first} > {last})");
-    }
-
     #[test]
     fn parse_hex_bytes_accepts_spaced_and_contiguous() {
         assert_eq!(parse_hex_bytes("48 65 6C"), Some(vec![0x48, 0x65, 0x6C]));
