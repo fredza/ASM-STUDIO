@@ -220,6 +220,314 @@ pub fn explain(mnemonic: &str, operands: &str, flags: Flags, lang: Lang) -> Expl
             t("Équivaut à `mov rsp, rbp ; pop rbp` : démonte le cadre de pile de la fonction.", "Equivalent to `mov rsp, rbp ; pop rbp`: tears down the function's stack frame.", "Equivale a `mov rsp, rbp ; pop rbp`: desmonta el marco de pila de la función.").to_string(),
             vec![],
         ),
+        "div" => (
+            t("Arithmétique", "Arithmetic", "Aritmética"),
+            t(
+                "Division NON signée de RDX:RAX (128 bits) par l'opérande : quotient dans RAX, \
+                 reste dans RDX. RDX doit être remis à zéro avant (`xor rdx, rdx`), sinon le \
+                 dividende est faussé et le quotient déborde — le processeur lève alors une \
+                 exception, comme pour une division par zéro.",
+                "UNSIGNED division of RDX:RAX (128 bits) by the operand: quotient in RAX, \
+                 remainder in RDX. RDX must be cleared first (`xor rdx, rdx`), otherwise the \
+                 dividend is wrong and the quotient overflows — the CPU then raises an \
+                 exception, just like a division by zero.",
+                "División SIN SIGNO de RDX:RAX (128 bits) por el operando: cociente en RAX, \
+                 resto en RDX. RDX debe ponerse a cero antes (`xor rdx, rdx`), si no el \
+                 dividendo es incorrecto y el cociente desborda — la CPU lanza entonces una \
+                 excepción, como en una división por cero.",
+            ).to_string(),
+            vec![],
+        ),
+        "idiv" => (
+            t("Arithmétique", "Arithmetic", "Aritmética"),
+            t(
+                "Division SIGNÉE de RDX:RAX par l'opérande : quotient dans RAX, reste dans RDX. \
+                 Le dividende doit d'abord être étendu en signe avec `cqo` (et non `xor rdx, rdx`, \
+                 qui ne conviendrait qu'au non signé).",
+                "SIGNED division of RDX:RAX by the operand: quotient in RAX, remainder in RDX. \
+                 The dividend must first be sign-extended with `cqo` (not `xor rdx, rdx`, which \
+                 would only suit the unsigned case).",
+                "División CON SIGNO de RDX:RAX por el operando: cociente en RAX, resto en RDX. \
+                 El dividendo debe extenderse en signo con `cqo` (no `xor rdx, rdx`, que solo \
+                 valdría para el caso sin signo).",
+            ).to_string(),
+            vec![],
+        ),
+        "sar" => (
+            t("Décalage", "Shift", "Desplazamiento"),
+            t(
+                "Décalage arithmétique à droite : recopie le bit de signe à gauche, ce qui \
+                 préserve le signe. Diviser par 2 un nombre signé se fait avec `sar`, pas `shr` \
+                 (qui, lui, insère des zéros et transformerait −8 en un très grand positif).",
+                "Arithmetic right shift: replicates the sign bit on the left, preserving the \
+                 sign. Halving a signed number uses `sar`, not `shr` (which inserts zeros and \
+                 would turn −8 into a huge positive).",
+                "Desplazamiento aritmético a la derecha: replica el bit de signo a la izquierda, \
+                 preservando el signo. Dividir por 2 un número con signo usa `sar`, no `shr` \
+                 (que inserta ceros y convertiría −8 en un positivo enorme).",
+            ).to_string(),
+            vec!["CF", "OF", "SF", "ZF", "PF"],
+        ),
+        "rol" | "ror" => (
+            t("Décalage", "Shift", "Desplazamiento"),
+            t(
+                "Rotation des bits : ceux qui sortent d'un côté rentrent de l'autre. Aucun bit \
+                 n'est perdu, contrairement à un décalage.",
+                "Bit rotation: bits leaving one side re-enter on the other. No bit is lost, \
+                 unlike a shift.",
+                "Rotación de bits: los que salen por un lado entran por el otro. No se pierde \
+                 ningún bit, a diferencia de un desplazamiento.",
+            ).to_string(),
+            vec!["CF", "OF"],
+        ),
+        "rcl" | "rcr" => (
+            t("Décalage", "Shift", "Desplazamiento"),
+            t(
+                "Rotation à travers la retenue : CF participe au cycle comme un bit supplémentaire.",
+                "Rotate through carry: CF takes part in the cycle as an extra bit.",
+                "Rotación a través del acarreo: CF participa en el ciclo como un bit extra.",
+            ).to_string(),
+            vec!["CF", "OF"],
+        ),
+        "not" => (
+            t("Logique", "Logic", "Lógica"),
+            t(
+                "Inverse tous les bits (complément à un). Aucun flag modifié — contrairement à \
+                 `neg`, qui calcule l'opposé arithmétique.",
+                "Inverts every bit (one's complement). No flag modified — unlike `neg`, which \
+                 computes the arithmetic opposite.",
+                "Invierte todos los bits (complemento a uno). Sin flags modificados — a \
+                 diferencia de `neg`, que calcula el opuesto aritmético.",
+            ).to_string(),
+            vec![],
+        ),
+        "movzx" => (
+            t("Transfert", "Transfer", "Transferencia"),
+            t(
+                "Copie une valeur plus petite en complétant par des ZÉROS (extension non signée). \
+                 Sert à lire un octet ou un mot dans un registre 64 bits sans traîner d'anciens bits.",
+                "Copies a smaller value padding with ZEROS (unsigned extension). Used to read a \
+                 byte or word into a 64-bit register without dragging along old bits.",
+                "Copia un valor más pequeño rellenando con CEROS (extensión sin signo). Sirve \
+                 para leer un byte o palabra en un registro de 64 bits sin arrastrar bits viejos.",
+            ).to_string(),
+            vec![],
+        ),
+        "movsx" | "movsxd" => (
+            t("Transfert", "Transfer", "Transferencia"),
+            t(
+                "Copie une valeur plus petite en recopiant son bit de signe (extension signée). \
+                 −1 sur 8 bits (0xFF) devient −1 sur 64 bits, là où `movzx` donnerait 255.",
+                "Copies a smaller value replicating its sign bit (signed extension). −1 in 8 bits \
+                 (0xFF) becomes −1 in 64 bits, where `movzx` would give 255.",
+                "Copia un valor más pequeño replicando su bit de signo (extensión con signo). −1 \
+                 en 8 bits (0xFF) pasa a −1 en 64 bits, donde `movzx` daría 255.",
+            ).to_string(),
+            vec![],
+        ),
+        "cqo" | "cdq" | "cwd" | "cbw" | "cdqe" | "cwde" => (
+            t("Arithmétique", "Arithmetic", "Aritmética"),
+            t(
+                "Étend le signe du dividende avant une division signée : recopie le bit de signe \
+                 de RAX dans tout RDX. À placer systématiquement avant `idiv`.",
+                "Sign-extends the dividend before a signed division: replicates RAX's sign bit \
+                 across all of RDX. Always place it before `idiv`.",
+                "Extiende el signo del dividendo antes de una división con signo: replica el bit \
+                 de signo de RAX en todo RDX. Colócalo siempre antes de `idiv`.",
+            ).to_string(),
+            vec![],
+        ),
+        "adc" => (
+            t("Arithmétique", "Arithmetic", "Aritmética"),
+            t(
+                "Addition avec retenue : ajoute aussi CF. Sert à chaîner des additions sur plus \
+                 de 64 bits.",
+                "Add with carry: also adds CF. Used to chain additions beyond 64 bits.",
+                "Suma con acarreo: añade también CF. Sirve para encadenar sumas de más de 64 bits.",
+            ).to_string(),
+            vec!["CF", "OF", "SF", "ZF", "AF", "PF"],
+        ),
+        "sbb" => (
+            t("Arithmétique", "Arithmetic", "Aritmética"),
+            t(
+                "Soustraction avec emprunt : retranche aussi CF. Pendant de `adc` pour les \
+                 soustractions multi-mots.",
+                "Subtract with borrow: also subtracts CF. Counterpart of `adc` for multi-word \
+                 subtraction.",
+                "Resta con préstamo: resta también CF. Contraparte de `adc` para restas multi-palabra.",
+            ).to_string(),
+            vec!["CF", "OF", "SF", "ZF", "AF", "PF"],
+        ),
+        "xchg" => (
+            t("Transfert", "Transfer", "Transferencia"),
+            t(
+                "Échange le contenu des deux opérandes en une instruction. Sur une adresse \
+                 mémoire, l'opération est atomique — d'où son usage pour les verrous.",
+                "Swaps both operands' contents in one instruction. On a memory address the \
+                 operation is atomic — hence its use for locks.",
+                "Intercambia el contenido de ambos operandos en una instrucción. Sobre memoria \
+                 la operación es atómica — de ahí su uso para cerrojos.",
+            ).to_string(),
+            vec![],
+        ),
+        "bswap" => (
+            t("Transfert", "Transfer", "Transferencia"),
+            t(
+                "Inverse l'ordre des octets du registre : convertit entre petit-boutisme et \
+                 gros-boutisme (utile pour les formats réseau).",
+                "Reverses the register's byte order: converts between little-endian and \
+                 big-endian (useful for network formats).",
+                "Invierte el orden de bytes del registro: convierte entre little-endian y \
+                 big-endian (útil para formatos de red).",
+            ).to_string(),
+            vec![],
+        ),
+        "loop" | "loope" | "loopz" | "loopne" | "loopnz" => (
+            t("Boucle", "Loop", "Bucle"),
+            t(
+                "Décrémente RCX puis saute si RCX ≠ 0. Compact, mais moins rapide qu'un \
+                 `dec` suivi d'un `jnz` sur les processeurs modernes.",
+                "Decrements RCX then jumps if RCX ≠ 0. Compact, but slower than a `dec` \
+                 followed by `jnz` on modern CPUs.",
+                "Decrementa RCX y luego salta si RCX ≠ 0. Compacto, pero más lento que un `dec` \
+                 seguido de `jnz` en CPU modernas.",
+            ).to_string(),
+            vec![],
+        ),
+        "bt" | "bts" | "btr" | "btc" => (
+            t("Logique", "Logic", "Lógica"),
+            t(
+                "Teste un bit précis et le recopie dans CF ; les variantes le mettent à 1 (bts), \
+                 à 0 (btr) ou l'inversent (btc).",
+                "Tests a specific bit and copies it into CF; variants set it (bts), clear it \
+                 (btr) or flip it (btc).",
+                "Prueba un bit concreto y lo copia en CF; las variantes lo ponen a 1 (bts), a 0 \
+                 (btr) o lo invierten (btc).",
+            ).to_string(),
+            vec!["CF"],
+        ),
+        "bsf" | "bsr" | "tzcnt" | "lzcnt" => (
+            t("Logique", "Logic", "Lógica"),
+            t(
+                "Cherche la position du premier bit à 1 (depuis le bas pour bsf/tzcnt, depuis le \
+                 haut pour bsr/lzcnt).",
+                "Finds the position of the first set bit (from the bottom for bsf/tzcnt, from the \
+                 top for bsr/lzcnt).",
+                "Busca la posición del primer bit a 1 (desde abajo para bsf/tzcnt, desde arriba \
+                 para bsr/lzcnt).",
+            ).to_string(),
+            vec!["ZF"],
+        ),
+        "popcnt" => (
+            t("Logique", "Logic", "Lógica"),
+            t(
+                "Compte le nombre de bits à 1 dans l'opérande.",
+                "Counts the number of set bits in the operand.",
+                "Cuenta el número de bits a 1 en el operando.",
+            ).to_string(),
+            vec!["ZF"],
+        ),
+        "enter" => (
+            t("Pile", "Stack", "Pila"),
+            t(
+                "Monte le cadre de pile d'une fonction (équivaut à `push rbp ; mov rbp, rsp` plus \
+                 une réservation). Pendant de `leave`.",
+                "Sets up a function's stack frame (equivalent to `push rbp ; mov rbp, rsp` plus a \
+                 reservation). Counterpart of `leave`.",
+                "Monta el marco de pila de una función (equivale a `push rbp ; mov rbp, rsp` más \
+                 una reserva). Contraparte de `leave`.",
+            ).to_string(),
+            vec![],
+        ),
+        "pushf" | "pushfq" | "popf" | "popfq" => (
+            t("Pile", "Stack", "Pila"),
+            t(
+                "Empile ou dépile le registre des flags (RFLAGS) : permet de sauvegarder puis de \
+                 restaurer l'état des comparaisons.",
+                "Pushes or pops the flags register (RFLAGS): lets you save and restore the state \
+                 of comparisons.",
+                "Apila o desapila el registro de flags (RFLAGS): permite guardar y restaurar el \
+                 estado de las comparaciones.",
+            ).to_string(),
+            vec![],
+        ),
+        "cld" | "std" => (
+            t("Chaînes", "String", "Cadenas"),
+            t(
+                "Fixe le sens de parcours des instructions de chaîne : `cld` avance (DF = 0), \
+                 `std` recule (DF = 1).",
+                "Sets the direction for string instructions: `cld` forward (DF = 0), `std` \
+                 backward (DF = 1).",
+                "Fija el sentido de las instrucciones de cadena: `cld` avanza (DF = 0), `std` \
+                 retrocede (DF = 1).",
+            ).to_string(),
+            vec![],
+        ),
+        "endbr64" | "endbr32" => (
+            t("Divers", "Misc", "Miscelánea"),
+            t(
+                "Marque une cible de saut indirect autorisée (protection CET du processeur). \
+                 Ne fait rien d'autre : à traiter comme un `nop`.",
+                "Marks a permitted indirect-branch target (CPU CET protection). Does nothing \
+                 else: treat it as a `nop`.",
+                "Marca un destino de salto indirecto permitido (protección CET de la CPU). No \
+                 hace nada más: trátalo como un `nop`.",
+            ).to_string(),
+            vec![],
+        ),
+        "int3" | "int" | "ud2" | "hlt" => (
+            t("Système", "System", "Sistema"),
+            t(
+                "Interrompt l'exécution : point d'arrêt (`int3`), instruction volontairement \
+                 invalide (`ud2`) ou arrêt du processeur (`hlt`).",
+                "Interrupts execution: breakpoint (`int3`), deliberately invalid instruction \
+                 (`ud2`) or CPU halt (`hlt`).",
+                "Interrumpe la ejecución: punto de parada (`int3`), instrucción inválida a \
+                 propósito (`ud2`) o parada de la CPU (`hlt`).",
+            ).to_string(),
+            vec![],
+        ),
+        // Familles reconnues par préfixe : setcc, cmovcc, et les opérations de chaîne.
+        _ if m.starts_with("set") && m.len() <= 6 => (
+            t("Comparaison", "Comparison", "Comparación"),
+            t(
+                "Écrit 1 dans un octet si la condition est vraie, 0 sinon. Convertit un résultat \
+                 de comparaison en valeur, sans saut.",
+                "Writes 1 into a byte if the condition is true, 0 otherwise. Turns a comparison \
+                 result into a value, without branching.",
+                "Escribe 1 en un byte si la condición es verdadera, 0 si no. Convierte un \
+                 resultado de comparación en valor, sin saltar.",
+            ).to_string(),
+            vec![],
+        ),
+        _ if m.starts_with("cmov") => (
+            t("Transfert", "Transfer", "Transferencia"),
+            t(
+                "Copie conditionnelle : la copie n'a lieu que si la condition est vraie. Évite un \
+                 saut, donc une éventuelle mauvaise prédiction de branchement.",
+                "Conditional move: the copy only happens if the condition is true. Avoids a \
+                 branch, and thus a possible misprediction.",
+                "Copia condicional: la copia solo ocurre si la condición es verdadera. Evita un \
+                 salto, y por tanto una posible predicción errónea.",
+            ).to_string(),
+            vec![],
+        ),
+        _ if matches!(
+            m.trim_end_matches(['b', 'w', 'd', 'q']),
+            "movs" | "stos" | "lods" | "scas" | "cmps"
+        ) =>
+        (
+            t("Chaînes", "String", "Cadenas"),
+            t(
+                "Opération de chaîne : travaille sur [RSI] et/ou [RDI] puis avance ces pointeurs \
+                 automatiquement (selon DF). Préfixée par `rep`, elle se répète RCX fois.",
+                "String operation: works on [RSI] and/or [RDI] then advances those pointers \
+                 automatically (per DF). Prefixed with `rep`, it repeats RCX times.",
+                "Operación de cadena: trabaja sobre [RSI] y/o [RDI] y luego avanza esos punteros \
+                 automáticamente (según DF). Con el prefijo `rep`, se repite RCX veces.",
+            ).to_string(),
+            vec![],
+        ),
         _ => (
             t("Inconnu", "Unknown", "Desconocido"),
             format!(
@@ -250,13 +558,28 @@ pub fn cycles_estimate(mnemonic: &str) -> &'static str {
         "nop" => "~0–1",
         "mov" | "movabs" | "lea" | "xor" | "or" | "and" | "add" | "sub" | "cmp" | "test"
         | "inc" | "dec" | "neg" | "not" | "shl" | "sal" | "shr" | "sar" => "~1",
-        "push" | "pop" | "jmp" => "~1–2",
+        "movzx" | "movsx" | "movsxd" | "cqo" | "cdq" | "cwd" | "cbw" | "cdqe" | "cwde"
+        | "adc" | "sbb" | "rol" | "ror" | "bswap" | "endbr64" => "~1",
+        "rcl" | "rcr" => "~2–3",
+        "cld" | "std" => "~2–4",
+        "int" | "int3" | "int1" | "ud2" | "hlt" => "≈ arrêt",
+        "push" | "pop" | "jmp" | "xchg" => "~1–2",
+        "bt" | "bts" | "btr" | "btc" | "bsf" | "bsr" | "tzcnt" | "lzcnt" | "popcnt" => "~1–3",
+        "loop" | "loope" | "loopz" | "loopne" | "loopnz" => "~2–5",
+        "enter" | "leave" | "pushfq" | "popfq" => "~2–5",
         "je" | "jne" | "jz" | "jnz" | "jg" | "jge" | "jl" | "jle" | "ja" | "jae" | "jb" | "jbe"
         | "js" | "jns" | "jo" | "jno" | "jp" | "jnp" => "~1–2 (0 si bien prédit)",
         "call" | "ret" => "~1–3",
         "imul" | "mul" => "~3–5",
         "div" | "idiv" => "~20–40",
         "syscall" => "~100+ (bascule noyau)",
+        m if m.starts_with("cmov") => "~1",
+        // Opérations de chaîne : coût par élément, multiplié par RCX avec `rep`.
+        m if matches!(
+            m.trim_end_matches(['b', 'w', 'd', 'q']),
+            "movs" | "stos" | "lods" | "scas" | "cmps"
+        ) => "~1–5 par élément",
+        m if m.starts_with("set") && m.len() <= 6 => "~1",
         _ => "≈ variable",
     }
 }
@@ -276,6 +599,21 @@ pub fn doc_url(mnemonic: &str) -> String {
         "movabs" => "mov",                          // pseudo-instruction NASM = MOV imm64
         "sal" | "sar" | "shl" | "shr" => "sal:sar:shl:shr",
         "rol" | "ror" | "rcl" | "rcr" => "rcl:rcr:rol:ror",
+        "movsx" | "movsxd" => "movsx:movsxd",
+        "cwd" | "cdq" | "cqo" => "cwd:cdq:cqo",
+        "cbw" | "cwde" | "cdqe" => "cbw:cwde:cdqe",
+        "pushf" | "pushfq" => "pushf:pushfd:pushfq",
+        "popf" | "popfq" => "popf:popfd:popfq",
+        "loop" | "loope" | "loopz" | "loopne" | "loopnz" => "loop:loopcc",
+        "int" | "int3" | "int1" => "intn:into:int3:int1",
+        // Familles conditionnelles et opérations de chaîne : une page par famille.
+        _ if m.starts_with("cmov") => "cmovcc",
+        _ if m.starts_with("set") && m.len() <= 6 => "setcc",
+        "movsb" | "movsw" | "movsq" => "movs:movsb:movsw:movsd:movsq",
+        "stos" | "stosb" | "stosw" | "stosd" | "stosq" => "stos:stosb:stosw:stosd:stosq",
+        "lods" | "lodsb" | "lodsw" | "lodsd" | "lodsq" => "lods:lodsb:lodsw:lodsd:lodsq",
+        "scas" | "scasb" | "scasw" | "scasd" | "scasq" => "scas:scasb:scasw:scasd:scasq",
+        "cmpsb" | "cmpsw" | "cmpsq" => "cmps:cmpsb:cmpsw:cmpsd:cmpsq",
         // Par défaut, le mnémonique EST le slug (couvre mov, add, sub, and, or,
         // xor, cmp, test, lea, push, pop, call, ret, inc, dec, neg, not, mul,
         // imul, div, idiv, nop, syscall, jmp…).
@@ -378,5 +716,101 @@ mod tests {
         let e = explain("cmp", "rax, rbx", Flags::default(), Lang::Fr);
         assert!(e.affects_flags.contains(&"ZF"));
         assert!(e.taken.is_none());
+    }
+
+    /// Le panneau INSTRUCTION ne doit jamais rester muet sur une instruction
+    /// courante : chaque famille doit avoir une explication et une catégorie
+    /// autres que « Inconnu ».
+    #[test]
+    fn common_instructions_are_all_covered() {
+        let mnemonics = [
+            // Transfert et adressage
+            "mov", "movabs", "lea", "movzx", "movsx", "movsxd", "xchg", "bswap",
+            // Pile
+            "push", "pop", "leave", "enter", "pushfq", "popfq",
+            // Arithmétique
+            "add", "sub", "imul", "mul", "div", "idiv", "inc", "dec", "neg",
+            "adc", "sbb", "cqo", "cdq", "cwd", "cbw", "cdqe",
+            // Logique et bits
+            "and", "or", "xor", "not", "test", "bt", "bts", "btr", "btc",
+            "bsf", "bsr", "popcnt", "tzcnt", "lzcnt",
+            // Décalages
+            "shl", "sal", "shr", "sar", "rol", "ror", "rcl", "rcr",
+            // Contrôle
+            "jmp", "call", "ret", "cmp", "loop", "loopne",
+            // Conditionnelles sans saut
+            "sete", "setne", "setl", "setge", "setz", "seta",
+            "cmove", "cmovne", "cmovl", "cmovge",
+            // Chaînes
+            "movsb", "stosb", "lodsb", "scasb", "cmpsb", "stosq",
+            // Système et divers
+            "syscall", "nop", "endbr64", "int3", "ud2", "hlt", "cld", "std",
+        ];
+        let flags = Flags::default();
+        for m in mnemonics {
+            let e = explain(m, "rax, rbx", flags, Lang::Fr);
+            assert_ne!(
+                e.category,
+                i18n::tr3(Lang::Fr, "Inconnu", "Unknown", "Desconocido"),
+                "« {m} » n'a pas d'explication"
+            );
+            assert!(!e.description.is_empty(), "« {m} » : description vide");
+            assert!(
+                !e.description.contains("non encore répertoriée"),
+                "« {m} » retombe sur le texte par défaut"
+            );
+            // Un ordre de grandeur de cycles doit être proposé.
+            assert_ne!(cycles_estimate(m), "≈ variable", "« {m} » : cycles non estimés");
+            // Et un lien de documentation plausible.
+            let url = doc_url(m);
+            assert!(url.starts_with("https://www.felixcloutier.com/x86/"), "{m} → {url}");
+        }
+    }
+
+    /// Les trois langues doivent produire un texte pour chaque famille.
+    #[test]
+    fn new_families_are_translated() {
+        for m in ["div", "sar", "movzx", "movsx", "cqo", "sete", "cmove", "stosb", "endbr64"] {
+            for lang in [Lang::Fr, Lang::En, Lang::Es] {
+                let e = explain(m, "", Flags::default(), lang);
+                assert!(!e.description.is_empty(), "{m} vide en {lang:?}");
+                assert!(
+                    !e.description.contains("non encore répertoriée")
+                        && !e.description.contains("not catalogued")
+                        && !e.description.contains("no catalogada"),
+                    "{m} non traduit en {lang:?}"
+                );
+            }
+        }
+    }
+
+    /// La distinction shr/sar est un piège classique : les deux explications
+    /// doivent différer et sar doit parler du signe.
+    #[test]
+    fn shr_and_sar_are_distinguished() {
+        let shr = explain("shr", "rax, 1", Flags::default(), Lang::Fr);
+        let sar = explain("sar", "rax, 1", Flags::default(), Lang::Fr);
+        assert_ne!(shr.description, sar.description);
+        assert!(sar.description.contains("signe"), "sar doit expliquer le signe");
+    }
+
+    /// div (non signé) et idiv (signé) ne doivent pas donner le même conseil
+    /// d'extension du dividende — c'est la cause d'erreur la plus fréquente.
+    #[test]
+    fn div_and_idiv_give_different_advice() {
+        let div = explain("div", "rcx", Flags::default(), Lang::Fr);
+        let idiv = explain("idiv", "rcx", Flags::default(), Lang::Fr);
+        assert!(div.description.contains("xor rdx, rdx"), "div → mise à zéro de RDX");
+        assert!(idiv.description.contains("cqo"), "idiv → extension de signe");
+        assert_ne!(div.description, idiv.description);
+    }
+
+    /// Un mnémonique vraiment inconnu doit encore retomber proprement sur le
+    /// texte par défaut, sans paniquer.
+    #[test]
+    fn unknown_mnemonic_still_falls_back() {
+        let e = explain("vfmadd231pd", "", Flags::default(), Lang::Fr);
+        assert_eq!(e.category, i18n::tr3(Lang::Fr, "Inconnu", "Unknown", "Desconocido"));
+        assert!(e.description.contains("vfmadd231pd"));
     }
 }
