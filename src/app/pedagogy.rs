@@ -57,6 +57,29 @@ pub(super) const WIRE_COLORS: [Color32; 6] = [
     Color32::from_rgb(0xE0, 0x6C, 0x6C),
 ];
 
+// ---------- Géométrie du schéma mémoire ----------
+
+/// Hauteur minimale d'une voie de région : il faut loger le titre, la ligne de
+/// bornes d'adresses et la mini-carte sans qu'ils se chevauchent.
+pub(super) const LANE_MIN_H: f32 = 64.0;
+/// Décalages verticaux du contenu d'une voie, depuis son bord haut.
+pub(super) const LANE_TITLE_Y: f32 = 6.0;
+pub(super) const LANE_BOUNDS_Y: f32 = 23.0;
+/// Ligne des octets pointés, affichée quand un seul fil vise la voie.
+pub(super) const LANE_CONTENT_Y: f32 = 39.0;
+/// Hauteur de la mini-carte et sa marge par rapport au bas de la voie.
+pub(super) const LANE_TRACK_H: f32 = 7.0;
+pub(super) const LANE_TRACK_MARGIN: f32 = 9.0;
+
+/// Hauteur d'une voie selon le nombre de registres qui la visent.
+///
+/// Le plancher ne dépend PAS de ce nombre : `.rodata` et `.data/.bss` ne sont
+/// visés par aucun registre dans un programme simple, et les écraser les rendait
+/// illisibles alors que l'élève doit justement voir que ces sections existent.
+pub(super) fn lane_height(pointers: usize) -> f32 {
+    LANE_MIN_H + 15.0 * pointers.min(3) as f32
+}
+
 // ---------- Helpers de peinture ----------
 
 /// Couleur du fil du n-ième registre (palette cyclique).
@@ -265,10 +288,7 @@ impl App {
                 let lane_hits: Vec<usize> = (0..regions.len())
                     .map(|i| wires.iter().filter(|w| w.region == Some(i)).count())
                     .collect();
-                let lane_h: Vec<f32> = lane_hits
-                    .iter()
-                    .map(|&n| if n > 0 { 54.0 + 16.0 * (n.min(3) as f32) } else { 30.0 })
-                    .collect();
+                let lane_h: Vec<f32> = lane_hits.iter().map(|&n| lane_height(n)).collect();
                 let lanes_total: f32 = lane_h.iter().sum::<f32>() + lane_h.len() as f32 * LANE_GAP;
 
                 let canvas_h = reg_h.max(lanes_total) + 8.0;
@@ -312,17 +332,23 @@ impl App {
                     let rect = lane_rects[i];
                     let col = region_color(region.kind);
                     let targeted = lane_hits[i] > 0;
-                    // Un fil isolé estompe les voies non visées par ce registre.
-                    let dim = match hovered {
-                        Some(h) => wires[h].region != Some(i),
-                        None => !targeted,
+                    // L'estompage sert UNIQUEMENT à isoler le fil survolé. Hors
+                    // survol, toutes les régions restent lisibles : une région
+                    // que personne ne vise fait quand même partie de la carte.
+                    let dim = hovered.is_some_and(|h| wires[h].region != Some(i));
+                    let a = if dim {
+                        0.08
+                    } else if targeted {
+                        0.28
+                    } else {
+                        0.18
                     };
-                    let a = if dim { 0.10 } else { 0.26 };
                     painter.rect_filled(rect, 5.0, col.linear_multiply(a));
+                    let stroke_w = if dim { 0.7_f32 } else if targeted { 1.6 } else { 1.1 };
                     painter.rect_stroke(
                         rect,
                         5.0,
-                        egui::Stroke::new(if dim { 0.7_f32 } else { 1.4 }, col.gamma_multiply(if dim { 0.5 } else { 1.0 })),
+                        egui::Stroke::new(stroke_w, col.gamma_multiply(if dim { 0.5 } else { 1.0 })),
                     );
                     // Bande d'accent à gauche de la voie.
                     painter.rect_filled(
@@ -334,15 +360,15 @@ impl App {
                     let txt_c = if dim { weak_col } else { col };
                     // Titre : nom de la région + taille.
                     painter.text(
-                        rect.left_top() + egui::vec2(10.0, 4.0),
+                        rect.left_top() + egui::vec2(10.0, LANE_TITLE_Y),
                         egui::Align2::LEFT_TOP,
                         format!("{}  ({})", region.kind.label(), human_size(region.size(), lang)),
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(12.5),
                         txt_c,
                     );
                     // Bornes d'adresses + permissions.
                     painter.text(
-                        rect.left_top() + egui::vec2(10.0, 19.0),
+                        rect.left_top() + egui::vec2(10.0, LANE_BOUNDS_Y),
                         egui::Align2::LEFT_TOP,
                         format!("0x{:X} – 0x{:X}   {}", region.start, region.end, region.perms),
                         egui::FontId::monospace(9.5),
@@ -351,8 +377,8 @@ impl App {
 
                     // Mini-carte : position relative des pointeurs dans la région.
                     let track = egui::Rect::from_min_size(
-                        rect.left_bottom() + egui::vec2(10.0, -14.0),
-                        egui::vec2(rect.width() - 20.0, 6.0),
+                        rect.left_bottom() + egui::vec2(10.0, -(LANE_TRACK_H + LANE_TRACK_MARGIN)),
+                        egui::vec2(rect.width() - 20.0, LANE_TRACK_H),
                     );
                     painter.rect_filled(track, 3.0, ui.visuals().extreme_bg_color.gamma_multiply(0.8));
                     for (wi, w) in wires.iter().enumerate() {
@@ -390,7 +416,7 @@ impl App {
                             .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '·' })
                             .collect();
                         painter.text(
-                            rect.left_top() + egui::vec2(10.0, 33.0),
+                            rect.left_top() + egui::vec2(10.0, LANE_CONTENT_Y),
                             egui::Align2::LEFT_TOP,
                             format!("[{}] {} │{ascii}│", wires[wi].name, hex.trim_end()),
                             egui::FontId::monospace(10.0),
@@ -770,5 +796,57 @@ mod tests {
             assert_eq!(m[2], 0x34);
             assert_eq!(m[3], 0x12);
         }
+    }
+
+    /// Le contenu d'une voie ne doit jamais se chevaucher : c'est ce qui rendait
+    /// `.rodata` et `.data/.bss` illisibles — écrasés à 30 px, le titre, les
+    /// bornes d'adresses et la mini-carte se marchaient dessus.
+    #[test]
+    fn lane_content_never_overlaps() {
+        // Hauteurs approximatives des trois lignes de texte.
+        const TITLE_H: f32 = 16.0;
+        const BOUNDS_H: f32 = 13.0;
+
+        for pointers in 0..=6 {
+            let h = lane_height(pointers);
+            assert!(h >= LANE_MIN_H, "{pointers} pointeurs → {h}px sous le plancher");
+
+            // Titre puis bornes, sans recouvrement.
+            assert!(
+                LANE_TITLE_Y + TITLE_H <= LANE_BOUNDS_Y,
+                "le titre déborde sur les bornes d'adresses"
+            );
+            // Bornes puis, le cas échéant, la ligne d'octets pointés.
+            assert!(
+                LANE_BOUNDS_Y + BOUNDS_H <= LANE_CONTENT_Y,
+                "les bornes débordent sur la ligne d'octets"
+            );
+
+            // La mini-carte est ancrée en bas : elle doit rester sous tout le reste.
+            let track_top = h - LANE_TRACK_H - LANE_TRACK_MARGIN;
+            let lowest_text = if pointers > 0 {
+                LANE_CONTENT_Y + BOUNDS_H
+            } else {
+                LANE_BOUNDS_Y + BOUNDS_H
+            };
+            assert!(
+                track_top >= lowest_text,
+                "{pointers} pointeurs : la mini-carte (y={track_top}) chevauche le texte (y={lowest_text})"
+            );
+            // Et elle doit tenir dans la voie.
+            assert!(track_top + LANE_TRACK_H <= h, "mini-carte hors de la voie");
+        }
+    }
+
+    /// Une région que personne ne vise reste une région : sa voie doit garder
+    /// une hauteur utile, sinon l'élève ne voit pas que .rodata existe.
+    #[test]
+    fn unpointed_region_keeps_a_usable_lane() {
+        let empty = lane_height(0);
+        let one = lane_height(1);
+        assert!(empty >= 60.0, "voie sans pointeur trop écrasée : {empty}px");
+        assert!(one > empty, "une voie visée doit être plus haute");
+        // Mais l'écart reste raisonnable : pas de voie géante contre une naine.
+        assert!(one < empty * 2.0, "écart trop brutal : {empty} → {one}");
     }
 }
