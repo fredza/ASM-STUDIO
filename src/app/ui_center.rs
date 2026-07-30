@@ -65,6 +65,36 @@ impl App {
         }
     }
 
+    /// Onglet suivant (ou précédent) parmi ceux réellement affichés.
+    /// « Vue mémoire » n'entre dans le cycle que si l'option est active.
+    pub(super) fn cycle_tab(&mut self, backwards: bool) {
+        let mut tabs = vec![super::Tab::Editor, super::Tab::Disasm];
+        if self.pedagogy_memview {
+            tabs.push(super::Tab::MemMap);
+        }
+        let i = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
+        let n = tabs.len();
+        self.tab = if backwards { tabs[(i + n - 1) % n] } else { tabs[(i + 1) % n] };
+    }
+
+    /// Déplace la sélection du désassemblage d'une instruction (clavier).
+    /// Sans sélection, part de l'instruction courante (RIP).
+    pub(super) fn move_disasm_selection(&mut self, down: bool) {
+        if self.disasm.is_empty() {
+            return;
+        }
+        let cur = self
+            .selected
+            .or_else(|| self.view_rip())
+            .and_then(|a| self.disasm.iter().position(|i| i.address == a));
+        let next = match (cur, down) {
+            (None, _) => 0,
+            (Some(i), true) => (i + 1).min(self.disasm.len() - 1),
+            (Some(i), false) => i.saturating_sub(1),
+        };
+        self.selected = Some(self.disasm[next].address);
+    }
+
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
         // Ligne source courante (RIP) à surligner pendant le débogage.
         let hl = self.current_source_line();
@@ -121,6 +151,7 @@ impl App {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let out = egui::TextEdit::multiline(&mut self.source)
+                        .id(super::editor_id())
                         .frame(false)
                         .code_editor()
                         .desired_width(content_w.max(ui.available_width()))
@@ -350,5 +381,83 @@ impl App {
             ui.label(RichText::new(tr("Flags positionnés", "Flags set", "Flags activos")).strong());
             ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::disasm::Insn;
+
+    fn insn(addr: u64) -> Insn {
+        Insn {
+            address: addr,
+            bytes: vec![0x90],
+            mnemonic: "nop".into(),
+            operands: String::new(),
+        }
+    }
+
+    /// Ctrl+Tab ne doit proposer « Vue mémoire » que si l'option est active,
+    /// sinon le clavier atteindrait un onglet invisible.
+    #[test]
+    fn tab_cycle_skips_hidden_memory_view() {
+        let mut app = App::new();
+        app.pedagogy_memview = false;
+        app.tab = super::super::Tab::Editor;
+        app.cycle_tab(false);
+        assert_eq!(app.tab, super::super::Tab::Disasm);
+        app.cycle_tab(false);
+        assert_eq!(app.tab, super::super::Tab::Editor, "boucle sur deux onglets");
+
+        app.pedagogy_memview = true;
+        app.cycle_tab(false);
+        app.cycle_tab(false);
+        assert_eq!(app.tab, super::super::Tab::MemMap, "la vue mémoire entre dans le cycle");
+        app.cycle_tab(false);
+        assert_eq!(app.tab, super::super::Tab::Editor);
+    }
+
+    #[test]
+    fn tab_cycle_goes_backwards() {
+        let mut app = App::new();
+        app.pedagogy_memview = false;
+        app.tab = super::super::Tab::Editor;
+        app.cycle_tab(true);
+        assert_eq!(app.tab, super::super::Tab::Disasm, "recule = va au dernier");
+    }
+
+    /// Les flèches parcourent le désassemblage et s'arrêtent aux bornes.
+    #[test]
+    fn disasm_selection_moves_and_clamps() {
+        let mut app = App::new();
+        app.disasm = vec![insn(0x10), insn(0x20), insn(0x30)];
+
+        // Sans sélection ni programme lancé, on part du début.
+        app.move_disasm_selection(true);
+        assert_eq!(app.selected, Some(0x10));
+
+        app.move_disasm_selection(true);
+        assert_eq!(app.selected, Some(0x20));
+        app.move_disasm_selection(true);
+        assert_eq!(app.selected, Some(0x30));
+        app.move_disasm_selection(true);
+        assert_eq!(app.selected, Some(0x30), "borne basse respectée");
+
+        app.move_disasm_selection(false);
+        assert_eq!(app.selected, Some(0x20));
+        app.move_disasm_selection(false);
+        assert_eq!(app.selected, Some(0x10));
+        app.move_disasm_selection(false);
+        assert_eq!(app.selected, Some(0x10), "borne haute respectée");
+    }
+
+    /// Sans désassemblage, la navigation ne doit pas paniquer.
+    #[test]
+    fn disasm_selection_is_safe_when_empty() {
+        let mut app = App::new();
+        app.disasm.clear();
+        app.move_disasm_selection(true);
+        assert_eq!(app.selected, None);
     }
 }

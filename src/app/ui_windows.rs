@@ -368,11 +368,6 @@ impl App {
             "Unified memory view (\"Memory View\" tab — registers → pointed zones)",
             "Vista de memoria unificada (pestaña «Vista memoria» — registros → zonas apuntadas)",
         );
-        let t_pedagogy_predict = self.tr3(
-            "Prédire avant de révéler (annoncer la valeur d'un registre avant chaque pas)",
-            "Predict before revealing (announce a register's value before each step)",
-            "Predecir antes de revelar (anunciar el valor de un registro antes de cada paso)",
-        );
         let t_close = self.tr3("Fermer", "Close", "Cerrar");
 
         let mut open = true;
@@ -419,7 +414,6 @@ impl App {
                 ui.add_space(4.0);
                 changed |= ui.checkbox(&mut self.pedagogy_anim, t_pedagogy_anim).changed();
                 changed |= ui.checkbox(&mut self.pedagogy_memview, t_pedagogy_memview).changed();
-                changed |= ui.checkbox(&mut self.pedagogy_predict, t_pedagogy_predict).changed();
                 ui.separator();
 
                 ui.vertical_centered(|ui| {
@@ -466,6 +460,13 @@ impl App {
                     ("Ctrl+2", tr("Afficher/masquer l'instruction", "Show/hide the instruction panel", "Mostrar/ocultar el panel de instrucción")),
                     ("Ctrl+3", tr("Afficher/masquer la bande CPU", "Show/hide the CPU band", "Mostrar/ocultar la banda CPU")),
                     ("Ctrl+4", tr("Afficher/masquer la bande basse", "Show/hide the bottom band", "Mostrar/ocultar la banda inferior")),
+                    ("Ctrl+5", tr("Afficher/masquer le panneau Prédiction", "Show/hide the Prediction panel", "Mostrar/ocultar el panel Predicción")),
+                    ("F6", tr("Ramener le focus dans l'éditeur", "Move focus back to the editor", "Devolver el foco al editor")),
+                    ("Ctrl+Tab", tr("Onglet suivant (Éditeur / Désassemblage / Vue mémoire)", "Next tab (Editor / Disassembly / Memory View)", "Pestaña siguiente (Editor / Desensamblado / Vista memoria)")),
+                    ("Tab", tr("Élément interactif suivant (hors éditeur)", "Next interactive element (outside the editor)", "Siguiente elemento interactivo (fuera del editor)")),
+                    ("↑ / ↓", tr("Parcourir le désassemblage (onglet Désassemblage)", "Browse the disassembly (Disassembly tab)", "Recorrer el desensamblado (pestaña Desensamblado)")),
+                    ("Entrée", tr("Ouvrir le microscope sur l'instruction retenue", "Open the microscope on the selected instruction", "Abrir el microscopio en la instrucción seleccionada")),
+                    ("Échap", tr("Quitter le champ de saisie, sinon arrêter le programme", "Leave the text field, otherwise stop the program", "Salir del campo de texto, si no detener el programa")),
                 ];
                 egui::Grid::new("shortcuts_grid")
                     .num_columns(2)

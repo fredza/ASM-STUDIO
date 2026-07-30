@@ -36,6 +36,12 @@ use parse::*;
 
 use crate::updater::Updater;
 
+/// Id stable de la zone de texte de l'éditeur : permet d'y renvoyer le focus
+/// clavier depuis n'importe où (F6), sans passer par la souris.
+pub(super) fn editor_id() -> egui::Id {
+    egui::Id::new("kb_editor")
+}
+
 // --- Palette ---
 pub(super) const ACCENT: Color32 = Color32::from_rgb(0x4C, 0x8B, 0xF5); // bleu d'accent
 pub(super) const ACTION: Color32 = Color32::from_rgb(0xE8, 0x8A, 0x2E); // orange d'action (Run/Step)

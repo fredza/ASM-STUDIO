@@ -119,6 +119,20 @@ impl App {
             });
         });
 
+        // Le corps défile : sans cela son contenu pousserait la bande CPU
+        // à grandir quand la colonne PRÉDICTION est affichée.
+        egui::ScrollArea::vertical()
+            .id_salt("predict_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| self.predict_body(ui));
+    }
+
+    /// Corps du panneau (saisie ou verdict), rendu dans une zone défilante.
+    fn predict_body(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let hdr = self.c_header();
+
         if !self.can_step() {
             ui.weak(tr(
                 "Lance un programme et place-toi à la dernière étape pour prédire.",
@@ -164,17 +178,20 @@ impl App {
                         ui.label(RichText::new(msg).strong().color(col));
                     });
                     ui.add_space(3.0);
-                    ui.label(
-                        RichText::new(format!(
-                            "{} {}  ·  {}  ·  {}",
-                            tr("étape", "step", "paso"),
-                            p.step,
-                            p.insn,
-                            p.reg
-                        ))
-                        .monospace()
-                        .small()
-                        .weak(),
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!(
+                                "{} {} · {} · {}",
+                                tr("étape", "step", "paso"),
+                                p.step,
+                                p.insn,
+                                p.reg
+                            ))
+                            .monospace()
+                            .small()
+                            .weak(),
+                        )
+                        .wrap(),
                     );
                     egui::Grid::new("pred_verdict").num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
                         ui.label(RichText::new(tr("Tu as dit", "You said", "Dijiste")).small().color(hdr));
@@ -266,16 +283,6 @@ impl App {
                 }
             }
         });
-        ui.add_space(3.0);
-        ui.label(
-            RichText::new(tr(
-                "Valider exécute le pas et révèle la réponse.",
-                "Submitting runs the step and reveals the answer.",
-                "Validar ejecuta el paso y revela la respuesta.",
-            ))
-            .small()
-            .weak(),
-        );
         // Valeur actuelle du registre choisi : point de départ du raisonnement.
         if let Some(cur) = self.reg_value(self.pred_reg) {
             ui.add_space(2.0);

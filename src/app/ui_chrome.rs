@@ -19,7 +19,7 @@ impl App {
             (
                 i.key_pressed(Key::F10) || i.key_pressed(Key::F8),
                 i.key_pressed(Key::F5),
-                i.key_pressed(Key::Escape) || (i.modifiers.shift && i.key_pressed(Key::F5)),
+                i.modifiers.shift && i.key_pressed(Key::F5),
                 c && i.key_pressed(Key::B),
                 c && i.key_pressed(Key::S),
                 c && i.key_pressed(Key::O),
@@ -45,8 +45,29 @@ impl App {
         if run {
             self.launch();
         }
-        if stop {
+        // Échap : d'abord sortir du champ de saisie, sinon arrêter le programme.
+        // Sans cette priorité, un utilisateur au clavier reste piégé dans l'éditeur.
+        let esc = ctx.input(|i| i.key_pressed(Key::Escape));
+        let focused = ctx.memory(|m| m.focused().is_some());
+        if esc && focused {
+            ctx.memory_mut(|m| m.surrender_focus(m.focused().unwrap()));
+        } else if stop || esc {
             self.stop();
+        }
+
+        // --- Navigation clavier ---
+        // F6 : ramène le focus dans l'éditeur (point d'entrée du clavier).
+        if ctx.input(|i| i.key_pressed(Key::F6)) {
+            self.tab = super::Tab::Editor;
+            ctx.memory_mut(|m| m.request_focus(super::editor_id()));
+        }
+        // Ctrl+Tab / Ctrl+Maj+Tab : fait défiler les onglets du centre.
+        let (tab_next, tab_prev) = ctx.input(|i| {
+            let t = i.modifiers.ctrl && i.key_pressed(Key::Tab);
+            (t && !i.modifiers.shift, t && i.modifiers.shift)
+        });
+        if tab_next || tab_prev {
+            self.cycle_tab(tab_prev);
         }
         if step {
             self.step();
@@ -54,14 +75,15 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
             self.show_shortcuts = true;
         }
-        // Affichage : Ctrl+1..4 bascule chaque panneau.
-        let (t_expl, t_instr, t_cpu, t_bottom) = ctx.input(|i| {
+        // Affichage : Ctrl+1..5 bascule chaque panneau.
+        let (t_expl, t_instr, t_cpu, t_bottom, t_pred) = ctx.input(|i| {
             let c = i.modifiers.ctrl;
             (
                 c && i.key_pressed(Key::Num1),
                 c && i.key_pressed(Key::Num2),
                 c && i.key_pressed(Key::Num3),
                 c && i.key_pressed(Key::Num4),
+                c && i.key_pressed(Key::Num5),
             )
         });
         if t_expl {
@@ -76,11 +98,33 @@ impl App {
         if t_bottom {
             self.show_bottom_band = !self.show_bottom_band;
         }
-        if t_expl || t_instr || t_cpu || t_bottom {
+        if t_pred {
+            self.pedagogy_predict = !self.pedagogy_predict;
+        }
+        if t_expl || t_instr || t_cpu || t_bottom || t_pred {
             self.save_settings();
         }
         // Timeline seulement si l'éditeur n'a pas le focus (évite le conflit ←/→).
         let editing = ctx.memory(|m| m.focused().is_some());
+
+        // ↑/↓ parcourent le désassemblage quand son onglet est actif ; Entrée
+        // ouvre le microscope sur l'instruction retenue.
+        if self.tab == super::Tab::Disasm && !editing && !self.disasm.is_empty() {
+            let (up, down, enter) = ctx.input(|i| {
+                (
+                    i.key_pressed(Key::ArrowUp),
+                    i.key_pressed(Key::ArrowDown),
+                    i.key_pressed(Key::Enter),
+                )
+            });
+            if up || down {
+                self.move_disasm_selection(down);
+            }
+            if enter && let Some(a) = self.selected {
+                self.microscope = Some(a);
+            }
+        }
+
         if self.dbg.is_some() && !editing {
             if first {
                 self.set_view(0);
@@ -216,6 +260,7 @@ impl App {
                     changed |= ui.checkbox(&mut self.show_instruction, tr("Instruction          Ctrl+2", "Instruction          Ctrl+2", "Instrucción          Ctrl+2")).changed();
                     changed |= ui.checkbox(&mut self.show_cpu_band, tr("Bande CPU (registres…)  Ctrl+3", "CPU band (registers…)   Ctrl+3", "Banda CPU (registros…)  Ctrl+3")).changed();
                     changed |= ui.checkbox(&mut self.show_bottom_band, tr("Bande basse (mémoire…)  Ctrl+4", "Bottom band (memory…)   Ctrl+4", "Banda inferior (memoria…)  Ctrl+4")).changed();
+                    changed |= ui.checkbox(&mut self.pedagogy_predict, tr("Prédiction              Ctrl+5", "Prediction              Ctrl+5", "Predicción              Ctrl+5")).changed();
                     ui.separator();
                     if ui.button(tr("Tout afficher", "Show all", "Mostrar todo")).clicked() {
                         self.show_explorer = true;

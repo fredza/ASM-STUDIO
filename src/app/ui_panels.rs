@@ -61,7 +61,20 @@ impl App {
         if let Some(s) = self.snap()
             && let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip)
         {
-            ui.label(RichText::new(format!("{} {}/{last}", tr("Instruction", "Instruction", "Instrucción"), self.view_index)).strong());
+            // Libellé d'étape : il doit rester lisible même en colonne étroite,
+            // d'où le repli sur plusieurs lignes plutôt qu'une troncature.
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "{} {}/{last}",
+                        tr("Étape", "Step", "Paso"),
+                        self.view_index
+                    ))
+                    .strong()
+                    .color(CHANGED),
+                )
+                .wrap(),
+            );
             ui.label(
                 RichText::new(format!("{} {}", insn.mnemonic, insn.operands))
                     .monospace()
