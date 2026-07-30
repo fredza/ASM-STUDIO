@@ -6,14 +6,13 @@
 //! L'état affiché est lu dans l'historique du debugger à `view_index`.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Color32};
 
 use crate::debugger::{Debugger, Snapshot};
 use crate::disasm::Insn;
 use crate::i18n::{self, Lang};
-use crate::explain;
 
 mod file_ops;
 mod debug_ops;
@@ -22,6 +21,16 @@ mod ui_windows;
 mod ui_panels;
 mod ui_center;
 mod pedagogy;
+mod widgets;
+mod paths;
+mod parse;
+
+// Remontés dans `app` pour que les modules d'UI gardent leurs
+// `use super::{card, parse_hex, …}` : un module enfant voit les imports privés
+// de son parent, inutile de les rendre publics.
+use widgets::*;
+use paths::*;
+use parse::*;
 
 use crate::updater::Updater;
 
@@ -574,498 +583,40 @@ impl eframe::App for App {
 
 // ---------- Helpers ----------
 
-/// Hauteur fixe de la ligne d'en-tête d'un panneau, pour aligner les
-/// séparateurs de tous les panneaux au même niveau (certains en-têtes ont des
-/// boutons/combos plus hauts qu'un simple libellé).
-pub(super) const HEADER_H: f32 = 24.0;
 
-/// En-tête de panneau à hauteur fixe : rend `content` (titre + éventuels
-/// contrôles) dans une ligne de `HEADER_H`, puis un séparateur. Tous les
-/// panneaux passent par ici → leurs séparateurs sont alignés.
-pub(super) fn panel_header(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(2.0);
-    // Bandeau de titre teinté (style dashboard) : remplace l'ancien séparateur ;
-    // hauteur constante ⇒ tous les bandeaux restent alignés d'un panneau à l'autre.
-    egui::Frame::none()
-        .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
-        .rounding(egui::Rounding::same(5.0))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), HEADER_H - 4.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                content,
-            );
-        });
-    ui.add_space(5.0);
-}
 
-/// Encadré « carte » moderne : fond légèrement teinté, coins arrondis et marge
-/// interne, sur toute la largeur disponible. Structure et aère le contenu
-/// (utile pour une app pédagogique).
-pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::none()
-        .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-        .rounding(egui::Rounding::same(6.0))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            content(ui);
-        });
-}
 
-/// Icône optionnelle + titre de section, à placer dans un `panel_header`.
-pub(super) fn header_title(ui: &mut egui::Ui, hdr: Color32, icon: Option<&egui::TextureHandle>, text: &str) {
-    icon_img(ui, icon, 15.0);
-    ui.label(RichText::new(text).strong().color(hdr).size(12.5));
-}
 
-/// Titre de section simple (sans contrôle) à hauteur fixe.
-pub(super) fn header(ui: &mut egui::Ui, hdr: Color32, text: &str) {
-    panel_header(ui, |ui| header_title(ui, hdr, None, text));
-}
 
-/// En-tête de section avec une icône optionnelle à gauche du titre.
-pub(super) fn header_icon(ui: &mut egui::Ui, hdr: Color32, icon: Option<&egui::TextureHandle>, text: &str) {
-    panel_header(ui, |ui| header_title(ui, hdr, icon, text));
-}
 
-/// Affiche une petite icône carrée (rien si `icon` est `None`).
-pub(super) fn icon_img(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, size: f32) {
-    if let Some(t) = icon {
-        ui.add(egui::Image::new((t.id(), egui::vec2(size, size))));
-    }
-}
 
-/// Alloue une colonne de largeur `w` et hauteur `h` puis y rend `add`.
-pub(super) fn col(ui: &mut egui::Ui, w: f32, h: f32, add: impl FnOnce(&mut egui::Ui)) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(w, h),
-        egui::Layout::top_down(egui::Align::Min),
-        add,
-    );
-}
 
-/// Petite colonne de pile (microscope) : adresse + valeur, à partir de `rsp`.
-pub(super) fn micro_stack(ui: &mut egui::Ui, addr_c: Color32, label: &str, rsp: u64, stack: &[u64]) {
-    ui.label(RichText::new(label).italics().weak());
-    egui::Grid::new(format!("micro_stack_{label}"))
-        .num_columns(2)
-        .spacing([8.0, 2.0])
-        .show(ui, |ui| {
-            for (i, val) in stack.iter().take(6).enumerate() {
-                let addr = rsp.wrapping_add((i as u64) * 8);
-                let mark = if i == 0 { "→" } else { " " };
-                ui.label(
-                    RichText::new(format!("{mark} 0x{addr:012X}"))
-                        .monospace()
-                        .color(addr_c),
-                );
-                ui.label(RichText::new(format!("0x{val:016X}")).monospace());
-                ui.end_row();
-            }
-        });
-}
 
-/// Flags positionnés (info statique) quand l'instruction n'a pas d'avant/après.
-pub(super) fn micro_static_flags(ui: &mut egui::Ui, hdr: Color32, e: &explain::Explanation, set_label: &str, none_label: &str) {
-    ui.add_space(4.0);
-    if e.affects_flags.is_empty() {
-        ui.weak(none_label);
-    } else {
-        ui.label(RichText::new(set_label).strong().color(hdr));
-        ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
-    }
-}
 
-pub(super) fn parse_hex(s: &str) -> Option<u64> {
-    let s = s.trim();
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
-    u64::from_str_radix(s, 16).ok()
-}
 
-/// Analyse une valeur dans la base donnée (2, 8, 10 ou 16).
-/// Base 10 : signé (`i64`), supporte le signe `-`. Autres bases : bit-pattern `u64` casté.
-/// Renvoie `None` si vide ou hors plage.
-pub(super) fn calc_parse(s: &str, base: u32) -> Option<i64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    if base == 10 {
-        return s.parse::<i64>().ok();
-    }
-    u64::from_str_radix(s, base).ok().map(|v| v as i64)
-}
 
-/// Formate `v` dans la base donnée, avec préfixe (`0x`/`0o`/`0b`) sauf en base 10.
-/// Hex/Oct/Bin : affiche le motif de bits en non-signé. Dec : affiche signé.
-pub(super) fn calc_format(v: i64, base: u32) -> String {
-    match base {
-        16 => format!("0x{:X}", v as u64),
-        8 => format!("0o{:o}", v as u64),
-        2 => format!("0b{:b}", v as u64),
-        _ => format!("{v}"),
-    }
-}
 
-/// Analyse une suite d'octets hexadécimaux (« 48 65 6C » ou « 48656C »).
-pub(super) fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
-    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..cleaned.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).ok())
-        .collect()
-}
 
-/// Nom d'affichage d'un chemin (dernier segment).
-pub(super) fn file_name(p: &Path) -> String {
-    p.file_name().unwrap_or_default().to_string_lossy().into_owned()
-}
 
-/// Entrées d'un dossier : (sous-dossiers, tous les fichiers), triés, en masquant
-/// les entrées cachées (préfixe `.`). Pour l'explorateur en arbre.
-pub(super) fn list_entries(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if file_name(&p).starts_with('.') {
-                continue;
-            }
-            if p.is_dir() {
-                dirs.push(p);
-            } else {
-                files.push(p);
-            }
-        }
-    }
-    dirs.sort();
-    files.sort();
-    (dirs, files)
-}
 
-/// True si le fichier est une source assembleur (`.asm`/`.s`).
-pub(super) fn is_asm(p: &Path) -> bool {
-    p.extension().is_some_and(|e| e == "asm" || e == "s")
-}
 
-/// Rend récursivement l'arbre d'un dossier (style explorateur d'IDE) : dossiers
-/// repliables (`CollapsingHeader`), puis fichiers cliquables. Le fichier ouvert
-/// est surligné ; le clic sur un fichier renseigne `to_open`.
-pub(super) fn dir_tree(
-    ui: &mut egui::Ui,
-    dir: &Path,
-    current: &Path,
-    asm_col: Color32,
-    other_col: Color32,
-    to_open: &mut Option<PathBuf>,
-) {
-    let (dirs, files) = list_entries(dir);
-    for d in dirs {
-        egui::CollapsingHeader::new(RichText::new(format!("🗀  {}", file_name(&d))).color(asm_col))
-            .id_salt(&d)
-            .default_open(false)
-            .show(ui, |ui| dir_tree(ui, &d, current, asm_col, other_col, to_open));
-    }
-    for f in files {
-        let is_cur = f == current;
-        let col = if is_cur {
-            CHANGED
-        } else if is_asm(&f) {
-            asm_col
-        } else {
-            other_col
-        };
-        let label = RichText::new(format!("🗎  {}", file_name(&f))).color(col);
-        if ui.add(egui::SelectableLabel::new(is_cur, label)).clicked() {
-            *to_open = Some(f);
-        }
-    }
-}
 
-/// Bouton avec bordure verte (actif/disponible) ou rouge (inactif).
-pub(super) fn bordered_button(
-    ui: &mut egui::Ui,
-    icon: Option<&egui::TextureHandle>,
-    label: &str,
-    enabled: bool,
-) -> egui::Response {
-    let color = if enabled { FLAG_ON } else { FALSE_COL };
-    let btn = match btn_icon(icon) {
-        Some(img) => egui::Button::image_and_text(img, label),
-        None => egui::Button::new(label),
-    }
-    .stroke(egui::Stroke::new(1.5_f32, color));
-    ui.add_enabled(enabled, btn)
-}
 
-/// Construit un widget bouton (icône + libellé) sans l'ajouter — pour
-/// `ui.add_enabled(...)`. La source d'image est `'static` (TextureId).
-pub(super) fn icon_btn_widget(icon: Option<&egui::TextureHandle>, label: &'static str) -> egui::Button<'static> {
-    match btn_icon(icon) {
-        Some(img) => egui::Button::image_and_text(img, label),
-        None => egui::Button::new(label),
-    }
-}
 
-/// Source d'image dimensionnée pour un bouton (16px), à partir d'une icône.
-pub(super) fn btn_icon(icon: Option<&egui::TextureHandle>) -> Option<egui::load::SizedTexture> {
-    icon.map(|t| egui::load::SizedTexture::new(t.id(), egui::vec2(16.0, 16.0)))
-}
 
-/// Bouton d'accent (fond ACCENT si actif, grisé sinon) — pour Run et Step.
-pub(super) fn accent_button(
-    ui: &mut egui::Ui,
-    icon: Option<&egui::TextureHandle>,
-    label: &str,
-    enabled: bool,
-) -> egui::Response {
-    let btn = match (enabled, btn_icon(icon)) {
-        (true, Some(img)) => {
-            egui::Button::image_and_text(img, RichText::new(label).color(Color32::WHITE)).fill(ACTION)
-        }
-        (true, None) => egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACTION),
-        (false, Some(img)) => egui::Button::image_and_text(img, label),
-        (false, None) => egui::Button::new(label),
-    };
-    ui.add_enabled(enabled, btn)
-}
 
-/// Bouton ordinaire avec icône optionnelle à gauche du libellé.
-pub(super) fn icon_button(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, label: &str) -> egui::Response {
-    match btn_icon(icon) {
-        Some(img) => ui.add(egui::Button::image_and_text(img, label)),
-        None => ui.button(label),
-    }
-}
 
-/// Onglet sélectionnable avec l'icône DANS le bouton (respecte le padding).
-/// Remplace `icon_img(...) + selectable_label(...)` où l'icône débordait.
-pub(super) fn icon_tab(
-    ui: &mut egui::Ui,
-    icon: Option<&egui::TextureHandle>,
-    label: &str,
-    selected: bool,
-) -> egui::Response {
-    let btn = match btn_icon(icon) {
-        Some(img) => egui::Button::image_and_text(img, label),
-        None => egui::Button::new(label),
-    }
-    .selected(selected)
-    .rounding(egui::Rounding::same(6.0));
-    ui.add(btn)
-}
 
-/// Petit badge coloré (texte sur fond semi-transparent).
-pub(super) fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
-    egui::Frame::default()
-        .fill(color.linear_multiply(0.22))
-        .inner_margin(egui::Margin::symmetric(5.0, 2.0))
-        .rounding(egui::Rounding::same(4.0))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).small().strong().color(color));
-        });
-}
 
-/// Répertoire de données utilisateur XDG : `~/.local/share/asm_studio/`.
-/// Cohérent avec les settings dans `~/.config/asm_studio/`, toujours accessible
-/// en écriture quelle que soit la position de l'exécutable.
-pub(super) fn data_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("asm_studio")
-}
 
-/// Crée `~/.local/share/asm_studio/examples/` avec les programmes de démonstration
-/// au premier lancement. Sentinelle = présence de `hello_world.asm` pour éviter
-/// le faux positif causé par `target/debug/examples/` créé par Cargo.
-fn setup_examples() {
-    let dir = data_dir().join("examples");
-    if dir.join("hello_world.asm").exists() {
-        return;
-    }
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
 
-    let files: &[(&str, &str)] = &[
-        ("asmstd.inc",          include_str!("../../examples/asmstd.inc")),
-        ("hello_world.asm",     include_str!("../../examples_seed/hello_world.asm")),
-        ("exit_code.asm",       include_str!("../../examples_seed/exit_code.asm")),
-        ("arithmetic.asm",      include_str!("../../examples_seed/arithmetic.asm")),
-        ("boucle.asm",          include_str!("../../examples_seed/boucle.asm")),
-        ("conditionnels.asm",   include_str!("../../examples_seed/conditionnels.asm")),
-        ("fibonacci.asm",       include_str!("../../examples_seed/fibonacci.asm")),
-        ("factorielle.asm",     include_str!("../../examples_seed/factorielle.asm")),
-        ("longueur_chaine.asm", include_str!("../../examples_seed/longueur_chaine.asm")),
-        ("pile_demo.asm",       include_str!("../../examples_seed/pile_demo.asm")),
-        ("lire_ecrire.asm",     include_str!("../../examples_seed/lire_ecrire.asm")),
-    ];
-    for (name, content) in files {
-        let _ = std::fs::write(dir.join(name), content);
-    }
-}
 
-pub(super) fn settings_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("asm_studio").join("settings.conf"))
-}
 
-/// Répertoire contenant `asmstd.inc` dans les données utilisateur.
-pub(super) fn asmstd_dir() -> Option<PathBuf> {
-    let dir = data_dir().join("examples");
-    dir.join("asmstd.inc").exists().then_some(dir)
-}
 
-/// Répertoire absolu contenant `path` (remonte à `current_dir` si besoin).
-pub(super) fn abs_dir_of(path: &Path) -> PathBuf {
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-    };
-    abs.parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("/"))
-}
-
-/// Affiche `rows` lignes de 16 octets (hex + ASCII) à partir de `base`.
-pub(super) fn hex_dump_rows(ui: &mut egui::Ui, addr_c: Color32, bytes_c: Color32, dbg: &Debugger, base: u64, rows: u64) {
-    for row in 0..rows {
-        let addr = base.wrapping_add(row * 16);
-        let (hex, ascii) = match dbg.read_mem(addr, 16) {
-            Ok(bytes) => {
-                let hex = bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
-                let ascii: String = bytes
-                    .iter()
-                    .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
-                    .collect();
-                (hex, ascii)
-            }
-            Err(_) => ("?? ".repeat(16).trim_end().to_string(), ".".repeat(16)),
-        };
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("0x{addr:08X}")).monospace().color(addr_c));
-            ui.label(RichText::new(hex).monospace().color(bytes_c));
-            ui.label(RichText::new(ascii).monospace().weak());
-        });
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn abs_dir_is_absolute_and_navigable() {
-        // À partir d'un chemin relatif, on obtient un dossier absolu dont on
-        // peut remonter le parent (ce qui faisait échouer le navigateur avant).
-        let dir = abs_dir_of(Path::new("examples/test.asm"));
-        assert!(dir.is_absolute(), "le dossier doit être absolu");
-        assert!(dir.ends_with("examples"));
-        assert!(dir.parent().is_some(), "on doit pouvoir remonter (..)");
-    }
-
-    #[test]
-    fn list_entries_finds_asm_example() {
-        let (_dirs, files) = list_entries(&abs_dir_of(Path::new("examples/test.asm")));
-        assert!(
-            files.iter().any(|f| f.file_name().unwrap() == "test.asm"),
-            "test.asm doit apparaître dans l'explorateur"
-        );
-    }
-
-    #[test]
-    fn calc_parse_reads_each_base() {
-        assert_eq!(calc_parse("101", 2), Some(0b101));
-        assert_eq!(calc_parse("777", 8), Some(0o777));
-        assert_eq!(calc_parse("42", 10), Some(42));
-        assert_eq!(calc_parse("dead", 16), Some(0xDEAD));
-        assert_eq!(calc_parse("  ff  ", 16), Some(0xFF), "espaces tolérés");
-        assert_eq!(calc_parse("", 10), None, "vide → None");
-        assert_eq!(calc_parse("-42", 10), Some(-42), "décimal négatif supporté");
-    }
-
-    #[test]
-    fn calc_format_roundtrips_with_prefix() {
-        assert_eq!(calc_format(255, 10), "255");
-        assert_eq!(calc_format(255, 16), "0xFF");
-        assert_eq!(calc_format(255, 8), "0o377");
-        assert_eq!(calc_format(255, 2), "0b11111111");
-        // Aller-retour parse ∘ format (sans le préfixe, retiré par le filtre UI).
-        let v = 0xCAFE;
-        assert_eq!(calc_parse("CAFE", 16), Some(v));
-        assert_eq!(calc_format(v, 16), "0xCAFE");
-    }
-
-    /// Rendu headless des panneaux pédagogiques avec un vrai processus tracé :
-    /// garantit que le code de peinture (courbes de Bézier, bandes de bits, voies
-    /// mémoire, mini-cartes) ne panique pas et que la vue mémoire trouve bien des
-    /// fils à tracer (RIP→.text, RSP→[stack]).
-    #[test]
-    fn pedagogy_panels_render_headless() {
-        let mut app = App::new();
-        app.src_path = PathBuf::from("build/ped-test.asm");
-        app.out_dir = PathBuf::from("build/ped");
-        app.source = "section .text\n global _start\n_start:\n mov rax,5\n push rax\n \
-                       pop rbx\n mov rax,60\n xor rdi,rdi\n syscall\n"
-            .to_string();
-        app.pedagogy_anim = true;
-        app.pedagogy_memview = true;
-        app.animate = true;
-
-        app.launch();
-        assert!(app.dbg.is_some(), "le programme doit être lancé");
-        // push puis pop : garantit des changements de registres ET de pile à animer.
-        for _ in 0..3 {
-            app.step();
-        }
-        // Les régions doivent être classées, sinon le schéma n'aurait rien à relier.
-        let regions = app.dbg.as_ref().unwrap().mem_regions();
-        assert!(!regions.is_empty(), "des régions mémoire doivent être détectées");
-
-        let ctx = egui::Context::default();
-        app.tab = Tab::MemMap;
-        // flash_time = 0 et le temps headless démarre à 0 ⇒ le clignotement est
-        // actif pendant ce rendu : on exerce bien les chemins animés.
-        app.flash_time = 0.0;
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.center_ui(ui));
-            egui::TopBottomPanel::bottom("test_regs").show(ctx, |ui| {
-                app.registers_ui(ui);
-                app.stack_view(ui);
-            });
-        });
-
-        // La vue mémoire reste accessible, et se replie sur l'éditeur si l'option
-        // est coupée (comportement attendu du basculement dans les réglages).
-        app.pedagogy_memview = false;
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.center_ui(ui));
-        });
-        assert_eq!(app.tab, Tab::Editor, "l'onglet doit se replier sur l'éditeur");
-    }
-
-    /// Le clignotement pédagogique doit vraiment osciller (pas un simple fondu)
-    #[test]
-    fn parse_hex_bytes_accepts_spaced_and_contiguous() {
-        assert_eq!(parse_hex_bytes("48 65 6C"), Some(vec![0x48, 0x65, 0x6C]));
-        assert_eq!(parse_hex_bytes("48656C"), Some(vec![0x48, 0x65, 0x6C]));
-        assert_eq!(parse_hex_bytes("4"), None, "longueur impaire invalide");
-        assert_eq!(parse_hex_bytes("zz"), None, "non-hexa invalide");
-    }
 
     /// Vérifie que la logique timeline (head-follow + clamp min/max) est correcte,
     /// indépendamment du rendu egui.

@@ -522,6 +522,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::Tab;
+    use std::path::PathBuf;
 
     /// et s'éteindre à la fin, sans jamais sortir de [0,1].
     #[test]
@@ -582,5 +584,53 @@ mod tests {
                 assert_ne!(region_color(*a), region_color(*b), "{a:?} vs {b:?}");
             }
         }
+    }
+
+    /// Rendu headless des panneaux pédagogiques avec un vrai processus tracé :
+    /// garantit que le code de peinture (courbes de Bézier, bandes de bits, voies
+    /// mémoire, mini-cartes) ne panique pas et que la vue mémoire trouve bien des
+    /// fils à tracer (RIP→.text, RSP→[stack]).
+    #[test]
+    fn pedagogy_panels_render_headless() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/ped-test.asm");
+        app.out_dir = PathBuf::from("build/ped");
+        app.source = "section .text\n global _start\n_start:\n mov rax,5\n push rax\n \
+                       pop rbx\n mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+        app.pedagogy_anim = true;
+        app.pedagogy_memview = true;
+        app.animate = true;
+
+        app.launch();
+        assert!(app.dbg.is_some(), "le programme doit être lancé");
+        // push puis pop : garantit des changements de registres ET de pile à animer.
+        for _ in 0..3 {
+            app.step();
+        }
+        // Les régions doivent être classées, sinon le schéma n'aurait rien à relier.
+        let regions = app.dbg.as_ref().unwrap().mem_regions();
+        assert!(!regions.is_empty(), "des régions mémoire doivent être détectées");
+
+        let ctx = egui::Context::default();
+        app.tab = Tab::MemMap;
+        // flash_time = 0 et le temps headless démarre à 0 ⇒ le clignotement est
+        // actif pendant ce rendu : on exerce bien les chemins animés.
+        app.flash_time = 0.0;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.center_ui(ui));
+            egui::TopBottomPanel::bottom("test_regs").show(ctx, |ui| {
+                app.registers_ui(ui);
+                app.stack_view(ui);
+            });
+        });
+
+        // La vue mémoire reste accessible, et se replie sur l'éditeur si l'option
+        // est coupée (comportement attendu du basculement dans les réglages).
+        app.pedagogy_memview = false;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.center_ui(ui));
+        });
+        assert_eq!(app.tab, Tab::Editor, "l'onglet doit se replier sur l'éditeur");
     }
 }
