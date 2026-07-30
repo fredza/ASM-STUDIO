@@ -21,6 +21,7 @@ mod ui_windows;
 mod ui_panels;
 mod ui_center;
 mod pedagogy;
+mod predict;
 mod widgets;
 mod paths;
 mod parse;
@@ -240,6 +241,16 @@ pub struct App {
     pub(super) icons: Option<Icons>,
     /// Dialogue « Ouvrir » natif en cours sur un thread de fond (sinon `None`).
     /// Sondé chaque frame → l'UI ne se fige pas pendant que le sélecteur est ouvert.
+    /// Mode pédagogique — prédire la valeur d'un registre avant chaque pas.
+    pub(super) pedagogy_predict: bool,
+    /// Prédiction en cours (en attente de résolution, ou résolue et affichée).
+    pub(super) prediction: Option<predict::Prediction>,
+    /// Compteur de réussite des prédictions.
+    pub(super) pred_score: predict::Score,
+    /// Registre visé par la prochaine prédiction.
+    pub(super) pred_reg: &'static str,
+    /// Saisie hexa de la valeur prédite.
+    pub(super) pred_input: String,
     /// Diagnostic de la faute courante (plantage), s'il y en a un.
     /// Recalculé au moment de la faute, effacé au (re)lancement.
     pub(super) diagnosis: Option<crate::diagnostic::Diagnosis>,
@@ -308,6 +319,11 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
+            pedagogy_predict: false,
+            prediction: None,
+            pred_score: predict::Score::default(),
+            pred_reg: "RAX",
+            pred_input: String::new(),
             diagnosis: None,
             updater: Updater::new(),
             pending_open: None,
@@ -340,6 +356,7 @@ impl App {
                 "animate" => self.animate = v == "true",
                 "pedagogy_anim" => self.pedagogy_anim = v == "true",
                 "pedagogy_memview" => self.pedagogy_memview = v == "true",
+                "pedagogy_predict" => self.pedagogy_predict = v == "true",
                 "show_explorer" => self.show_explorer = v == "true",
                 "show_instruction" => self.show_instruction = v == "true",
                 "show_cpu_band" => self.show_cpu_band = v == "true",
@@ -362,7 +379,7 @@ impl App {
         };
         let content = format!(
             "theme={theme}\nlang={}\ntooltips={}\nasmstd={}\nanimate={}\n\
-             pedagogy_anim={}\npedagogy_memview={}\n\
+             pedagogy_anim={}\npedagogy_memview={}\npedagogy_predict={}\n\
              show_explorer={}\nshow_instruction={}\nshow_cpu_band={}\nshow_bottom_band={}\n",
             self.lang.key(),
             self.show_tooltips,
@@ -370,6 +387,7 @@ impl App {
             self.animate,
             self.pedagogy_anim,
             self.pedagogy_memview,
+            self.pedagogy_predict,
             self.show_explorer,
             self.show_instruction,
             self.show_cpu_band,
@@ -541,10 +559,17 @@ impl eframe::App for App {
                 .frame(band_frame)
                 .show(ctx, |ui| {
                     let h = ui.available_height();
-                    let cw = ((ui.available_width() - 30.0) / 4.0).max(90.0);
+                    // La colonne PRÉDICTION n'existe que si l'option est active :
+                    // le partage de largeur suit le nombre réel de colonnes.
+                    let n = if self.pedagogy_predict { 5.0 } else { 4.0 };
+                    let cw = ((ui.available_width() - 10.0 * n) / n).max(90.0);
                     ui.horizontal_top(|ui| {
                         col(ui, cw * 1.4, h, |ui| self.registers_ui(ui));
                         ui.separator();
+                        if self.pedagogy_predict {
+                            col(ui, cw * 1.15, h, |ui| self.predict_ui(ui));
+                            ui.separator();
+                        }
                         col(ui, cw * 1.3, h, |ui| self.stack_ui(ui));
                         ui.separator();
                         col(ui, cw * 0.9, h, |ui| self.callstack_ui(ui));

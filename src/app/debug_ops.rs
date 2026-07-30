@@ -50,6 +50,8 @@ impl App {
         self.syscalls.clear();
         self.call_stack.clear();
         self.diagnosis = None;
+        self.prediction = None;
+        self.pred_input.clear();
         self.view_index = 0;
         self.dbg = None;
         match Debugger::launch(&bin) {
@@ -90,6 +92,8 @@ impl App {
             self.view_index = d.history.len() - 1;
         }
         self.pending_flash = true; // déclenche l'animation « CPU vivant »
+        // Le nouvel état est en place : la prédiction en attente peut être jugée.
+        self.resolve_prediction();
 
         // Reconstruit pile d'appels + journal syscalls depuis l'historique complet
         // (source unique, cohérente après Step ET après « Reprendre ici »).

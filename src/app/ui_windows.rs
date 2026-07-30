@@ -368,6 +368,11 @@ impl App {
             "Unified memory view (\"Memory View\" tab — registers → pointed zones)",
             "Vista de memoria unificada (pestaña «Vista memoria» — registros → zonas apuntadas)",
         );
+        let t_pedagogy_predict = self.tr3(
+            "Prédire avant de révéler (annoncer la valeur d'un registre avant chaque pas)",
+            "Predict before revealing (announce a register's value before each step)",
+            "Predecir antes de revelar (anunciar el valor de un registro antes de cada paso)",
+        );
         let t_close = self.tr3("Fermer", "Close", "Cerrar");
 
         let mut open = true;
@@ -414,6 +419,7 @@ impl App {
                 ui.add_space(4.0);
                 changed |= ui.checkbox(&mut self.pedagogy_anim, t_pedagogy_anim).changed();
                 changed |= ui.checkbox(&mut self.pedagogy_memview, t_pedagogy_memview).changed();
+                changed |= ui.checkbox(&mut self.pedagogy_predict, t_pedagogy_predict).changed();
                 ui.separator();
 
                 ui.vertical_centered(|ui| {
