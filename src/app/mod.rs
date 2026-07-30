@@ -573,22 +573,36 @@ impl eframe::App for App {
                 .frame(band_frame)
                 .show(ctx, |ui| {
                     let h = ui.available_height();
-                    // La colonne PRÉDICTION n'existe que si l'option est active :
-                    // le partage de largeur suit le nombre réel de colonnes.
-                    let n = if self.pedagogy_predict { 5.0 } else { 4.0 };
-                    let cw = ((ui.available_width() - 10.0 * n) / n).max(90.0);
+                    // Poids relatifs des colonnes RÉELLEMENT affichées, normalisés
+                    // par `band_widths`. Additionner des multiplicateurs choisis à
+                    // la main faisait dépasser la largeur et poussait SYSCALLS
+                    // hors de l'écran dès que PRÉDICTION s'ajoutait.
+                    let predict = self.pedagogy_predict;
+                    let weights: &[f32] = if predict {
+                        &[1.30, 1.10, 1.15, 0.75, 0.70]
+                    } else {
+                        &[1.40, 1.30, 0.90, 0.90]
+                    };
+                    let sep_w = ui.spacing().item_spacing.x * 2.0 + 1.0;
+                    let w = band_widths(ui.available_width(), sep_w, weights);
                     ui.horizontal_top(|ui| {
-                        col(ui, cw * 1.4, h, |ui| self.registers_ui(ui));
+                        let mut k = 0;
+                        let mut next = |w: &[f32]| {
+                            let v = w[k];
+                            k += 1;
+                            v
+                        };
+                        col(ui, next(&w), h, |ui| self.registers_ui(ui));
                         ui.separator();
-                        if self.pedagogy_predict {
-                            col(ui, cw * 1.15, h, |ui| self.predict_ui(ui));
+                        if predict {
+                            col(ui, next(&w), h, |ui| self.predict_ui(ui));
                             ui.separator();
                         }
-                        col(ui, cw * 1.3, h, |ui| self.stack_ui(ui));
+                        col(ui, next(&w), h, |ui| self.stack_ui(ui));
                         ui.separator();
-                        col(ui, cw * 0.9, h, |ui| self.callstack_ui(ui));
+                        col(ui, next(&w), h, |ui| self.callstack_ui(ui));
                         ui.separator();
-                        col(ui, ui.available_width(), h, |ui| self.syscalls_ui(ui));
+                        col(ui, next(&w), h, |ui| self.syscalls_ui(ui));
                     });
                 });
         }

@@ -261,3 +261,133 @@ pub(super) fn hex_dump_rows(ui: &mut egui::Ui, addr_c: Color32, bytes_c: Color32
         });
     }
 }
+
+/// Largeur minimale d'une colonne de bande : en dessous, un panneau n'affiche
+/// plus rien d'utile et vaut mieux être masqué depuis le menu Affichage.
+pub(super) const MIN_COL_W: f32 = 96.0;
+
+/// Répartit `avail` entre des colonnes de poids relatifs, séparateurs déduits.
+///
+/// Chaque colonne reçoit une part proportionnelle à son poids, sans jamais
+/// descendre sous [`MIN_COL_W`]. Une colonne qui tombe sous ce plancher y est
+/// figée et le reste est redistribué entre les autres — c'est ce qui garantit
+/// que la somme tient dans la bande. Additionner des multiplicateurs choisis à
+/// la main ne le garantissait pas : la dernière colonne (SYSCALLS) finissait
+/// poussée hors de l'écran.
+///
+/// Si la fenêtre est trop étroite pour loger tous les planchers, toutes les
+/// colonnes prennent le minimum et la bande déborde : à l'utilisateur de
+/// masquer un panneau depuis le menu Affichage.
+pub(super) fn band_widths(avail: f32, sep_w: f32, weights: &[f32]) -> Vec<f32> {
+    let n = weights.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let usable = avail - sep_w * (n - 1) as f32;
+    if usable <= MIN_COL_W * n as f32 {
+        return vec![MIN_COL_W; n];
+    }
+    let total: f32 = weights.iter().sum();
+    if total <= 0.0 {
+        return vec![usable / n as f32; n];
+    }
+
+    let mut w = vec![0.0_f32; n];
+    let mut pinned = vec![false; n];
+    // Au plus `n` passes : chacune fige au moins une colonne, ou termine.
+    for _ in 0..n {
+        let pinned_w: f32 = (0..n).filter(|i| pinned[*i]).map(|i| w[i]).sum();
+        let free_sum: f32 = (0..n).filter(|i| !pinned[*i]).map(|i| weights[i]).sum();
+        if free_sum <= 0.0 {
+            break;
+        }
+        let budget = usable - pinned_w;
+        for i in 0..n {
+            if !pinned[i] {
+                w[i] = budget * weights[i] / free_sum;
+            }
+        }
+        let mut changed = false;
+        for i in 0..n {
+            if !pinned[i] && w[i] < MIN_COL_W {
+                w[i] = MIN_COL_W;
+                pinned[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    w
+}
+
+#[cfg(test)]
+mod band_tests {
+    use super::*;
+
+    /// Toutes les colonnes doivent tenir : c'est le bug qui faisait disparaître
+    /// SYSCALLS quand la colonne PRÉDICTION s'ajoutait.
+    #[test]
+    fn every_column_fits_within_the_band() {
+        let sep = 9.0;
+        for weights in [
+            &[1.30, 1.10, 1.15, 0.75, 0.70][..], // avec PRÉDICTION
+            &[1.40, 1.30, 0.90, 0.90][..],       // sans
+        ] {
+            for avail in [700.0, 1200.0, 1920.0, 3000.0] {
+                let w = band_widths(avail, sep, weights);
+                assert_eq!(w.len(), weights.len());
+                let total: f32 = w.iter().sum::<f32>() + sep * (weights.len() - 1) as f32;
+                assert!(
+                    total <= avail + 0.5,
+                    "{} colonnes à {avail}px débordent : {total}",
+                    weights.len()
+                );
+                assert!(w.iter().all(|x| *x >= MIN_COL_W), "colonne trop étroite : {w:?}");
+            }
+        }
+    }
+
+    /// À la largeur d'écran du rapport de bug (3840 px), les cinq colonnes
+    /// doivent toutes être confortables — SYSCALLS comprise.
+    #[test]
+    fn syscalls_column_survives_the_prediction_column() {
+        let with = band_widths(3840.0, 9.0, &[1.30, 1.10, 1.15, 0.75, 0.70]);
+        assert_eq!(with.len(), 5);
+        let syscalls = *with.last().unwrap();
+        assert!(syscalls > 300.0, "SYSCALLS doit rester lisible : {syscalls}px");
+        // Et l'ajout de PRÉDICTION ne doit pas la faire disparaître par rapport
+        // à la disposition sans prédiction.
+        let without = band_widths(3840.0, 9.0, &[1.40, 1.30, 0.90, 0.90]);
+        assert!(
+            syscalls > *without.last().unwrap() * 0.5,
+            "SYSCALLS passe de {}px à {syscalls}px : chute trop brutale",
+            without.last().unwrap()
+        );
+    }
+
+    /// L'ordre des largeurs doit suivre l'ordre des poids.
+    #[test]
+    fn wider_weight_gets_wider_column() {
+        let w = band_widths(2000.0, 9.0, &[2.0, 1.0, 0.5]);
+        assert!(w[0] > w[1] && w[1] > w[2], "{w:?}");
+    }
+
+    /// Sur une fenêtre étroite, on garde le plancher plutôt que des colonnes
+    /// invisibles — la bande défilera, mais chaque panneau reste identifiable.
+    #[test]
+    fn narrow_window_falls_back_to_minimum() {
+        let w = band_widths(200.0, 9.0, &[1.0; 5]);
+        assert_eq!(w.len(), 5);
+        assert!(w.iter().all(|x| (*x - MIN_COL_W).abs() < 0.01), "{w:?}");
+    }
+
+    #[test]
+    fn empty_and_degenerate_inputs_are_safe() {
+        assert!(band_widths(1000.0, 9.0, &[]).is_empty());
+        let w = band_widths(1000.0, 9.0, &[0.0, 0.0]);
+        assert_eq!(w.len(), 2);
+        assert!(w.iter().all(|x| *x > 0.0), "poids nuls : partage équitable");
+    }
+}
