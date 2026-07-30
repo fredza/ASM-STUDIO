@@ -254,6 +254,50 @@ impl App {
         }
     }
 
+    /// Ordre de parcours au clavier : les panneaux tels qu'ils apparaissent
+    /// dans l'arbre, surface principale d'abord.
+    pub(super) fn focus_order(&self) -> Vec<Panel> {
+        let Some(dock) = self.dock.as_ref() else { return Vec::new() };
+        let mut docked = Vec::new();
+        let mut windowed = Vec::new();
+        for ((surface, _), t) in dock.iter_all_tabs() {
+            if surface == SurfaceIndex::main() {
+                docked.push(*t);
+            } else {
+                windowed.push(*t);
+            }
+        }
+        docked.extend(windowed);
+        docked
+    }
+
+    /// F6 / Maj+F6 : passe au panneau suivant (ou précédent) de la disposition.
+    ///
+    /// C'est le point d'entrée du clavier dans l'application : sans lui, on ne
+    /// peut atteindre qu'un panneau à la souris.
+    pub(super) fn focus_next_panel(&mut self, backwards: bool) {
+        let order = self.focus_order();
+        if order.is_empty() {
+            return;
+        }
+        let current = self.focused_panel();
+        let i = current
+            .and_then(|c| order.iter().position(|p| *p == c))
+            .unwrap_or(0);
+        let n = order.len();
+        // Sans panneau focalisé, F6 saisit le premier plutôt que le second.
+        let next = match current {
+            None => order[0],
+            Some(_) if backwards => order[(i + n - 1) % n],
+            Some(_) => order[(i + 1) % n],
+        };
+        self.focus_panel(next);
+        // Le focus d'un widget resterait sinon capté par l'éditeur.
+        if next != Panel::Editor {
+            self.ctx_surrender_focus = true;
+        }
+    }
+
     /// Rend la zone d'ancrage.
     ///
     /// Le `DockState` est sorti de `self` le temps du rendu : `TabViewer` a
@@ -503,5 +547,81 @@ mod tests {
                 "{p:?} : état non restitué"
             );
         }
+    }
+
+    /// F6 doit atteindre CHAQUE panneau de la disposition, sans en sauter ni
+    /// tourner en rond avant d'avoir tout vu. C'est la promesse « tout le
+    /// clavier » : sans elle, un panneau resterait accessible à la souris seule.
+    #[test]
+    fn f6_reaches_every_panel_in_one_cycle() {
+        let mut app = App::new();
+        let total = app.focus_order().len();
+        assert_eq!(total, Panel::ALL.len(), "l'ordre doit couvrir tous les panneaux");
+
+        let mut seen = Vec::new();
+        for _ in 0..total {
+            app.focus_next_panel(false);
+            if let Some(p) = app.focused_panel() {
+                seen.push(p);
+            }
+        }
+        for p in Panel::ALL {
+            assert!(seen.contains(&p), "{p:?} jamais atteint par F6");
+        }
+    }
+
+    /// Maj+F6 parcourt le même ensemble en sens inverse.
+    #[test]
+    fn shift_f6_walks_backwards() {
+        let mut app = App::new();
+        app.focus_panel(Panel::Editor);
+        app.focus_next_panel(false);
+        let forward = app.focused_panel();
+        app.focus_next_panel(true);
+        assert_eq!(app.focused_panel(), Some(Panel::Editor), "retour sur ses pas");
+        assert_ne!(forward, Some(Panel::Editor));
+    }
+
+    /// Un panneau fermé sort du parcours : F6 ne doit pas s'arrêter sur du vide.
+    #[test]
+    fn focus_order_skips_closed_panels() {
+        let mut app = App::new();
+        app.hide_panel(Panel::Console);
+        app.hide_panel(Panel::Flags);
+        let order = app.focus_order();
+        assert!(!order.contains(&Panel::Console), "console fermée mais parcourue");
+        assert!(!order.contains(&Panel::Flags), "flags fermé mais parcouru");
+        assert_eq!(order.len(), Panel::ALL.len() - 2);
+    }
+
+    /// Sans aucun panneau, la navigation ne doit pas paniquer ni boucler.
+    #[test]
+    fn focus_navigation_is_safe_when_empty() {
+        let mut app = App::new();
+        for p in Panel::ALL {
+            app.hide_panel(p);
+        }
+        assert!(app.focus_order().is_empty());
+        app.focus_next_panel(false);
+        app.focus_next_panel(true);
+        assert_eq!(app.focused_panel(), None);
+    }
+
+    /// Les panneaux détachés en fenêtre restent atteignables au clavier, après
+    /// les panneaux ancrés.
+    #[test]
+    fn detached_panels_stay_reachable() {
+        let mut app = App::new();
+        app.hide_panel(Panel::Timeline);
+        if let Some(d) = app.dock.as_mut() {
+            d.add_window(vec![Panel::Timeline]);
+        }
+        let order = app.focus_order();
+        assert!(order.contains(&Panel::Timeline), "panneau détaché injoignable");
+        assert_eq!(
+            order.last(),
+            Some(&Panel::Timeline),
+            "les détachés viennent après les ancrés"
+        );
     }
 }

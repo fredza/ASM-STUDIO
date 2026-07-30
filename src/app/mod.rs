@@ -187,6 +187,8 @@ pub struct App {
     pub(super) call_stack: Vec<u64>,
     /// Dossier affiché dans l'explorateur de fichiers (panneau de gauche).
     pub(super) explorer_dir: PathBuf,
+    /// Fichier retenu au clavier dans l'explorateur (surligné, ouvert par Entrée).
+    pub(super) explorer_selected: Option<PathBuf>,
     pub(super) view_index: usize,
 
     pub(super) mem_addr: u64,
@@ -236,6 +238,9 @@ pub struct App {
     pub(super) icons: Option<Icons>,
     /// Dialogue « Ouvrir » natif en cours sur un thread de fond (sinon `None`).
     /// Sondé chaque frame → l'UI ne se fige pas pendant que le sélecteur est ouvert.
+    /// Demande de relâchement du focus widget au prochain frame : quand le
+    /// clavier quitte l'éditeur, ce dernier ne doit plus capter les touches.
+    pub(super) ctx_surrender_focus: bool,
     /// Arbre des panneaux ancrables. `Option` car il est sorti de `self` le
     /// temps du rendu : le `TabViewer` a besoin de `&mut App`.
     pub(super) dock: Option<egui_dock::DockState<dock::Panel>>,
@@ -287,6 +292,7 @@ impl App {
             syscalls: Vec::new(),
             call_stack: Vec::new(),
             explorer_dir,
+            explorer_selected: None,
             view_index: 0,
             mem_addr: 0,
             mem_input: String::new(),
@@ -317,6 +323,7 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
+            ctx_surrender_focus: false,
             dock: Some(dock::default_layout()),
             pedagogy_predict: false,
             prediction: None,

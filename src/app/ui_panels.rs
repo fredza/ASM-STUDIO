@@ -495,6 +495,29 @@ impl App {
 
     // ---------- Explorateur de fichiers (panneau de gauche) ----------
 
+    /// Déplace la sélection clavier de l'explorateur d'un fichier.
+    ///
+    /// Ne parcourt que les fichiers du dossier racine : les sous-dossiers se
+    /// déplient à la souris, et un parcours récursif au clavier serait plus
+    /// déroutant qu'utile.
+    pub(super) fn move_explorer_selection(&mut self, down: bool) {
+        let (_, files) = super::list_entries(&self.explorer_dir);
+        if files.is_empty() {
+            return;
+        }
+        let cur = self
+            .explorer_selected
+            .as_ref()
+            .or(Some(&self.src_path))
+            .and_then(|p| files.iter().position(|f| f == p));
+        let next = match (cur, down) {
+            (None, _) => 0,
+            (Some(i), true) => (i + 1).min(files.len() - 1),
+            (Some(i), false) => i.saturating_sub(1),
+        };
+        self.explorer_selected = Some(files[next].clone());
+    }
+
     pub(super) fn explorer_ui(&mut self, ui: &mut egui::Ui) {
         let up_tip = i18n::tr3(self.lang, "Dossier parent comme racine", "Parent folder as root", "Carpeta padre como raíz");
         header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.explorer), "EXPLORER");
@@ -524,7 +547,9 @@ impl App {
         // Arbre de fichiers (dossiers repliables + fichiers cliquables).
         let asm_col = self.c_mnemonic();
         let other_col = self.c_bytes();
-        let cur = self.src_path.clone();
+        // Le repère suit la sélection clavier quand il y en a une, sinon le
+        // fichier ouvert : sans cela, les flèches déplaceraient un curseur invisible.
+        let cur = self.explorer_selected.clone().unwrap_or_else(|| self.src_path.clone());
         let mut to_open = None;
         egui::ScrollArea::both().id_salt("explorer_scroll").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().indent = 14.0;
@@ -923,5 +948,51 @@ niveau2:
                 app.syscalls_ui(ui);
             });
         });
+    }
+
+    /// L'explorateur se parcourt au clavier et s'arrête aux bornes, comme le
+    /// désassemblage — sinon le panneau resterait pilotable à la souris seule.
+    #[test]
+    fn explorer_selection_moves_and_clamps() {
+        let mut app = App::new();
+        // Dossier d'exemples réel : il contient plusieurs .asm.
+        app.explorer_dir = super::super::abs_dir_of(std::path::Path::new("examples/test.asm"));
+        let (_, files) = super::super::list_entries(&app.explorer_dir);
+        assert!(files.len() >= 2, "il faut au moins deux fichiers pour tester");
+
+        app.explorer_selected = None;
+        app.move_explorer_selection(true);
+        let first = app.explorer_selected.clone();
+        assert!(first.is_some(), "une première sélection doit apparaître");
+
+        // On descend jusqu'au bout, puis une fois de trop.
+        for _ in 0..files.len() + 3 {
+            app.move_explorer_selection(true);
+        }
+        assert_eq!(
+            app.explorer_selected.as_ref(),
+            files.last(),
+            "la descente doit s'arrêter au dernier fichier"
+        );
+
+        // Et on remonte jusqu'au premier, puis une fois de trop.
+        for _ in 0..files.len() + 3 {
+            app.move_explorer_selection(false);
+        }
+        assert_eq!(
+            app.explorer_selected.as_ref(),
+            files.first(),
+            "la remontée doit s'arrêter au premier fichier"
+        );
+    }
+
+    /// Un dossier sans fichier ne doit pas paniquer.
+    #[test]
+    fn explorer_selection_is_safe_when_empty() {
+        let mut app = App::new();
+        app.explorer_dir = std::env::temp_dir().join("asmstudio-vide-inexistant");
+        app.explorer_selected = None;
+        app.move_explorer_selection(true);
+        assert_eq!(app.explorer_selected, None);
     }
 }

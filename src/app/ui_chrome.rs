@@ -56,10 +56,27 @@ impl App {
         }
 
         // --- Navigation clavier ---
-        // F6 : ramène le focus dans l'éditeur (point d'entrée du clavier).
-        if ctx.input(|i| i.key_pressed(Key::F6)) {
+        // F6 / Maj+F6 : panneau suivant / précédent de la disposition.
+        // Ctrl+F6 : retour direct à l'éditeur, où que l'on soit.
+        let (f6, f6_back, f6_editor) = ctx.input(|i| {
+            let p = i.key_pressed(Key::F6);
+            (p && !i.modifiers.shift && !i.modifiers.ctrl, p && i.modifiers.shift, p && i.modifiers.ctrl)
+        });
+        if f6_editor {
             self.focus_panel(super::dock::Panel::Editor);
             ctx.memory_mut(|m| m.request_focus(super::editor_id()));
+        } else if f6 || f6_back {
+            self.focus_next_panel(f6_back);
+            if self.focused_panel() == Some(super::dock::Panel::Editor) {
+                ctx.memory_mut(|m| m.request_focus(super::editor_id()));
+            }
+        }
+        // Quitter l'éditeur au clavier : relâcher son focus, sinon il continue
+        // d'avaler les touches destinées au panneau nouvellement visé.
+        if std::mem::take(&mut self.ctx_surrender_focus)
+            && let Some(id) = ctx.memory(|m| m.focused())
+        {
+            ctx.memory_mut(|m| m.surrender_focus(id));
         }
         // Ctrl+Tab / Ctrl+Maj+Tab : fait défiler les onglets du centre.
         let (tab_next, tab_prev) = ctx.input(|i| {
@@ -134,10 +151,9 @@ impl App {
 
         // ↑/↓ parcourent le désassemblage quand son onglet est actif ; Entrée
         // ouvre le microscope sur l'instruction retenue.
-        if self.focused_panel() == Some(super::dock::Panel::Disasm)
-            && !editing
-            && !self.disasm.is_empty()
-        {
+        // Le panneau focalisé décide de ce que font les flèches : chaque liste
+        // se parcourt au clavier, Entrée valide.
+        if !editing {
             let (up, down, enter) = ctx.input(|i| {
                 (
                     i.key_pressed(Key::ArrowUp),
@@ -145,11 +161,24 @@ impl App {
                     i.key_pressed(Key::Enter),
                 )
             });
-            if up || down {
-                self.move_disasm_selection(down);
-            }
-            if enter && let Some(a) = self.selected {
-                self.microscope = Some(a);
+            match self.focused_panel() {
+                Some(super::dock::Panel::Disasm) if !self.disasm.is_empty() => {
+                    if up || down {
+                        self.move_disasm_selection(down);
+                    }
+                    if enter && let Some(a) = self.selected {
+                        self.microscope = Some(a);
+                    }
+                }
+                Some(super::dock::Panel::Explorer) => {
+                    if up || down {
+                        self.move_explorer_selection(down);
+                    }
+                    if enter && let Some(f) = self.explorer_selected.clone() {
+                        self.open_file(f);
+                    }
+                }
+                _ => {}
             }
         }
 
