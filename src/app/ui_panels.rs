@@ -107,6 +107,21 @@ impl App {
         }
     }
 
+    /// Déplace la fenêtre du vidage mémoire d'une ligne (16 octets).
+    ///
+    /// `rows` permet un saut de page. L'adresse est bornée à 0 par le bas : un
+    /// décalage négatif reboucherait vers les adresses hautes, ce qui n'a aucun
+    /// sens pour l'élève.
+    pub(super) fn scroll_memory(&mut self, down: bool, rows: u64) {
+        let delta = rows.saturating_mul(16);
+        self.mem_addr = if down {
+            self.mem_addr.saturating_add(delta)
+        } else {
+            self.mem_addr.saturating_sub(delta)
+        };
+        self.mem_input = format!("0x{:X}", self.mem_addr);
+    }
+
     pub(super) fn memory_ui(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
@@ -142,6 +157,7 @@ impl App {
             ui.label(tr("aller @", "go to @", "ir a @"));
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.mem_input)
+                    .id(egui::Id::new("kb_mem_goto"))
                     .desired_width(130.0)
                     .font(egui::TextStyle::Monospace)
                     .hint_text("0x402000"),
@@ -186,6 +202,7 @@ impl App {
             ui.label(RichText::new(tr("✎ écrire @ base :", "✎ write @ base:", "✎ escribir @ base:")).small());
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.mem_poke)
+                    .id(egui::Id::new("kb_mem_poke"))
                     .desired_width(150.0)
                     .font(egui::TextStyle::Monospace)
                     .hint_text("48 65 6C…"),
@@ -377,6 +394,7 @@ impl App {
                             ui.horizontal(|ui| {
                                 let resp = ui.add(
                                     egui::TextEdit::singleline(buf)
+                                        .id(egui::Id::new("kb_reg_edit"))
                                         .desired_width(96.0)
                                         .font(egui::TextStyle::Monospace)
                                         .hint_text("hex"),

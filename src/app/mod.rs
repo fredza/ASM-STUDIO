@@ -44,6 +44,41 @@ pub(super) fn editor_id() -> egui::Id {
     egui::Id::new("kb_editor")
 }
 
+/// Champs de saisie de l'application, avec le panneau auquel ils appartiennent.
+///
+/// Les flèches doivent piloter le panneau focalisé, SAUF si l'utilisateur tape
+/// DANS CE panneau — auquel cas elles déplacent le curseur du texte.
+///
+/// Deux formulations plus simples ont été essayées et sont fausses :
+/// « un widget quelconque a-t-il le focus ? » condamnait toute la navigation
+/// dès qu'on avait cliqué une fois dans « aller @ » (egui garde ce focus
+/// indéfiniment) ; « un champ de saisie a-t-il le focus ? » avait le même
+/// défaut, à peine atténué. Seule l'appartenance au panneau focalisé tranche.
+pub(super) fn text_inputs() -> [(egui::Id, dock::Panel); 4] {
+    [
+        (editor_id(), dock::Panel::Editor),
+        (egui::Id::new("kb_mem_goto"), dock::Panel::Memory),
+        (egui::Id::new("kb_mem_poke"), dock::Panel::Memory),
+        (egui::Id::new("kb_reg_edit"), dock::Panel::Registers),
+    ]
+}
+
+impl App {
+    /// Vrai si l'utilisateur saisit du texte dans le panneau qui a le focus.
+    pub(super) fn typing_in_focused_panel(&mut self, ctx: &egui::Context) -> bool {
+        let Some(f) = ctx.memory(|m| m.focused()) else { return false };
+        // Le champ de la prédiction vit dans une fenêtre flottante, hors de
+        // l'arbre : dès qu'il a le focus, il garde les flèches.
+        if f == egui::Id::new("kb_pred_input") {
+            return true;
+        }
+        let focused = self.focused_panel();
+        text_inputs()
+            .iter()
+            .any(|(id, panel)| *id == f && Some(*panel) == focused)
+    }
+}
+
 // --- Palette ---
 pub(super) const ACCENT: Color32 = Color32::from_rgb(0x4C, 0x8B, 0xF5); // bleu d'accent
 pub(super) const ACTION: Color32 = Color32::from_rgb(0xE8, 0x8A, 0x2E); // orange d'action (Run/Step)

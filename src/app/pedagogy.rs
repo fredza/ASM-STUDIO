@@ -237,6 +237,7 @@ impl App {
         };
 
         let (hdr, addr_c, bytes_c) = (self.c_header(), self.c_addr(), self.c_bytes());
+        let kb_sel = self.reg_sel;
         let blink = self.blink_intensity(ui);
         let weak_col = self.c_bytes().gamma_multiply(0.7);
 
@@ -257,9 +258,9 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(tr(
-                        "survolez un registre pour isoler son fil",
-                        "hover a register to isolate its wire",
-                        "pase el cursor sobre un registro para aislar su hilo",
+                        "survol ou ↑↓ pour isoler un fil",
+                        "hover or ↑↓ to isolate a wire",
+                        "pase el cursor o ↑↓ para aislar un hilo",
                     ))
                     .small()
                     .italics()
@@ -322,10 +323,14 @@ impl App {
                     y += h + LANE_GAP;
                 }
 
-                // Registre survolé (priorité au fil isolé).
-                let hovered: Option<usize> = pointer.and_then(|p| {
-                    reg_rects.iter().position(|r| r.expand2(egui::vec2(0.0, 2.0)).contains(p))
-                });
+                // Fil isolé : le survol souris, ou à défaut la sélection clavier.
+                // Sans cette seconde source, les flèches déplaceraient un
+                // curseur invisible dans ce panneau.
+                let hovered: Option<usize> = pointer
+                    .and_then(|p| {
+                        reg_rects.iter().position(|r| r.expand2(egui::vec2(0.0, 2.0)).contains(p))
+                    })
+                    .or_else(|| (kb_sel < wires.len()).then_some(kb_sel));
 
                 // ---- 1. Voies mémoire (peintes d'abord : arrière-plan) ----
                 for (i, region) in regions.iter().enumerate() {

@@ -266,6 +266,7 @@ impl App {
             ui.label("=");
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.pred_input)
+                    .id(egui::Id::new("kb_pred_input"))
                     .desired_width(120.0)
                     .font(egui::TextStyle::Monospace)
                     .hint_text(tr("hexa", "hex", "hexa")),

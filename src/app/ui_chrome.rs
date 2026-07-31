@@ -158,8 +158,8 @@ impl App {
             self.show_shortcuts = true;
         }
         // Affichage : Ctrl+1..5 bascule chaque panneau.
-        // Timeline seulement si l'éditeur n'a pas le focus (évite le conflit ←/→).
-        let editing = ctx.memory(|m| m.focused().is_some());
+        // Les flèches pilotent le panneau focalisé, sauf si l'on tape dedans.
+        let editing = self.typing_in_focused_panel(ctx);
 
         // ↑/↓ parcourent le désassemblage quand son onglet est actif ; Entrée
         // ouvre le microscope sur l'instruction retenue.
@@ -188,6 +188,25 @@ impl App {
                     }
                     if enter && let Some(f) = self.explorer_selected.clone() {
                         self.open_file(f);
+                    }
+                }
+                Some(super::dock::Panel::Memory) => {
+                    // Le vidage défile ligne par ligne, page par page.
+                    let (pg_up, pg_dn) = ctx.input(|i| {
+                        (i.key_pressed(Key::PageUp), i.key_pressed(Key::PageDown))
+                    });
+                    if up || down {
+                        self.scroll_memory(down, 1);
+                    }
+                    if pg_up || pg_dn {
+                        self.scroll_memory(pg_dn, 8);
+                    }
+                }
+                Some(super::dock::Panel::MemMap) => {
+                    // La vue mémoire montre les registres : ↑↓ isolent le fil
+                    // d'un registre, comme le survol à la souris.
+                    if up || down {
+                        self.move_reg_selection_sideways(down);
                     }
                 }
                 Some(super::dock::Panel::Registers) => {
@@ -220,7 +239,16 @@ impl App {
         }
 
         // La timeline garde ←/→ sauf si le panneau focalisé les utilise.
-        let arrows_taken = self.focused_panel() == Some(super::dock::Panel::Registers);
+        let arrows_taken = matches!(
+            self.focused_panel(),
+            Some(
+                super::dock::Panel::Registers
+                    | super::dock::Panel::Memory
+                    | super::dock::Panel::MemMap
+                    | super::dock::Panel::Disasm
+                    | super::dock::Panel::Explorer
+            )
+        );
         if self.dbg.is_some() && !editing && !arrows_taken {
             if first {
                 self.set_view(0);
@@ -633,5 +661,137 @@ impl App {
         if kill_requested {
             self.stop();
         }
+    }
+}
+
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    use crate::app::dock::Panel;
+    use std::path::PathBuf;
+
+    /// Envoie une vraie touche à travers egui, comme le ferait le système.
+    fn key(k: egui::Key) -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: k,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// `tag` distingue les artefacts : sans cela, les tests exécutés en
+    /// parallèle assemblent dans le même dossier et s'écrasent l'un l'autre.
+    fn running_app(tag: &str) -> App {
+        let mut app = App::new();
+        app.src_path = PathBuf::from(format!("build/kbnav-{tag}.asm"));
+        app.out_dir = PathBuf::from(format!("build/kbnav-{tag}"));
+        app.source = "section .text\n global _start\n_start:\n mov rax,1\n mov rbx,2\n \
+                       mov rcx,3\n mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+        app.launch();
+        app.step();
+        app
+    }
+
+    /// Une frame complète : raccourcis puis rendu, comme `App::update`.
+    fn frame(app: &mut App, ctx: &egui::Context, input: egui::RawInput) {
+        let _ = ctx.run(input, |ctx| {
+            app.handle_shortcuts(ctx);
+            app.dock_ui(ctx);
+        });
+    }
+
+    /// Les flèches doivent piloter le désassemblage, la mémoire et la vue
+    /// mémoire — les trois panneaux signalés comme inertes.
+    #[test]
+    fn arrows_drive_disasm_memory_and_memmap() {
+        let mut app = running_app("arrows");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+
+        // --- Désassemblage ---
+        app.focus_panel(Panel::Disasm);
+        frame(&mut app, &ctx, Default::default());
+        app.selected = None;
+        frame(&mut app, &ctx, key(egui::Key::ArrowDown));
+        let first = app.selected;
+        assert!(first.is_some(), "↓ doit sélectionner une instruction");
+        frame(&mut app, &ctx, key(egui::Key::ArrowDown));
+        assert_ne!(app.selected, first, "↓ doit avancer dans la liste");
+
+        // --- Mémoire ---
+        app.focus_panel(Panel::Memory);
+        frame(&mut app, &ctx, Default::default());
+        let base = app.mem_addr;
+        frame(&mut app, &ctx, key(egui::Key::ArrowDown));
+        assert_eq!(app.mem_addr, base + 16, "↓ descend d'une ligne de 16 octets");
+        frame(&mut app, &ctx, key(egui::Key::ArrowUp));
+        assert_eq!(app.mem_addr, base, "↑ remonte d'une ligne");
+        frame(&mut app, &ctx, key(egui::Key::PageDown));
+        assert_eq!(app.mem_addr, base + 128, "PgDn saute huit lignes");
+        // Le champ de saisie suit l'adresse affichée.
+        assert_eq!(app.mem_input, format!("0x{:X}", app.mem_addr));
+
+        // --- Vue mémoire ---
+        app.focus_panel(Panel::MemMap);
+        frame(&mut app, &ctx, Default::default());
+        app.reg_sel = 0;
+        frame(&mut app, &ctx, key(egui::Key::ArrowDown));
+        assert_eq!(app.reg_sel, 1, "↓ isole le fil du registre suivant");
+    }
+
+    /// Le défaut à l'origine du signalement : un champ de saisie gardait le
+    /// focus et condamnait TOUTE la navigation clavier de l'application.
+    #[test]
+    fn a_focused_text_field_does_not_freeze_other_panels() {
+        let mut app = running_app("frozen");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+
+        // On simule un clic passé dans « aller @ » : ce champ garde le focus.
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("kb_mem_goto")));
+        app.focus_panel(Panel::Disasm);
+        frame(&mut app, &ctx, Default::default());
+
+        app.selected = None;
+        frame(&mut app, &ctx, key(egui::Key::ArrowDown));
+        assert!(
+            app.selected.is_some(),
+            "un champ focalisé ailleurs ne doit pas geler les flèches"
+        );
+    }
+
+    /// Mais pendant une vraie saisie, les flèches restent au texte : elles
+    /// doivent déplacer le curseur, pas la sélection du panneau.
+    #[test]
+    fn arrows_belong_to_the_text_field_while_typing() {
+        let mut app = running_app("typing");
+        let ctx = egui::Context::default();
+        app.focus_panel(Panel::Memory);
+        frame(&mut app, &ctx, Default::default());
+
+        let base = app.mem_addr;
+        // L'éditeur de texte du panneau MÉMOIRE a le focus : on tape dedans.
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("kb_mem_goto")));
+        frame(&mut app, &ctx, key(egui::Key::ArrowDown));
+        assert_eq!(app.mem_addr, base, "la saisie garde les flèches");
+    }
+
+    /// L'adresse mémoire ne doit pas reboucler vers les adresses hautes en
+    /// remontant depuis 0 : un `wrapping_sub` afficherait 0xFFFF… sans raison.
+    #[test]
+    fn memory_scroll_clamps_at_zero() {
+        let mut app = App::new();
+        app.mem_addr = 8;
+        app.scroll_memory(false, 1);
+        assert_eq!(app.mem_addr, 0, "borné à zéro");
+        app.scroll_memory(false, 100);
+        assert_eq!(app.mem_addr, 0, "reste à zéro");
     }
 }
