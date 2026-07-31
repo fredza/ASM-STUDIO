@@ -40,6 +40,7 @@ pub(crate) enum Command {
     ShowAllPanels,
     // Fenêtres
     TogglebPrediction,
+    ToggleTutorial,
     Calculator,
     Settings,
     Shortcuts,
@@ -81,6 +82,7 @@ impl Command {
             Command::ResetLayout => t("Réinitialiser la disposition", "Reset layout", "Restablecer disposición").into(),
             Command::ShowAllPanels => t("Afficher tous les panneaux", "Show all panels", "Mostrar todos los paneles").into(),
             Command::TogglebPrediction => t("Fenêtre Prédiction", "Prediction window", "Ventana Predicción").into(),
+            Command::ToggleTutorial => t("Activer/désactiver le tutoriel", "Enable/disable the tutorial", "Activar/desactivar el tutorial").into(),
             Command::Calculator => t("Calculatrice multi-base", "Multi-base calculator", "Calculadora multibase").into(),
             Command::Settings => t("Réglages…", "Settings…", "Configuración…").into(),
             Command::Shortcuts => t("Raccourcis clavier…", "Keyboard shortcuts…", "Atajos de teclado…").into(),
@@ -142,6 +144,7 @@ impl Command {
             Command::ShowAllPanels,
             Command::ResetLayout,
             Command::TogglebPrediction,
+            Command::ToggleTutorial,
             Command::Calculator,
             Command::Settings,
             Command::Shortcuts,
@@ -265,6 +268,10 @@ impl App {
             Command::ResetLayout => self.reset_dock_layout(),
             Command::ShowAllPanels => {
                 for p in Panel::ALL {
+                    // Le tutoriel s'ouvre par son réglage, pas par ici.
+                    if crate::app::dock::SETTING_DRIVEN.contains(&p) {
+                        continue;
+                    }
                     if !self.panel_is_open(p) {
                         self.show_panel(p);
                     }
@@ -273,6 +280,11 @@ impl App {
             }
             Command::TogglebPrediction => {
                 self.pedagogy_predict = !self.pedagogy_predict;
+                self.save_settings();
+            }
+            Command::ToggleTutorial => {
+                self.tutorial_enabled = !self.tutorial_enabled;
+                self.sync_tutorial_panel();
                 self.save_settings();
             }
             Command::Calculator => self.show_calculator = true,

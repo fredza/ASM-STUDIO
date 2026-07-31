@@ -484,7 +484,9 @@ impl App {
             // Les panneaux avancés sont regroupés à part et annoncés comme tels,
             // plutôt que noyés dans une liste de quatorze cases à cocher.
             for p in super::dock::Panel::ALL {
-                if advanced.contains(&p) {
+                // Le tutoriel a son propre interrupteur dans les préférences :
+                // une case ici entrerait en conflit avec lui.
+                if advanced.contains(&p) || super::dock::SETTING_DRIVEN.contains(&p) {
                     continue;
                 }
                 let mut open = self.panel_is_open(p);
@@ -519,6 +521,9 @@ impl App {
         ui.separator();
         if ui.button(tr("Tout afficher", "Show all", "Mostrar todo")).clicked() {
             for p in super::dock::Panel::ALL {
+                if super::dock::SETTING_DRIVEN.contains(&p) {
+                    continue;
+                }
                 if !self.panel_is_open(p) {
                     self.show_panel(p);
                 }

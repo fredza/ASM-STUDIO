@@ -518,6 +518,25 @@ impl App {
             "Unified memory view (\"Memory View\" tab — registers → pointed zones)",
             "Vista de memoria unificada (pestaña «Vista memoria» — registros → zonas apuntadas)",
         );
+        let t_tuto_h = self.tr3("Parcours guidé", "Guided path", "Recorrido guiado");
+        let t_tuto = self.tr3(
+            "Activer le tutoriel (panneau Tutoriel)",
+            "Enable the tutorial (Tutorial panel)",
+            "Activar el tutorial (panel Tutorial)",
+        );
+        let t_tuto_desc = self.tr3(
+            "Un parcours en quatre niveaux, du premier programme à l'analyse de binaires. \
+             Chaque leçon charge son propre programme dans l'éditeur, ouvre les panneaux \
+             qu'elle explique, et embarque ses attentes : le panneau Exercice dit si c'est \
+             juste. La progression est conservée d'une session à l'autre.",
+            "A four-level path, from your first program to binary analysis. Each lesson loads \
+             its own program into the editor, opens the panels it explains, and carries its \
+             expectations: the Exercise panel tells you if it is right. Progress is kept \
+             between sessions.",
+            "Un recorrido de cuatro niveles, del primer programa al análisis de binarios. Cada \
+             lección carga su programa, abre los paneles que explica y lleva sus expectativas. \
+             El progreso se conserva entre sesiones.",
+        );
         let t_close = self.tr3("Fermer", "Close", "Cerrar");
 
         let mut open = true;
@@ -574,6 +593,14 @@ impl App {
                             ui.label(RichText::new(t_asmstd_what).size(12.5));
                             ui.add_space(5.0);
                             ui.label(RichText::new(t_asmstd_scope).size(12.0).weak());
+                        });
+                        ui.separator();
+
+                        section(ui, t_tuto_h);
+                        changed |= ui.checkbox(&mut self.tutorial_enabled, t_tuto).changed();
+                        ui.add_space(4.0);
+                        super::card(ui, |ui| {
+                            ui.label(RichText::new(t_tuto_desc).size(12.5));
                         });
                         ui.separator();
 

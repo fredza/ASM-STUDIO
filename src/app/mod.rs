@@ -25,6 +25,7 @@ mod dock;
 mod palette;
 mod predict;
 mod ui_exercise;
+mod ui_tutorial;
 mod widgets;
 mod paths;
 mod parse;
@@ -323,6 +324,10 @@ pub struct App {
     /// doit amener l'élément retenu à l'écran. Sans cela, les flèches
     /// déplaçaient une sélection qui sortait du cadre visible.
     pub(super) scroll_to_sel: Option<dock::Panel>,
+    /// Parcours guidé : activable, avec sa progression et la leçon ouverte.
+    pub(super) tutorial_enabled: bool,
+    pub(super) tutorial_progress: crate::tutorial::Progress,
+    pub(super) tutorial_current: Option<String>,
     /// Mode d'affichage : apprentissage (épuré) ou complet.
     pub(super) mode: UiMode,
     /// Palette de commandes (Ctrl+Maj+P) : ouverte, requête, sélection.
@@ -420,6 +425,9 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
+            tutorial_enabled: false,
+            tutorial_progress: crate::tutorial::Progress::default(),
+            tutorial_current: None,
             scroll_to_sel: None,
             mode: UiMode::Learning,
             palette_open: false,
@@ -472,6 +480,11 @@ impl App {
                 }
                 "lang" => self.lang = Lang::from_key(v),
                 "mode" => self.mode = UiMode::from_key(v),
+                "tutorial" => self.tutorial_enabled = v == "true",
+                "tutorial_done" => self.tutorial_progress = crate::tutorial::Progress::parse(v),
+                "tutorial_current" => {
+                    self.tutorial_current = (!v.is_empty()).then(|| v.to_string())
+                }
                 "tooltips" => self.show_tooltips = v == "true",
                 "asmstd" => self.use_asmstd = v == "true",
                 "animate" => self.animate = v == "true",
@@ -510,6 +523,7 @@ impl App {
         let content = format!(
             "theme={theme}\nlang={}\nmode={}\ntooltips={}\nasmstd={}\nanimate={}\n\
              pedagogy_anim={}\npedagogy_memview={}\npedagogy_predict={}\n\
+             tutorial={}\ntutorial_done={}\ntutorial_current={}\n\
              dock={}\n",
             self.lang.key(),
             self.mode.key(),
@@ -519,6 +533,9 @@ impl App {
             self.pedagogy_anim,
             self.pedagogy_memview,
             self.pedagogy_predict,
+            self.tutorial_enabled,
+            self.tutorial_progress.to_string(),
+            self.tutorial_current.clone().unwrap_or_default(),
             self.dock_layout_string(),
         );
         let _ = std::fs::write(&path, content);

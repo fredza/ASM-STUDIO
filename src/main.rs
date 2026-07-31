@@ -12,6 +12,7 @@ mod i18n;
 mod srcmap;
 mod syntax;
 mod syscall;
+mod tutorial;
 mod updater;
 
 fn main() -> eframe::Result {

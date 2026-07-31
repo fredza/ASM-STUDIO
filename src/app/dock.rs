@@ -32,11 +32,12 @@ pub(crate) enum Panel {
     CallStack,
     Syscalls,
     Exercise,
+    Tutorial,
 }
 
 impl Panel {
     /// Tous les panneaux, dans l'ordre du menu Affichage.
-    pub(crate) const ALL: [Panel; 14] = [
+    pub(crate) const ALL: [Panel; 15] = [
         Panel::Editor,
         Panel::Disasm,
         Panel::MemMap,
@@ -51,6 +52,7 @@ impl Panel {
         Panel::CallStack,
         Panel::Syscalls,
         Panel::Exercise,
+        Panel::Tutorial,
     ];
 
     /// Titre affiché sur l'onglet.
@@ -71,6 +73,7 @@ impl Panel {
             Panel::CallStack => t("Pile d'appels", "Call stack", "Pila de llamadas"),
             Panel::Syscalls => t("Appels système", "Syscalls", "Llamadas al sistema"),
             Panel::Exercise => t("Exercice", "Exercise", "Ejercicio"),
+            Panel::Tutorial => t("Tutoriel", "Tutorial", "Tutorial"),
         }
         .to_string()
     }
@@ -92,6 +95,7 @@ impl Panel {
             Panel::CallStack => "callstack",
             Panel::Syscalls => "syscalls",
             Panel::Exercise => "exercise",
+            Panel::Tutorial => "tutorial",
         }
     }
 
@@ -142,6 +146,11 @@ pub(crate) fn default_layout() -> DockState<Panel> {
     let _ = center;
     state
 }
+
+/// Panneaux dont la présence est commandée par un RÉGLAGE, pas par la
+/// disposition : ils n'apparaissent dans aucun agencement par défaut, et
+/// `sync_tutorial_panel` les aligne sur leur interrupteur à chaque frame.
+pub(crate) const SETTING_DRIVEN: [Panel; 1] = [Panel::Tutorial];
 
 /// Panneaux réservés au mode complet : ils supposent des notions qui viennent
 /// plus tard (code machine, adressage, conventions d'appel, appels système).
@@ -224,6 +233,7 @@ impl TabViewer for Viewer<'_> {
             Panel::CallStack => app.callstack_ui(ui),
             Panel::Syscalls => app.syscalls_ui(ui),
             Panel::Exercise => app.exercise_ui(ui),
+            Panel::Tutorial => app.tutorial_ui(ui),
         }
     }
 
@@ -356,6 +366,10 @@ impl App {
     /// Le `DockState` est sorti de `self` le temps du rendu : `TabViewer` a
     /// besoin de `&mut App`, et l'état ne peut pas être emprunté deux fois.
     pub(super) fn dock_ui(&mut self, ctx: &egui::Context) {
+        // Le tutoriel est le seul panneau commandé par un réglage : on aligne
+        // l'arbre sur l'interrupteur avant de dessiner, pour qu'activer le
+        // parcours le fasse apparaître sans autre geste.
+        self.sync_tutorial_panel();
         let Some(mut dock) = self.dock.take() else { return };
         let mut style = egui_dock::Style::from_egui(&ctx.style());
         style.tab_bar.fill_tab_bar = true;
@@ -398,6 +412,16 @@ impl App {
         self.dock = Some(dock);
     }
 
+    /// Aligne la présence du panneau Tutoriel sur le réglage `tutorial_enabled`.
+    pub(super) fn sync_tutorial_panel(&mut self) {
+        let open = self.panel_is_open(Panel::Tutorial);
+        if self.tutorial_enabled && !open {
+            self.show_panel(Panel::Tutorial);
+        } else if !self.tutorial_enabled && open {
+            self.hide_panel(Panel::Tutorial);
+        }
+    }
+
     /// Sérialise la disposition : une ligne par onglet, `surface:clé`.
     ///
     /// On n'enregistre pas la géométrie exacte de l'arbre (l'API d'egui_dock ne
@@ -406,6 +430,10 @@ impl App {
     pub(super) fn dock_layout_string(&self) -> String {
         let Some(dock) = self.dock.as_ref() else { return String::new() };
         dock.iter_all_tabs()
+            // Un panneau commandé par un réglage n'est PAS sérialisé : son
+            // interrupteur est la seule source de vérité. L'enregistrer aussi
+            // ici créerait deux états à réconcilier au chargement.
+            .filter(|(_, t)| !SETTING_DRIVEN.contains(t))
             .map(|((surface, _), t)| {
                 let kind = if surface == SurfaceIndex::main() { "d" } else { "w" };
                 format!("{kind}:{}", t.key())
@@ -503,9 +531,20 @@ mod tests {
         let state = default_layout();
         let present: Vec<Panel> = state.iter_all_tabs().map(|(_, t)| *t).collect();
         for p in Panel::ALL {
+            if SETTING_DRIVEN.contains(&p) {
+                assert!(
+                    !present.contains(&p),
+                    "{p:?} est commandé par un réglage : il ne doit PAS figurer dans la disposition"
+                );
+                continue;
+            }
             assert!(present.contains(&p), "{p:?} absent de la disposition par défaut");
         }
-        assert_eq!(present.len(), Panel::ALL.len(), "panneau dupliqué : {present:?}");
+        assert_eq!(
+            present.len(),
+            Panel::ALL.len() - SETTING_DRIVEN.len(),
+            "panneau dupliqué ou manquant : {present:?}"
+        );
     }
 
     /// Le centre doit rester la zone principale, avec l'éditeur au premier plan.
@@ -525,6 +564,9 @@ mod tests {
         let mut app = App::new();
         app.set_ui_mode(super::super::UiMode::Full);
         for p in Panel::ALL {
+            if SETTING_DRIVEN.contains(&p) {
+                continue; // ouvert par son réglage, pas par la disposition
+            }
             assert!(app.panel_is_open(p), "{p:?} devrait être ouvert au départ");
             app.hide_panel(p);
             assert!(!app.panel_is_open(p), "{p:?} devrait être fermé");
@@ -606,6 +648,9 @@ mod tests {
         assert!(!app.panel_is_open(Panel::Editor));
         app.reset_dock_layout();
         for p in Panel::ALL {
+            if SETTING_DRIVEN.contains(&p) {
+                continue;
+            }
             assert!(app.panel_is_open(p), "{p:?} manquant après réinitialisation");
         }
     }
@@ -655,7 +700,11 @@ mod tests {
         let mut app = App::new();
         app.set_ui_mode(super::super::UiMode::Full);
         let total = app.focus_order().len();
-        assert_eq!(total, Panel::ALL.len(), "l'ordre doit couvrir tous les panneaux");
+        assert_eq!(
+            total,
+            Panel::ALL.len() - SETTING_DRIVEN.len(),
+            "l'ordre doit couvrir tous les panneaux affichés"
+        );
 
         let mut seen = Vec::new();
         for _ in 0..total {
@@ -665,6 +714,9 @@ mod tests {
             }
         }
         for p in Panel::ALL {
+            if SETTING_DRIVEN.contains(&p) {
+                continue;
+            }
             assert!(seen.contains(&p), "{p:?} jamais atteint par F6");
         }
     }
@@ -691,7 +743,7 @@ mod tests {
         let order = app.focus_order();
         assert!(!order.contains(&Panel::Console), "console fermée mais parcourue");
         assert!(!order.contains(&Panel::Flags), "flags fermé mais parcouru");
-        assert_eq!(order.len(), Panel::ALL.len() - 2);
+        assert_eq!(order.len(), Panel::ALL.len() - SETTING_DRIVEN.len() - 2);
     }
 
     /// Sans aucun panneau, la navigation ne doit pas paniquer ni boucler.
@@ -791,5 +843,34 @@ mod tests {
             }
         }
         assert_eq!(UiMode::from_key("n_importe_quoi"), UiMode::Learning);
+    }
+
+    /// L'interrupteur du tutoriel doit faire apparaître et disparaître son
+    /// panneau, sans que l'utilisateur ait à toucher la disposition.
+    #[test]
+    fn the_tutorial_switch_drives_its_panel() {
+        let mut app = App::new();
+        assert!(!app.tutorial_enabled, "désactivé par défaut");
+        assert!(!app.panel_is_open(Panel::Tutorial), "et son panneau est absent");
+
+        app.tutorial_enabled = true;
+        app.sync_tutorial_panel();
+        assert!(app.panel_is_open(Panel::Tutorial), "activer doit l'ouvrir");
+
+        app.tutorial_enabled = false;
+        app.sync_tutorial_panel();
+        assert!(!app.panel_is_open(Panel::Tutorial), "désactiver doit le fermer");
+
+        // Idempotent : appelé à chaque frame, il ne doit rien empiler.
+        app.tutorial_enabled = true;
+        for _ in 0..5 {
+            app.sync_tutorial_panel();
+        }
+        let n = app
+            .dock
+            .as_ref()
+            .map(|d| d.iter_all_tabs().filter(|(_, t)| **t == Panel::Tutorial).count())
+            .unwrap_or(0);
+        assert_eq!(n, 1, "un seul onglet Tutoriel, quel que soit le nombre d'appels");
     }
 }
