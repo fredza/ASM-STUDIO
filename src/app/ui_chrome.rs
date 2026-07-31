@@ -13,6 +13,18 @@ impl App {
 
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::Key;
+
+        // Ctrl+Maj+P ouvre la palette. C'est la porte d'entrée du clavier :
+        // egui n'ouvre pas ses menus au clavier, la palette les remplace.
+        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(Key::P)) {
+            self.open_palette();
+            return;
+        }
+        // Palette ouverte : elle capte tout, sinon Échap arrêterait le
+        // programme et les flèches piloteraient la timeline en arrière-plan.
+        if self.palette_open {
+            return;
+        }
         // Ignore les raccourcis d'action quand l'éditeur a le focus (sauf Ctrl+*).
         let (step, run, stop, build, save, open, new, first, prev, next, last) = ctx.input(|i| {
             let c = i.modifiers.ctrl;
@@ -178,11 +190,38 @@ impl App {
                         self.open_file(f);
                     }
                 }
+                Some(super::dock::Panel::Registers) => {
+                    if up || down {
+                        self.move_reg_selection(down);
+                    }
+                    // ←/→ traversent la ligne ; la timeline garde ces touches
+                    // pour les autres panneaux.
+                    let (left, right) = ctx.input(|i| {
+                        (i.key_pressed(Key::ArrowLeft), i.key_pressed(Key::ArrowRight))
+                    });
+                    if left || right {
+                        self.move_reg_selection_sideways(right);
+                    }
+                    if enter {
+                        self.edit_selected_register();
+                    }
+                }
                 _ => {}
             }
         }
 
-        if self.dbg.is_some() && !editing {
+        // Ctrl+W ferme le panneau focalisé — pendant clavier du bouton ✕ de
+        // l'onglet, qui n'était atteignable qu'à la souris.
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::W))
+            && let Some(p) = self.focused_panel()
+        {
+            self.hide_panel(p);
+            self.save_settings();
+        }
+
+        // La timeline garde ←/→ sauf si le panneau focalisé les utilise.
+        let arrows_taken = self.focused_panel() == Some(super::dock::Panel::Registers);
+        if self.dbg.is_some() && !editing && !arrows_taken {
             if first {
                 self.set_view(0);
             }
@@ -371,6 +410,19 @@ impl App {
                     }
                 });
                 ui.menu_button(tr("Aide", "Help", "Ayuda"), |ui| {
+                    if ui
+                        .button(tr("Palette de commandes…  Ctrl+Maj+P", "Command palette…  Ctrl+Shift+P", "Paleta de comandos…  Ctrl+May+P"))
+                        .on_hover_text(tr(
+                            "Toutes les actions de l'application, au clavier.",
+                            "Every action in the application, from the keyboard.",
+                            "Todas las acciones de la aplicación, desde el teclado.",
+                        ))
+                        .clicked()
+                    {
+                        self.open_palette();
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button(tr("Réglages…", "Settings…", "Configuración…")).clicked() {
                         self.show_settings = true;
                         ui.close_menu();
@@ -540,9 +592,34 @@ impl App {
                     ui.separator();
                     ui.label(RichText::new(&self.status).color(self.c_header()));
                 }
-                // À droite : position curseur, encodage, syntaxe.
+                // À droite : position curseur, encodage, syntaxe, et surtout le
+                // panneau qui a le focus clavier — le repère qui manquait pour
+                // savoir où l'on se trouve après un F6.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(RichText::new("NASM").color(ACCENT).strong());
+                    ui.separator();
+                    match &self.focused_panel_name {
+                        Some(name) => {
+                            ui.label(
+                                RichText::new(format!("⌨ {name}"))
+                                    .color(ACCENT)
+                                    .strong(),
+                            )
+                            .on_hover_text(tr(
+                                "Panneau focalisé — F6 pour le suivant, Maj+F6 pour le précédent",
+                                "Focused panel — F6 for the next one, Shift+F6 for the previous",
+                                "Panel enfocado — F6 para el siguiente, Mayús+F6 para el anterior",
+                            ));
+                        }
+                        None => {
+                            ui.label(RichText::new(tr("⌨ F6", "⌨ F6", "⌨ F6")).weak())
+                                .on_hover_text(tr(
+                                    "Aucun panneau focalisé — appuyez sur F6",
+                                    "No focused panel — press F6",
+                                    "Ningún panel enfocado — pulse F6",
+                                ));
+                        }
+                    }
                     ui.separator();
                     ui.label(RichText::new("UTF-8").color(self.c_header()));
                     ui.separator();

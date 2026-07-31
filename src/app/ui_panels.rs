@@ -262,6 +262,49 @@ impl App {
         )
     }
 
+    /// Déplace la sélection clavier dans le panneau des registres.
+    pub(super) fn move_reg_selection(&mut self, down: bool) {
+        let Some(snap) = self.snap() else { return };
+        let n = snap.regs.named().len();
+        if n == 0 {
+            return;
+        }
+        // Deux registres par ligne : ↑/↓ sautent une ligne entière, ce qui suit
+        // ce que l'œil voit plutôt que l'ordre de déclaration.
+        self.reg_sel = if down {
+            (self.reg_sel + 2).min(n - 1)
+        } else {
+            self.reg_sel.saturating_sub(2)
+        };
+    }
+
+    /// Déplace la sélection d'un registre (←/→, dans la ligne).
+    pub(super) fn move_reg_selection_sideways(&mut self, right: bool) {
+        let Some(snap) = self.snap() else { return };
+        let n = snap.regs.named().len();
+        if n == 0 {
+            return;
+        }
+        self.reg_sel = if right {
+            (self.reg_sel + 1).min(n - 1)
+        } else {
+            self.reg_sel.saturating_sub(1)
+        };
+    }
+
+    /// Ouvre l'édition du registre retenu (Entrée dans le panneau REGISTERS).
+    pub(super) fn edit_selected_register(&mut self) {
+        if !self.can_step() {
+            return;
+        }
+        let Some(snap) = self.snap() else { return };
+        let named = snap.regs.named();
+        let Some((name, val)) = named.get(self.reg_sel).copied() else { return };
+        self.edit_reg = Some(name);
+        self.edit_buf = format!("{val:X}");
+        self.edit_focus = true;
+    }
+
     pub(super) fn registers_ui(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
@@ -297,6 +340,9 @@ impl App {
                 egui::Grid::new("regs_grid").num_columns(4).spacing([20.0, 6.0]).show(ui, |ui| {
                     for (i, (name, val, pval)) in rows.iter().enumerate() {
                         let (name, val, pval) = (*name, *val, *pval);
+                        // Registre retenu au clavier : surligné, pour que les
+                        // flèches ne déplacent pas un curseur invisible.
+                        let kb_sel = i == self.reg_sel;
                         // Rôle ABI en infobulle : « survit-il à un call ? » est la
                         // question que se pose l'élève dont une valeur disparaît.
                         let r = crate::abi::role(name);
@@ -309,8 +355,19 @@ impl App {
                                 tr("✘ peut être écrasé par un call", "✘ may be clobbered by a call", "✘ puede ser sobrescrito por un call")
                             }
                         );
-                        ui.label(RichText::new(name).monospace().strong().color(hdr))
-                            .on_hover_text(role_tip);
+                        let name_txt = RichText::new(name)
+                            .monospace()
+                            .strong()
+                            .color(if kb_sel { super::ACCENT } else { hdr });
+                        let name_resp = ui.label(name_txt).on_hover_text(role_tip);
+                        if kb_sel {
+                            // Liseré autour du nom : discret mais sans ambiguïté.
+                            ui.painter().rect_stroke(
+                                name_resp.rect.expand(2.0),
+                                3.0,
+                                egui::Stroke::new(1.0_f32, super::ACCENT),
+                            );
+                        }
                         if self.edit_reg == Some(name) {
                             // Édition : champ hexa + ✓ (valider) / ✗ (annuler).
                             let focus_now = std::mem::take(&mut self.edit_focus);
@@ -994,5 +1051,63 @@ niveau2:
         app.explorer_selected = None;
         app.move_explorer_selection(true);
         assert_eq!(app.explorer_selected, None);
+    }
+
+    /// Les registres se parcourent au clavier : ↑/↓ changent de ligne (deux
+    /// registres par ligne), ←/→ traversent la ligne, et Entrée ouvre l'édition.
+    #[test]
+    fn register_selection_navigates_and_clamps() {
+        use std::path::PathBuf;
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/reg-kb.asm");
+        app.out_dir = PathBuf::from("build/regkb");
+        app.source = "section .text\n global _start\n_start:\n mov rax,5\n \
+                       mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+        app.launch();
+        app.step();
+
+        let n = app.snap().unwrap().regs.named().len();
+        assert!(n >= 16, "les registres doivent être disponibles");
+
+        app.reg_sel = 0;
+        app.move_reg_selection(true);
+        assert_eq!(app.reg_sel, 2, "↓ saute une ligne entière (2 par ligne)");
+        app.move_reg_selection(false);
+        assert_eq!(app.reg_sel, 0);
+        app.move_reg_selection(false);
+        assert_eq!(app.reg_sel, 0, "borne haute respectée");
+
+        app.move_reg_selection_sideways(true);
+        assert_eq!(app.reg_sel, 1, "→ avance d'un registre");
+        app.move_reg_selection_sideways(false);
+        assert_eq!(app.reg_sel, 0);
+        app.move_reg_selection_sideways(false);
+        assert_eq!(app.reg_sel, 0, "borne haute respectée");
+
+        // Descente jusqu'au bout : jamais hors bornes.
+        for _ in 0..n + 5 {
+            app.move_reg_selection(true);
+        }
+        assert!(app.reg_sel < n, "sélection {} hors de {n}", app.reg_sel);
+
+        // Entrée ouvre l'édition du registre retenu.
+        app.reg_sel = 0;
+        app.edit_selected_register();
+        let named = app.snap().unwrap().regs.named();
+        assert_eq!(app.edit_reg, Some(named[0].0), "édition du registre retenu");
+        assert!(!app.edit_buf.is_empty(), "le tampon reçoit la valeur courante");
+    }
+
+    /// Sans programme lancé, la navigation dans les registres ne doit rien faire
+    /// plutôt que paniquer.
+    #[test]
+    fn register_navigation_is_safe_without_a_program() {
+        let mut app = App::new();
+        app.move_reg_selection(true);
+        app.move_reg_selection_sideways(true);
+        app.edit_selected_register();
+        assert_eq!(app.reg_sel, 0);
+        assert_eq!(app.edit_reg, None, "rien à éditer sans processus");
     }
 }

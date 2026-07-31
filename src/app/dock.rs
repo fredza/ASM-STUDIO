@@ -318,6 +318,24 @@ impl App {
                     .show_inside(ui, &mut Viewer { app: self });
             });
 
+        // Anneau de focus : sans lui, F6 semble ne rien faire. C'est le seul
+        // repère qui dise à l'élève quel panneau reçoit ses touches.
+        if let Some((rect, panel)) = dock.find_active_focused() {
+            let panel = *panel;
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("dock_focus_ring"),
+            ));
+            painter.rect_stroke(
+                rect.shrink(1.0),
+                4.0,
+                egui::Stroke::new(2.0_f32, super::ACCENT),
+            );
+            self.focused_panel_name = Some(panel.title(self.lang));
+        } else {
+            self.focused_panel_name = None;
+        }
+
         self.dock = Some(dock);
     }
 

@@ -22,6 +22,7 @@ mod ui_panels;
 mod ui_center;
 mod pedagogy;
 mod dock;
+mod palette;
 mod predict;
 mod ui_exercise;
 mod widgets;
@@ -195,6 +196,9 @@ pub struct App {
     pub(super) mem_input: String,
     /// Octets hexa à écrire en mémoire (laboratoire mémoire).
     pub(super) mem_poke: String,
+    /// Registre retenu au clavier dans le panneau REGISTERS (index dans
+    /// `Registers::named`), surligné et éditable par Entrée.
+    pub(super) reg_sel: usize,
     /// Registre en cours d'édition (laboratoire mémoire) et son tampon de saisie.
     pub(super) edit_reg: Option<&'static str>,
     pub(super) edit_buf: String,
@@ -238,6 +242,15 @@ pub struct App {
     pub(super) icons: Option<Icons>,
     /// Dialogue « Ouvrir » natif en cours sur un thread de fond (sinon `None`).
     /// Sondé chaque frame → l'UI ne se fige pas pendant que le sélecteur est ouvert.
+    /// Palette de commandes (Ctrl+Maj+P) : ouverte, requête, sélection.
+    pub(super) palette_open: bool,
+    pub(super) palette_query: String,
+    pub(super) palette_sel: usize,
+    /// Demande de focus du champ de recherche au premier frame d'ouverture.
+    pub(super) palette_focus: bool,
+    /// Nom du panneau focalisé, affiché dans la barre d'état. Renseigné par le
+    /// rendu de la zone d'ancrage, qui seul connaît le nœud actif.
+    pub(super) focused_panel_name: Option<String>,
     /// Demande de relâchement du focus widget au prochain frame : quand le
     /// clavier quitte l'éditeur, ce dernier ne doit plus capter les touches.
     pub(super) ctx_surrender_focus: bool,
@@ -297,6 +310,7 @@ impl App {
             mem_addr: 0,
             mem_input: String::new(),
             mem_poke: String::new(),
+            reg_sel: 0,
             edit_reg: None,
             edit_buf: String::new(),
             edit_focus: false,
@@ -323,6 +337,11 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
+            palette_open: false,
+            palette_query: String::new(),
+            palette_sel: 0,
+            palette_focus: false,
+            focused_panel_name: None,
             ctx_surrender_focus: false,
             dock: Some(dock::default_layout()),
             pedagogy_predict: false,
@@ -345,6 +364,11 @@ impl App {
 
     pub(super) fn load_settings(&mut self) {
         use egui::ThemePreference;
+        // Les tests ne doivent pas dépendre de la configuration de la machine :
+        // sinon leur résultat change selon la langue choisie par l'utilisateur.
+        if cfg!(test) {
+            return;
+        }
         let Some(path) = settings_path() else { return };
         let Ok(content) = std::fs::read_to_string(&path) else { return };
         // La disposition est appliquée en dernier : elle dépend des autres
@@ -379,6 +403,12 @@ impl App {
 
     pub(super) fn save_settings(&self) {
         use egui::ThemePreference;
+        // Et surtout, ils ne doivent RIEN écrire dedans : plusieurs exécutent des
+        // commandes qui persistent (changement de langue, fermeture de panneau),
+        // ce qui modifiait pour de bon les réglages de l'utilisateur.
+        if cfg!(test) {
+            return;
+        }
         let Some(path) = settings_path() else { return };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -542,6 +572,7 @@ impl eframe::App for App {
         self.settings_window(ctx);
         self.microscope_window(ctx);
         self.calculator_window(ctx);
+        self.palette_window(ctx);
         self.predict_window(ctx);
         self.diagnosis_window(ctx);
         self.update_window(ctx);

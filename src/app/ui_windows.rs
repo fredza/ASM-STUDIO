@@ -461,12 +461,15 @@ impl App {
                     ("Ctrl+3", tr("Afficher/masquer la bande CPU", "Show/hide the CPU band", "Mostrar/ocultar la banda CPU")),
                     ("Ctrl+4", tr("Afficher/masquer la bande basse", "Show/hide the bottom band", "Mostrar/ocultar la banda inferior")),
                     ("Ctrl+5", tr("Afficher/masquer la fenêtre Prédiction", "Show/hide the Prediction window", "Mostrar/ocultar la ventana Predicción")),
+                    ("Ctrl+Maj+P", tr("Palette de commandes — toute l'application au clavier", "Command palette — the whole app from the keyboard", "Paleta de comandos — toda la aplicación desde el teclado")),
                     ("F6", tr("Panneau suivant (Maj+F6 : précédent)", "Next panel (Shift+F6: previous)", "Panel siguiente (Mayús+F6: anterior)")),
+                    ("Ctrl+W", tr("Fermer le panneau focalisé", "Close the focused panel", "Cerrar el panel enfocado")),
                     ("Ctrl+F6", tr("Revenir directement à l'éditeur", "Jump straight back to the editor", "Volver directamente al editor")),
                     ("Ctrl+Tab", tr("Onglet suivant du panneau focalisé", "Next tab of the focused panel", "Pestaña siguiente del panel enfocado")),
                     ("Tab", tr("Élément interactif suivant (hors éditeur)", "Next interactive element (outside the editor)", "Siguiente elemento interactivo (fuera del editor)")),
-                    ("↑ / ↓", tr("Parcourir la liste du panneau focalisé (désassemblage, explorateur)", "Browse the focused panel's list (disassembly, explorer)", "Recorrer la lista del panel enfocado (desensamblado, explorador)")),
-                    ("Entrée", tr("Valider dans la liste : microscope, ou ouvrir le fichier", "Confirm in the list: microscope, or open the file", "Confirmar en la lista: microscopio, o abrir el archivo")),
+                    ("↑ / ↓", tr("Parcourir le panneau focalisé (désassemblage, explorateur, registres)", "Browse the focused panel (disassembly, explorer, registers)", "Recorrer el panel enfocado (desensamblado, explorador, registros)")),
+                    ("← / →", tr("Timeline, ou traverser la ligne dans les registres", "Timeline, or move across the row in registers", "Línea de tiempo, o cruzar la fila en los registros")),
+                    ("Entrée", tr("Valider : microscope, ouvrir le fichier, éditer le registre", "Confirm: microscope, open the file, edit the register", "Confirmar: microscopio, abrir el archivo, editar el registro")),
                     ("Échap", tr("Quitter le champ de saisie, sinon arrêter le programme", "Leave the text field, otherwise stop the program", "Salir del campo de texto, si no detener el programa")),
                 ];
                 egui::Grid::new("shortcuts_grid")
