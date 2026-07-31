@@ -351,6 +351,7 @@ impl App {
         style.tab_bar.fill_tab_bar = true;
         style.tab.tab_body.stroke.width = 0.0;
 
+        let mut focused_name = None;
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(0.0))
             .show(ctx, |ui| {
@@ -359,25 +360,24 @@ impl App {
                     .draggable_tabs(true)
                     .show_close_buttons(true)
                     .show_inside(ui, &mut Viewer { app: self });
-            });
 
-        // Anneau de focus : sans lui, F6 semble ne rien faire. C'est le seul
-        // repère qui dise à l'élève quel panneau reçoit ses touches.
-        if let Some((rect, panel)) = dock.find_active_focused() {
-            let panel = *panel;
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Foreground,
-                egui::Id::new("dock_focus_ring"),
-            ));
-            painter.rect_stroke(
-                rect.shrink(1.0),
-                4.0,
-                egui::Stroke::new(2.0_f32, super::ACCENT),
-            );
-            self.focused_panel_name = Some(panel.title(self.lang));
-        } else {
-            self.focused_panel_name = None;
-        }
+                // Anneau de focus : sans lui, F6 semble ne rien faire. C'est le
+                // seul repère qui dise à l'élève quel panneau reçoit ses touches.
+                //
+                // Peint DANS la couche du panneau central, après le contenu de
+                // l'arbre : il passe donc au-dessus des panneaux, mais sous les
+                // fenêtres. Sur une couche Foreground il débordait par-dessus
+                // « À propos » ou « Raccourcis clavier ».
+                if let Some((rect, panel)) = dock.find_active_focused() {
+                    focused_name = Some(panel.title(self.lang));
+                    ui.painter().rect_stroke(
+                        rect.shrink(1.0),
+                        4.0,
+                        egui::Stroke::new(2.0_f32, super::ACCENT),
+                    );
+                }
+            });
+        self.focused_panel_name = focused_name;
 
         self.dock = Some(dock);
     }

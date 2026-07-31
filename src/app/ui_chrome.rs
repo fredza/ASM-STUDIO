@@ -834,4 +834,56 @@ mod keyboard_tests {
         app.scroll_memory(false, 100);
         assert_eq!(app.mem_addr, 0, "reste à zéro");
     }
+
+    /// Déplacer une sélection au clavier doit demander à SON panneau d'amener
+    /// l'élément à l'écran — c'est ce qui manquait : la barre de défilement ne
+    /// suivait pas le curseur dans les registres.
+    #[test]
+    fn keyboard_selection_requests_its_own_scroll() {
+        use crate::app::dock::Panel;
+        let mut app = running_app("scroll");
+
+        app.move_reg_selection(true);
+        assert_eq!(app.scroll_to_sel, Some(Panel::Registers));
+
+        app.move_disasm_selection(true);
+        assert_eq!(app.scroll_to_sel, Some(Panel::Disasm), "la demande la plus récente gagne");
+
+        app.move_explorer_selection(true);
+        assert_eq!(app.scroll_to_sel, Some(Panel::Explorer));
+    }
+
+    /// La demande est NOMINATIVE : un panneau ne doit pas absorber celle d'un
+    /// autre, sinon le premier rendu volerait le défilement.
+    #[test]
+    fn a_scroll_request_is_only_consumed_by_its_target() {
+        use crate::app::dock::Panel;
+        let mut app = running_app("scroll2");
+        app.scroll_to_sel = Some(Panel::Registers);
+
+        assert!(!app.take_scroll_request(Panel::Disasm), "le désassemblage ne doit rien prendre");
+        assert!(!app.take_scroll_request(Panel::Explorer), "l'explorateur non plus");
+        assert_eq!(app.scroll_to_sel, Some(Panel::Registers), "la demande est intacte");
+
+        assert!(app.take_scroll_request(Panel::Registers), "le destinataire la reçoit");
+        assert_eq!(app.scroll_to_sel, None, "et elle est consommée");
+        assert!(!app.take_scroll_request(Panel::Registers), "une seule fois");
+    }
+
+    /// Bout en bout : après une flèche, le panneau des registres reçoit bien sa
+    /// demande, et le rendu la consomme.
+    #[test]
+    fn arrow_then_render_consumes_the_scroll_request() {
+        use crate::app::dock::Panel;
+        let mut app = running_app("scroll3");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+        app.focus_panel(Panel::Registers);
+        frame(&mut app, &ctx, Default::default());
+
+        frame(&mut app, &ctx, key(egui::Key::ArrowDown));
+        // Le rendu du même frame a consommé la demande.
+        assert_eq!(app.scroll_to_sel, None, "la demande doit être consommée par le rendu");
+        assert!(app.reg_sel > 0, "et la sélection avoir bougé");
+    }
 }

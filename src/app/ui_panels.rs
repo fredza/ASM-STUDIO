@@ -303,6 +303,7 @@ impl App {
         } else {
             self.reg_sel.saturating_sub(2)
         };
+        self.scroll_to_sel = Some(super::dock::Panel::Registers);
     }
 
     /// Déplace la sélection d'un registre (←/→, dans la ligne).
@@ -316,6 +317,7 @@ impl App {
         } else {
             self.reg_sel.saturating_sub(1)
         };
+        self.scroll_to_sel = Some(super::dock::Panel::Registers);
     }
 
     /// Ouvre l'édition du registre retenu (Entrée dans le panneau REGISTERS).
@@ -350,6 +352,7 @@ impl App {
         };
         ui.label(RichText::new(hint).small().weak());
         let flash = self.flash_progress(ui); // pulsation « CPU vivant »
+        let scroll_here = self.take_scroll_request(super::dock::Panel::Registers);
         let blink = self.blink_intensity(ui); // clignotement pédagogique (0 si désactivé)
         let ped = self.pedagogy_anim;
         let mut commit: Option<(&'static str, u64)> = None;
@@ -385,6 +388,12 @@ impl App {
                             .strong()
                             .color(if kb_sel { super::ACCENT } else { hdr });
                         let name_resp = ui.label(name_txt).on_hover_text(role_tip);
+                        // Le registre retenu au clavier est amené à l'écran :
+                        // sans cela, les flèches le poussaient hors du cadre
+                        // visible et la barre de défilement ne suivait pas.
+                        if kb_sel && scroll_here {
+                            name_resp.scroll_to_me(Some(egui::Align::Center));
+                        }
                         if kb_sel {
                             // Liseré autour du nom : discret mais sans ambiguïté.
                             ui.painter().rect_stroke(
@@ -599,6 +608,7 @@ impl App {
             (Some(i), false) => i.saturating_sub(1),
         };
         self.explorer_selected = Some(files[next].clone());
+        self.scroll_to_sel = Some(super::dock::Panel::Explorer);
     }
 
     pub(super) fn explorer_ui(&mut self, ui: &mut egui::Ui) {
@@ -633,11 +643,12 @@ impl App {
         // Le repère suit la sélection clavier quand il y en a une, sinon le
         // fichier ouvert : sans cela, les flèches déplaceraient un curseur invisible.
         let cur = self.explorer_selected.clone().unwrap_or_else(|| self.src_path.clone());
+        let scroll_here = self.take_scroll_request(super::dock::Panel::Explorer);
         let mut to_open = None;
         egui::ScrollArea::both().id_salt("explorer_scroll").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().indent = 14.0;
             let root = self.explorer_dir.clone();
-            dir_tree(ui, &root, &cur, asm_col, other_col, &mut to_open);
+            dir_tree(ui, &root, &cur, scroll_here, asm_col, other_col, &mut to_open);
         });
         if let Some(f) = to_open {
             self.open_file(f);

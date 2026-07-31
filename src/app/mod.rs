@@ -329,6 +329,10 @@ pub struct App {
     pub(super) icons: Option<Icons>,
     /// Dialogue « Ouvrir » natif en cours sur un thread de fond (sinon `None`).
     /// Sondé chaque frame → l'UI ne se fige pas pendant que le sélecteur est ouvert.
+    /// Panneau dont la sélection vient de bouger au clavier : sa zone défilante
+    /// doit amener l'élément retenu à l'écran. Sans cela, les flèches
+    /// déplaçaient une sélection qui sortait du cadre visible.
+    pub(super) scroll_to_sel: Option<dock::Panel>,
     /// Mode d'affichage : apprentissage (épuré) ou complet.
     pub(super) mode: UiMode,
     /// Palette de commandes (Ctrl+Maj+P) : ouverte, requête, sélection.
@@ -426,6 +430,7 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
+            scroll_to_sel: None,
             mode: UiMode::Learning,
             palette_open: false,
             palette_query: String::new(),
@@ -585,6 +590,20 @@ impl App {
     pub(super) fn set_view(&mut self, idx: i64) {
         if let Some(d) = &self.dbg {
             self.view_index = idx.clamp(0, (d.history.len() - 1) as i64) as usize;
+        }
+    }
+
+    /// Vrai une seule fois si ce panneau doit amener sa sélection à l'écran.
+    ///
+    /// La demande est nominative : consommer sans vérifier le destinataire
+    /// ferait absorber par le premier panneau rendu un défilement destiné à un
+    /// autre.
+    pub(super) fn take_scroll_request(&mut self, panel: dock::Panel) -> bool {
+        if self.scroll_to_sel == Some(panel) {
+            self.scroll_to_sel = None;
+            true
+        } else {
+            false
         }
     }
 

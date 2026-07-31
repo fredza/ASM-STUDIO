@@ -68,6 +68,7 @@ impl App {
             (Some(i), false) => i.saturating_sub(1),
         };
         self.selected = Some(self.disasm[next].address);
+        self.scroll_to_sel = Some(super::dock::Panel::Disasm);
     }
 
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
@@ -159,6 +160,7 @@ impl App {
             return;
         }
         let rip = self.view_rip();
+        let scroll_here = self.take_scroll_request(super::dock::Panel::Disasm);
         let mut clicked: Option<u64> = None;
         egui::ScrollArea::vertical().id_salt("disasm_scroll").show(ui, |ui| {
             for insn in &self.disasm {
@@ -181,6 +183,10 @@ impl App {
                 let row = inner.response.interact(egui::Sense::click());
                 if row.clicked() {
                     clicked = Some(insn.address);
+                }
+                // La sélection déplacée au clavier doit rester visible.
+                if is_selected && scroll_here {
+                    row.scroll_to_me(Some(egui::Align::Center));
                 }
                 let fill = if is_current {
                     Some(self.c_rip_row())

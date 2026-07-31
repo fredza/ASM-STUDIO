@@ -119,6 +119,8 @@ pub(super) fn dir_tree(
     ui: &mut egui::Ui,
     dir: &Path,
     current: &Path,
+    // Amène `current` à l'écran : demandé après un déplacement au clavier.
+    scroll_to_current: bool,
     asm_col: Color32,
     other_col: Color32,
     to_open: &mut Option<PathBuf>,
@@ -128,7 +130,9 @@ pub(super) fn dir_tree(
         egui::CollapsingHeader::new(RichText::new(format!("🗀  {}", file_name(&d))).color(asm_col))
             .id_salt(&d)
             .default_open(false)
-            .show(ui, |ui| dir_tree(ui, &d, current, asm_col, other_col, to_open));
+            .show(ui, |ui| {
+                dir_tree(ui, &d, current, scroll_to_current, asm_col, other_col, to_open)
+            });
     }
     for f in files {
         let is_cur = f == current;
@@ -140,7 +144,11 @@ pub(super) fn dir_tree(
             other_col
         };
         let label = RichText::new(format!("🗎  {}", file_name(&f))).color(col);
-        if ui.add(egui::SelectableLabel::new(is_cur, label)).clicked() {
+        let resp = ui.add(egui::SelectableLabel::new(is_cur, label));
+        if is_cur && scroll_to_current {
+            resp.scroll_to_me(Some(egui::Align::Center));
+        }
+        if resp.clicked() {
             *to_open = Some(f);
         }
     }
