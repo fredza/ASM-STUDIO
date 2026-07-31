@@ -654,6 +654,9 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.icons.is_none() {
             self.icons = Some(Icons::load(ctx));
+            // Une seule fois, au premier frame : recharger les polices à chaque
+            // image coûterait cher.
+            Self::install_fallback_font(ctx);
         }
         // Workaround egui#5008 : sur Linux, egui-winit active l'IME quand un TextEdit
         // a le focus mais ignore ensuite les événements IME → les dead keys (accents)

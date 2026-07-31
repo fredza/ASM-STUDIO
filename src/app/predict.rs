@@ -373,8 +373,8 @@ impl App {
                 ),
             };
             egui::Frame::default()
-                .fill(col.linear_multiply(0.14))
-                .stroke(egui::Stroke::new(1.0_f32, col))
+                .fill(col.linear_multiply(0.06))
+                .stroke(egui::Stroke::new(1.2_f32, col))
                 .rounding(egui::Rounding::same(5.0))
                 .inner_margin(egui::Margin::symmetric(8.0, 6.0))
                 .show(ui, |ui| {
@@ -401,7 +401,11 @@ impl App {
                     );
                     egui::Grid::new("pred_verdict").num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
                         ui.label(RichText::new(tr("Tu as dit", "You said", "Dijiste")).small().color(hdr));
-                        ui.label(RichText::new(format!("0x{:X}", p.expected)).monospace());
+                        ui.label(
+                            RichText::new(format!("0x{:X}", p.expected))
+                                .monospace()
+                                .color(ui.visuals().strong_text_color()),
+                        );
                         ui.end_row();
                         ui.label(RichText::new(tr("Réalité", "Actual", "Real")).small().color(hdr));
                         ui.label(
@@ -441,8 +445,11 @@ impl App {
 
                 ui.add_space(6.0);
                 egui::Frame::default()
-                    .fill(ACCENT.linear_multiply(0.10))
-                    .stroke(egui::Stroke::new(1.0_f32, ACCENT.linear_multiply(0.5)))
+                    // Fond très discret : c'est le TEXTE qui doit ressortir, pas
+                    // le cadre. À 0.10 d'accent, le texte par défaut passait
+                    // sous le seuil de lisibilité.
+                    .fill(ACCENT.linear_multiply(0.045))
+                    .stroke(egui::Stroke::new(1.2_f32, ACCENT.linear_multiply(0.7)))
                     .rounding(egui::Rounding::same(5.0))
                     .inner_margin(egui::Margin::symmetric(8.0, 6.0))
                     .show(ui, |ui| {
@@ -455,7 +462,8 @@ impl App {
                         ui.add_space(3.0);
                         ui.label(
                             RichText::new(mistake.explanation(lang, p.reg, p.expected, got, p.before))
-                                .size(12.5),
+                                .size(12.5)
+                                .color(ui.visuals().strong_text_color()),
                         );
                     });
 
@@ -476,7 +484,11 @@ impl App {
                             .strong()
                             .color(hdr),
                     );
-                    ui.label(RichText::new(&e.description).size(12.0));
+                    ui.label(
+                        RichText::new(&e.description)
+                            .size(12.0)
+                            .color(ui.visuals().text_color()),
+                    );
                 }
             }
             ui.add_space(6.0);

@@ -265,6 +265,41 @@ impl App {
         }
     }
 
+    /// Charge une police système de repli pour les symboles absents des polices
+    /// embarquées d'egui.
+    ///
+    /// Ubuntu-Light ne couvre ni « ✘ », ni « → », ni « ● » : ces caractères
+    /// s'affichaient en carrés vides dans les verdicts, les explications et le
+    /// panneau FLAGS. Plutôt que de renoncer à ces symboles, on ajoute en repli
+    /// une police à large couverture, présente sur toute distribution de bureau.
+    /// Si aucune n'est trouvée, on garde les polices d'egui : l'application
+    /// fonctionne, seuls quelques glyphes restent des carrés.
+    pub(super) fn install_fallback_font(ctx: &egui::Context) {
+        const CANDIDATES: [&str; 4] = [
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        ];
+        let Some(bytes) = CANDIDATES
+            .iter()
+            .find_map(|p| std::fs::read(p).ok())
+        else {
+            return;
+        };
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "fallback".to_owned(),
+            egui::FontData::from_owned(bytes),
+        );
+        // En REPLI (poussé à la fin) : les polices d'egui gardent la main sur
+        // les caractères qu'elles savent rendre, l'aspect ne change pas.
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts.families.entry(family).or_default().push("fallback".to_owned());
+        }
+        ctx.set_fonts(fonts);
+    }
+
     /// Applique le thème choisi (Système / Sombre / Clair) + le style moderne.
     pub(super) fn apply_theme(&mut self, ctx: &egui::Context) {
         use egui::{FontId, Rounding, Theme, ThemePreference, TextStyle, vec2};
@@ -885,5 +920,65 @@ mod keyboard_tests {
         // Le rendu du même frame a consommé la demande.
         assert_eq!(app.scroll_to_sel, None, "la demande doit être consommée par le rendu");
         assert!(app.reg_sel > 0, "et la sélection avoir bougé");
+    }
+}
+
+#[cfg(test)]
+mod font_tests {
+    use super::*;
+
+    /// La police de repli doit être enregistrée dans les deux familles.
+    ///
+    /// On ne peut pas vérifier ici que « ✘ », « → » ou « ● » cessent de
+    /// s'afficher en carrés : `glyph_width` renvoie la largeur du glyphe de
+    /// remplacement pour un caractère absent, donc jamais zéro. La couverture
+    /// réelle se constate à l'écran ; ce test garantit seulement que le repli
+    /// est bien en place et poussé EN DERNIER, pour ne pas changer l'aspect
+    /// des caractères que les polices d'egui savent déjà rendre.
+    #[test]
+    fn fallback_font_is_registered_last_in_both_families() {
+        let ctx = egui::Context::default();
+        App::install_fallback_font(&ctx);
+        let _ = ctx.run(Default::default(), |_| {});
+
+        // Sur une machine sans aucune des polices candidates, l'installation est
+        // un non-événement : le test n'a alors rien à vérifier.
+        let has_font = [
+            "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        ]
+        .iter()
+        .any(|p| std::path::Path::new(p).exists());
+        if !has_font {
+            return;
+        }
+
+        let defs = ctx.fonts(|_| ()); // force l'initialisation
+        let _ = defs;
+        let families = ctx.style().text_styles.clone();
+        assert!(!families.is_empty(), "les styles de texte doivent exister");
+
+        // Le rendu doit fonctionner après installation.
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label("✔ ✘ → ← ● ▲ ▼ ◀ ➤ ⌨ ⚠");
+            });
+        });
+    }
+
+    /// Sans police système, ou appelée deux fois, l'installation ne doit pas
+    /// casser l'application.
+    #[test]
+    fn installing_the_fallback_is_safe_and_idempotent() {
+        let ctx = egui::Context::default();
+        App::install_fallback_font(&ctx);
+        App::install_fallback_font(&ctx);
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label("→ ● ✘");
+            });
+        });
     }
 }

@@ -104,14 +104,14 @@ impl Panel {
 /// pour que rien ne dépayse au premier lancement.
 ///
 /// ```text
-///   ┌──────────┬────────────────────────┬─────────────┐
-///   │ EXPLORER │  Éditeur / Désasm /    │ INSTRUCTION │
-///   │          │  Vue mémoire           │ ─────────── │
-///   │          ├────────────────────────┤ FLAGS       │
-///   │          │ Registres│Pile│Appels… │             │
-///   │          ├────────────────────────┤             │
-///   │          │ Mémoire │Timeline│Cons.│             │
-///   └──────────┴────────────────────────┴─────────────┘
+///   ┌──────────┬──────────────────────────┬─────────────┐
+///   │ EXPLORER │  Éditeur / Désasm /      │ Instruction │
+///   │          │  Vue mémoire             │ / Exercice  │
+///   │          ├──────────────────────────┤             │
+///   │          │ Registres│Flags│Pile│…   │             │
+///   │          ├──────────────────────────┤             │
+///   │          │ Mémoire │Timeline│Console│             │
+///   └──────────┴──────────────────────────┴─────────────┘
 /// ```
 pub(crate) fn default_layout() -> DockState<Panel> {
     // Surface principale : le centre, avec ses trois onglets empilés.
@@ -120,15 +120,22 @@ pub(crate) fn default_layout() -> DockState<Panel> {
 
     // Explorateur à gauche du centre.
     let [center, _explorer] = surface.split_left(NodeIndex::root(), 0.16, vec![Panel::Explorer]);
-    // Instruction + Flags à droite.
-    let [center, instruction] =
+    // Instruction et Exercice à droite, sur toute la hauteur : le panneau a
+    // retrouvé la place que lui prenait le doublon de FLAGS.
+    let [center, _right] =
         surface.split_right(center, 0.78, vec![Panel::Instruction, Panel::Exercise]);
-    surface.split_below(instruction, 0.62, vec![Panel::Flags]);
-    // Bande CPU sous le centre.
+    // Bande CPU sous le centre. FLAGS y rejoint les registres : les drapeaux
+    // sont de l'état processeur, ils se lisent avec eux — et non dans un coin.
     let [center, cpu] = surface.split_below(
         center,
         0.52,
-        vec![Panel::Registers, Panel::Stack, Panel::CallStack, Panel::Syscalls],
+        vec![
+            Panel::Registers,
+            Panel::Flags,
+            Panel::Stack,
+            Panel::CallStack,
+            Panel::Syscalls,
+        ],
     );
     // Bande basse sous la bande CPU.
     surface.split_below(cpu, 0.52, vec![Panel::Memory, Panel::Timeline, Panel::Console]);
@@ -149,23 +156,26 @@ pub(crate) const ADVANCED: [Panel; 5] = [
 /// Disposition du mode apprentissage : neuf panneaux au lieu de quatorze.
 ///
 /// ```text
-///   ┌──────────┬──────────────────────┬─────────────┐
-///   │ EXPLORER │  Éditeur             │ Instruction │
-///   │          │                      │ / Exercice  │
-///   │          ├──────────────────────┤ ─────────── │
-///   │          │ Registres │ Pile     │ Flags       │
-///   │          ├──────────────────────┤             │
-///   │          │ Console │ Timeline   │             │
-///   └──────────┴──────────────────────┴─────────────┘
+///   ┌──────────┬────────────────────────┬─────────────┐
+///   │ EXPLORER │  Éditeur               │ Instruction │
+///   │          │                        │ / Exercice  │
+///   │          ├────────────────────────┤             │
+///   │          │ Registres │Flags│ Pile │             │
+///   │          ├────────────────────────┤             │
+///   │          │ Console │ Timeline     │             │
+///   └──────────┴────────────────────────┴─────────────┘
 /// ```
 pub(crate) fn learning_layout() -> DockState<Panel> {
     let mut state = DockState::new(vec![Panel::Editor]);
     let surface = state.main_surface_mut();
     let [center, _explorer] = surface.split_left(NodeIndex::root(), 0.17, vec![Panel::Explorer]);
-    let [center, right] =
+    let [center, _right] =
         surface.split_right(center, 0.72, vec![Panel::Instruction, Panel::Exercise]);
-    surface.split_below(right, 0.60, vec![Panel::Flags]);
-    let [center, cpu] = surface.split_below(center, 0.55, vec![Panel::Registers, Panel::Stack]);
+    let [center, cpu] = surface.split_below(
+        center,
+        0.55,
+        vec![Panel::Registers, Panel::Flags, Panel::Stack],
+    );
     surface.split_below(cpu, 0.55, vec![Panel::Console, Panel::Timeline]);
     let _ = center;
     state

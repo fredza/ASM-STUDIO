@@ -222,12 +222,9 @@ impl App {
             });
         });
 
-        // FLAGS épinglé au bas du panneau INSTRUCTION (le cadre par défaut du
-        // panneau dessine le trait de séparation avec le contenu au-dessus).
-        egui::TopBottomPanel::bottom("instr_flags")
-            .resizable(false)
-            .show_inside(ui, |ui| self.flags_ui(ui));
-
+        // FLAGS n'est plus épinglé ici : c'est un panneau ancrable à part
+        // entière, et le garder aussi en bas de INSTRUCTION affichait les mêmes
+        // six drapeaux deux fois à l'écran.
         let target = self.selected.or_else(|| self.view_rip());
         let Some(addr) = target else {
             ui.label(tr(
