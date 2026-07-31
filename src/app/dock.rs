@@ -242,6 +242,18 @@ impl TabViewer for Viewer<'_> {
         true
     }
 
+    /// Fermer un panneau commandé par un réglage doit AUSSI couper ce réglage.
+    ///
+    /// Sans cela, `sync_tutorial_panel` le rouvrait au frame suivant et la
+    /// croix semblait sans effet : l'utilisateur cliquait dans le vide.
+    fn on_close(&mut self, tab: &mut Panel) -> bool {
+        if *tab == Panel::Tutorial {
+            self.app.tutorial_enabled = false;
+            self.app.save_settings();
+        }
+        true
+    }
+
     /// Tout panneau peut être détaché en fenêtre flottante.
     fn allowed_in_windows(&self, _tab: &mut Panel) -> bool {
         true
@@ -374,6 +386,12 @@ impl App {
         let mut style = egui_dock::Style::from_egui(&ctx.style());
         style.tab_bar.fill_tab_bar = true;
         style.tab.tab_body.stroke.width = 0.0;
+        // Croix de fermeture rouge : l'action est destructrice, elle doit se
+        // distinguer du reste de la barre d'onglets. Plus sombre au repos,
+        // pleinement rouge au survol — pour ne pas crier en permanence.
+        style.buttons.close_tab_color = super::FALSE_COL.gamma_multiply(0.75);
+        style.buttons.close_tab_active_color = super::FALSE_COL;
+        style.buttons.close_tab_bg_fill = super::FALSE_COL.linear_multiply(0.18);
 
         let mut focused_name = None;
         egui::CentralPanel::default()
@@ -872,5 +890,45 @@ mod tests {
             .map(|d| d.iter_all_tabs().filter(|(_, t)| **t == Panel::Tutorial).count())
             .unwrap_or(0);
         assert_eq!(n, 1, "un seul onglet Tutoriel, quel que soit le nombre d'appels");
+    }
+
+    /// Fermer l'onglet Tutoriel doit COUPER son réglage, sinon
+    /// `sync_tutorial_panel` le rouvre au frame suivant et la croix ne sert à
+    /// rien — c'était le cas.
+    #[test]
+    fn closing_the_tutorial_tab_turns_off_its_setting() {
+        let mut app = App::new();
+        app.tutorial_enabled = true;
+        app.sync_tutorial_panel();
+        assert!(app.panel_is_open(Panel::Tutorial));
+
+        // Ce que fait egui_dock quand on clique la croix.
+        {
+            let mut viewer = Viewer { app: &mut app };
+            let mut tab = Panel::Tutorial;
+            assert!(viewer.on_close(&mut tab), "la fermeture doit être acceptée");
+        }
+        app.hide_panel(Panel::Tutorial);
+
+        assert!(!app.tutorial_enabled, "le réglage doit être coupé");
+        app.sync_tutorial_panel();
+        assert!(
+            !app.panel_is_open(Panel::Tutorial),
+            "et le panneau ne doit PAS revenir au frame suivant"
+        );
+    }
+
+    /// Fermer un panneau ordinaire ne touche à aucun réglage.
+    #[test]
+    fn closing_an_ordinary_panel_changes_no_setting() {
+        let mut app = App::new();
+        app.tutorial_enabled = true;
+        let before = app.tutorial_enabled;
+        {
+            let mut viewer = Viewer { app: &mut app };
+            let mut tab = Panel::Console;
+            assert!(viewer.on_close(&mut tab));
+        }
+        assert_eq!(app.tutorial_enabled, before);
     }
 }
