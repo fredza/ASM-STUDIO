@@ -240,12 +240,22 @@ impl App {
 
     pub(super) fn console_ui(&mut self, ui: &mut egui::Ui) {
         let console_ic = self.icons.as_ref().map(|i| i.console.clone());
-        let clear = i18n::tr3(self.lang, "effacer", "clear", "borrar");
+        let clear = i18n::tr3(self.lang, "Effacer la console", "Clear the console", "Borrar la consola");
         panel_header(ui, |ui| {
             icon_img(ui, console_ic.as_ref(), 15.0);
-            if ui.small_button(clear).clicked() {
-                self.console.clear();
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Petite corbeille rouge plutôt qu'un mot : l'action est
+                // universelle, et le libellé passe en infobulle.
+                let btn = egui::Button::new(RichText::new("🗑").size(15.0).color(FALSE_COL))
+                    .frame(false);
+                let resp = ui.add(btn).on_hover_text(clear);
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if resp.clicked() {
+                    self.console.clear();
+                }
+            });
         });
         egui::ScrollArea::vertical()
             .id_salt("console_scroll")

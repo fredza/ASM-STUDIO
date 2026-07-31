@@ -111,8 +111,122 @@ impl App {
                     });
 
                     ui.add_space(8.0);
-                    ui.label(RichText::new(tr("Que fait cette instruction ?", "What does this instruction do?", "¿Qué hace esta instrucción?")).strong().color(hdr));
+                    // --- 💡 Explication ---
+                    ui.label(RichText::new(tr("💡 Explication", "💡 Explanation", "💡 Explicación")).strong().color(hdr));
                     ui.label(&e.description);
+
+                    // --- 🔢 Binaire : découpage de l'encodage machine ---
+                    ui.add_space(10.0);
+                    ui.label(RichText::new(tr("🔢 Binaire", "🔢 Binary", "🔢 Binario")).strong().color(hdr));
+                    ui.label(
+                        RichText::new(tr(
+                            "Comment ces octets encodent l'instruction.",
+                            "How these bytes encode the instruction.",
+                            "Cómo estos bytes codifican la instrucción.",
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                    ui.add_space(3.0);
+                    let enc = crate::encoding::decode(&insn.bytes, lang);
+                    if enc.fields.is_empty() {
+                        ui.weak(tr("(encodage indisponible)", "(encoding unavailable)", "(codificación no disponible)"));
+                    } else {
+                        egui::Grid::new("micro_enc").num_columns(3).spacing([12.0, 4.0]).show(ui, |ui| {
+                            for f in &enc.fields {
+                                let hex: String = f.bytes.iter().map(|b| format!("{b:02X} ")).collect();
+                                ui.label(
+                                    RichText::new(hex.trim_end().to_string())
+                                        .monospace()
+                                        .strong()
+                                        .color(CHANGED),
+                                );
+                                ui.label(
+                                    RichText::new(f.part.label(lang))
+                                        .small()
+                                        .strong()
+                                        .color(mnem_c),
+                                );
+                                ui.add(egui::Label::new(RichText::new(&f.detail).small()).wrap());
+                                ui.end_row();
+                            }
+                        });
+                        if enc.incomplete {
+                            ui.add_space(3.0);
+                            ui.label(
+                                RichText::new(tr(
+                                    "⚠ Encodage partiellement décodé : certains octets n'ont pas pu être attribués.",
+                                    "⚠ Partially decoded encoding: some bytes could not be attributed.",
+                                    "⚠ Codificación parcialmente decodificada: algunos bytes no pudieron atribuirse.",
+                                ))
+                                .small()
+                                .color(FALSE_COL),
+                            );
+                        }
+                    }
+
+                    // --- ⚙️ Effets : ce qui est lu, écrit, affecté ---
+                    ui.add_space(10.0);
+                    ui.label(RichText::new(tr("⚙️ Effets", "⚙️ Effects", "⚙️ Efectos")).strong().color(hdr));
+                    let fx = crate::effects::analyse(&insn.mnemonic, &insn.operands, &e.affects_flags, lang);
+                    egui::Grid::new("micro_fx").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
+                        let row = |ui: &mut egui::Ui, k: &str, list: &[crate::effects::Resource], col: egui::Color32| {
+                            ui.label(RichText::new(k).small().strong().color(hdr));
+                            if list.is_empty() {
+                                ui.label(RichText::new("—").small().weak());
+                            } else {
+                                let txt = list
+                                    .iter()
+                                    .map(|r| r.label(lang))
+                                    .collect::<Vec<_>>()
+                                    .join("   ");
+                                ui.add(egui::Label::new(RichText::new(txt).monospace().small().color(col)).wrap());
+                            }
+                            ui.end_row();
+                        };
+                        row(ui, tr("Lu", "Reads", "Lee"), &fx.reads, addr_c);
+                        row(ui, tr("Écrit", "Writes", "Escribe"), &fx.writes, CHANGED);
+                    });
+                    // Les effets que le texte de l'instruction ne montre pas —
+                    // c'est là que se trouve l'essentiel de ce qui piège.
+                    for note in &fx.implicit {
+                        ui.add_space(4.0);
+                        egui::Frame::default()
+                            .fill(ACTION.linear_multiply(0.08))
+                            .rounding(egui::Rounding::same(4.0))
+                            .inner_margin(egui::Margin::symmetric(8.0, 5.0))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.add(egui::Label::new(RichText::new(note).size(12.0)).wrap());
+                            });
+                    }
+
+                    // --- 🔍 Contexte : instructions voisines, ABI ---
+                    let related = crate::effects::related(&insn.mnemonic);
+                    let abi = crate::effects::abi_note(&insn.mnemonic, &insn.operands, lang);
+                    if !related.is_empty() || abi.is_some() {
+                        ui.add_space(10.0);
+                        ui.label(RichText::new(tr("🔍 Contexte", "🔍 Context", "🔍 Contexto")).strong().color(hdr));
+                        if let Some(note) = &abi {
+                            ui.add(egui::Label::new(RichText::new(note).size(12.0)).wrap());
+                            ui.add_space(3.0);
+                        }
+                        if !related.is_empty() {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new(tr("À connaître avec :", "Learn alongside:", "Aprender junto a:"))
+                                        .small()
+                                        .color(hdr),
+                                );
+                                for r in related {
+                                    ui.hyperlink_to(
+                                        RichText::new(r.to_uppercase()).monospace().small(),
+                                        explain::doc_url(r),
+                                    );
+                                }
+                            });
+                        }
+                    }
 
                     ui.add_space(6.0);
                     ui.hyperlink_to(

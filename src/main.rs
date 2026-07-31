@@ -4,6 +4,8 @@ mod assemble;
 mod debugger;
 mod diagnostic;
 mod disasm;
+mod effects;
+mod encoding;
 mod exercise;
 mod explain;
 mod i18n;

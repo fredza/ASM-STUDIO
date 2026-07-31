@@ -127,37 +127,6 @@ impl App {
             self.save_settings();
         }
 
-        // Échap : d'abord sortir du champ de saisie, sinon arrêter le programme.
-        // Sans cette priorité, un utilisateur au clavier reste piégé dans l'éditeur.
-        let esc = ctx.input(|i| i.key_pressed(Key::Escape));
-        let focused = ctx.memory(|m| m.focused().is_some());
-        if esc && focused {
-            ctx.memory_mut(|m| m.surrender_focus(m.focused().unwrap()));
-        } else if stop || esc {
-            self.stop();
-        }
-
-        // --- Navigation clavier ---
-        // F6 : ramène le focus dans l'éditeur (point d'entrée du clavier).
-        if ctx.input(|i| i.key_pressed(Key::F6)) {
-            self.focus_panel(super::dock::Panel::Editor);
-            ctx.memory_mut(|m| m.request_focus(super::editor_id()));
-        }
-        // Ctrl+Tab / Ctrl+Maj+Tab : fait défiler les onglets du centre.
-        let (tab_next, tab_prev) = ctx.input(|i| {
-            let t = i.modifiers.ctrl && i.key_pressed(Key::Tab);
-            (t && !i.modifiers.shift, t && i.modifiers.shift)
-        });
-        if tab_next || tab_prev {
-            self.cycle_tab(tab_prev);
-        }
-        if step {
-            self.step();
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
-            self.show_shortcuts = true;
-        }
-        // Affichage : Ctrl+1..5 bascule chaque panneau.
         // Les flèches pilotent le panneau focalisé, sauf si l'on tape dedans.
         let editing = self.typing_in_focused_panel(ctx);
 
@@ -265,39 +234,47 @@ impl App {
         }
     }
 
-    /// Charge une police système de repli pour les symboles absents des polices
-    /// embarquées d'egui.
+    /// Charge des polices système de repli pour les symboles absents des
+    /// polices embarquées d'egui.
     ///
-    /// Ubuntu-Light ne couvre ni « ✘ », ni « → », ni « ● » : ces caractères
-    /// s'affichaient en carrés vides dans les verdicts, les explications et le
-    /// panneau FLAGS. Plutôt que de renoncer à ces symboles, on ajoute en repli
-    /// une police à large couverture, présente sur toute distribution de bureau.
-    /// Si aucune n'est trouvée, on garde les polices d'egui : l'application
-    /// fonctionne, seuls quelques glyphes restent des carrés.
+    /// Ubuntu-Light ne couvre ni « ✘ », ni « → », ni « ● » ; aucune police à
+    /// empattements classiques ne couvre « 🗑 ». Il faut donc PLUSIEURS replis,
+    /// pas un seul : une police à large couverture latine-symboles, et une
+    /// police de symboles Unicode. Toutes celles qui sont trouvées sont
+    /// ajoutées, dans l'ordre.
+    ///
+    /// Ajoutées EN FIN de liste : les polices d'egui gardent la main sur ce
+    /// qu'elles savent rendre, l'aspect général ne change pas. Si rien n'est
+    /// trouvé, l'application fonctionne — seuls quelques glyphes restent des
+    /// carrés.
     pub(super) fn install_fallback_font(ctx: &egui::Context) {
-        const CANDIDATES: [&str; 4] = [
+        const CANDIDATES: [&str; 8] = [
+            // Large couverture latine + flèches, puces, coches.
             "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            // Symboles Unicode hors plan latin : corbeille, pictogrammes.
+            "/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+            "/usr/share/fonts/google-noto/NotoSansSymbols-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf",
         ];
-        let Some(bytes) = CANDIDATES
-            .iter()
-            .find_map(|p| std::fs::read(p).ok())
-        else {
-            return;
-        };
+
         let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "fallback".to_owned(),
-            egui::FontData::from_owned(bytes),
-        );
-        // En REPLI (poussé à la fin) : les polices d'egui gardent la main sur
-        // les caractères qu'elles savent rendre, l'aspect ne change pas.
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-            fonts.families.entry(family).or_default().push("fallback".to_owned());
+        let mut added = 0usize;
+        for path in CANDIDATES {
+            let Ok(bytes) = std::fs::read(path) else { continue };
+            let name = format!("fallback{added}");
+            fonts.font_data.insert(name.clone(), egui::FontData::from_owned(bytes));
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts.families.entry(family).or_default().push(name.clone());
+            }
+            added += 1;
         }
-        ctx.set_fonts(fonts);
+        if added > 0 {
+            ctx.set_fonts(fonts);
+        }
     }
 
     /// Applique le thème choisi (Système / Sombre / Clair) + le style moderne.
@@ -920,6 +897,47 @@ mod keyboard_tests {
         // Le rendu du même frame a consommé la demande.
         assert_eq!(app.scroll_to_sel, None, "la demande doit être consommée par le rendu");
         assert!(app.reg_sel > 0, "et la sélection avoir bougé");
+    }
+
+    /// Un raccourci ne doit déclencher son action QU'UNE FOIS par appui.
+    ///
+    /// Le gestionnaire de raccourcis avait fini par contenir deux copies du même
+    /// bloc : F10 exécutait deux pas, Échap arrêtait deux fois, F6 se battait
+    /// avec lui-même. Rien ne le signalait — ni le compilateur, ni les tests
+    /// existants, qui appelaient les actions directement. On vérifie donc l'effet
+    /// observable d'un appui unique.
+    #[test]
+    fn a_shortcut_fires_exactly_once_per_press() {
+        let mut app = running_app("once");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+
+        // F10 = un pas, donc exactement une entrée d'historique de plus.
+        let before = app.dbg.as_ref().map(|d| d.history.len()).unwrap_or(0);
+        frame(&mut app, &ctx, key(egui::Key::F10));
+        let after = app.dbg.as_ref().map(|d| d.history.len()).unwrap_or(0);
+        assert_eq!(
+            after - before,
+            1,
+            "F10 doit avancer d'un seul pas (obtenu {})",
+            after - before
+        );
+
+        // F1 ouvre l'aide ; deux bascules l'auraient laissée fermée.
+        app.show_shortcuts = false;
+        frame(&mut app, &ctx, key(egui::Key::F1));
+        assert!(app.show_shortcuts, "F1 doit ouvrir la fenêtre des raccourcis");
+    }
+
+    /// Échap doit arrêter le programme une seule fois, sans effet de bord.
+    #[test]
+    fn escape_stops_once() {
+        let mut app = running_app("esc");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+        assert!(app.dbg.is_some());
+        frame(&mut app, &ctx, key(egui::Key::Escape));
+        assert!(app.dbg.is_none(), "Échap arrête le programme");
     }
 }
 
