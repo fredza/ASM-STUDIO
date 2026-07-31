@@ -369,6 +369,12 @@ impl App {
                     .style(style)
                     .draggable_tabs(true)
                     .show_close_buttons(true)
+                    // Un seul bouton de fermeture. egui_dock en dessine deux sur
+                    // un panneau détaché : celui de la fenêtre et celui de
+                    // l'onglet. On garde celui de l'onglet, qui ferme
+                    // exactement ce que l'utilisateur désigne ; la fenêtre
+                    // disparaît d'elle-même quand elle se vide.
+                    .show_window_close_buttons(false)
                     .show_inside(ui, &mut Viewer { app: self });
 
                 // Anneau de focus : sans lui, F6 semble ne rien faire. C'est le

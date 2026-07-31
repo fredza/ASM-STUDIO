@@ -57,21 +57,8 @@ pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
-/// Icône optionnelle + titre de section, à placer dans un `panel_header`.
-pub(super) fn header_title(ui: &mut egui::Ui, hdr: Color32, icon: Option<&egui::TextureHandle>, text: &str) {
-    icon_img(ui, icon, 15.0);
-    ui.label(RichText::new(text).strong().color(hdr).size(12.5));
-}
 
-/// Titre de section simple (sans contrôle) à hauteur fixe.
-pub(super) fn header(ui: &mut egui::Ui, hdr: Color32, text: &str) {
-    panel_header(ui, |ui| header_title(ui, hdr, None, text));
-}
 
-/// En-tête de section avec une icône optionnelle à gauche du titre.
-pub(super) fn header_icon(ui: &mut egui::Ui, hdr: Color32, icon: Option<&egui::TextureHandle>, text: &str) {
-    panel_header(ui, |ui| header_title(ui, hdr, icon, text));
-}
 
 /// Affiche une petite icône carrée (rien si `icon` est `None`).
 pub(super) fn icon_img(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, size: f32) {

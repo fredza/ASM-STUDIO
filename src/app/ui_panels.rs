@@ -7,7 +7,7 @@ use super::{
     App, ACTION, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, FLASH_BRIGHT,
     PUSH_COL, POP_COL,
     changed_color, changed_color2, lerp_color,
-    panel_header, header, header_icon, header_title, icon_tab,
+    panel_header, icon_img, icon_tab,
     hex_dump_rows, parse_hex, parse_hex_bytes,
     dir_tree,
 };
@@ -21,7 +21,6 @@ impl App {
     pub(super) fn timeline_col_ui(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
-        header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.timeline), "TIMELINE");
         let Some(last) = self.dbg.as_ref().map(|d| d.history.len() - 1) else {
             ui.weak(tr("— lancez un programme", "— run a program", "— inicia un programa"));
             return;
@@ -138,9 +137,8 @@ impl App {
         };
         let mut pick: Option<u64> = None;
         let mem_ic = self.icons.as_ref().map(|i| i.memory.clone());
-        let hdr = self.c_header();
         panel_header(ui, |ui| {
-            header_title(ui, hdr, mem_ic.as_ref(), "MEMORY");
+            icon_img(ui, mem_ic.as_ref(), 15.0);
             // Sélecteur de région (façon mockup).
             egui::ComboBox::from_id_salt("mem_region")
                 .selected_text(RichText::new(format!("0x{:012X}..", self.mem_addr)).monospace())
@@ -242,10 +240,9 @@ impl App {
 
     pub(super) fn console_ui(&mut self, ui: &mut egui::Ui) {
         let console_ic = self.icons.as_ref().map(|i| i.console.clone());
-        let hdr = self.c_header();
         let clear = i18n::tr3(self.lang, "effacer", "clear", "borrar");
         panel_header(ui, |ui| {
-            header_title(ui, hdr, console_ic.as_ref(), "CONSOLE");
+            icon_img(ui, console_ic.as_ref(), 15.0);
             if ui.small_button(clear).clicked() {
                 self.console.clear();
             }
@@ -335,7 +332,6 @@ impl App {
     pub(super) fn registers_ui(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
-        header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.registers), "REGISTERS");
         let Some(rows) = self.reg_rows() else {
             ui.label(tr("Aucun programme lancé.", "No program running.", "Ningún programa en ejecución."));
             return;
@@ -510,7 +506,7 @@ impl App {
                                 });
                                 // Bande de bits : montre exactement quels bits ont basculé.
                                 if changed && ped {
-                                    bit_diff_strip(ui, val, pval, blink);
+                                    bit_diff_strip(ui, val, pval, blink, lang);
                                     // Ancienne valeur en fantôme, pour la comparaison.
                                     ui.label(
                                         RichText::new(format!("← 0x{pval:016X}"))
@@ -541,7 +537,6 @@ impl App {
     }
 
     pub(super) fn flags_ui(&self, ui: &mut egui::Ui) {
-        header(ui, self.c_header(), "FLAGS");
         let (Some(snap), Some(prev)) = (self.snap(), self.prev_snap()) else {
             ui.weak("—");
             return;
@@ -613,7 +608,6 @@ impl App {
 
     pub(super) fn explorer_ui(&mut self, ui: &mut egui::Ui) {
         let up_tip = i18n::tr3(self.lang, "Dossier parent comme racine", "Parent folder as root", "Carpeta padre como raíz");
-        header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.explorer), "EXPLORER");
 
         // Barre : nom du dossier racine + remonter d'un cran.
         let mut go_up = false;
@@ -658,7 +652,6 @@ impl App {
     // ---------- Call stack ----------
 
     pub(super) fn callstack_ui(&self, ui: &mut egui::Ui) {
-        header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.callstack), "CALL STACK");
         if self.dbg.is_none() {
             ui.weak("—");
             return;
@@ -690,7 +683,6 @@ impl App {
     // ---------- Syscalls ----------
 
     pub(super) fn syscalls_ui(&self, ui: &mut egui::Ui) {
-        header_icon(ui, self.c_header(), self.icons.as_ref().map(|i| &i.syscalls), "SYSCALLS");
         // Défilement sur les DEUX axes : les arguments d'un appel système sont
         // souvent plus larges que la colonne (chemins, tampons, tailles). On les
         // laisse déborder et on donne une barre horizontale, plutôt que de les

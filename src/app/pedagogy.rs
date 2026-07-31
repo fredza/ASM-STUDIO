@@ -105,51 +105,112 @@ fn human_size(bytes: u64, lang: crate::i18n::Lang) -> String {
     }
 }
 
+/// Texte de l'infobulle de la bande de bits.
+///
+/// Extrait de la fonction de dessin pour être vérifiable, et parce que c'est
+/// lui qui porte l'explication : la bande ne dit rien à qui ignore son codage.
+pub(super) fn bit_strip_tooltip(val: u64, pval: u64, lang: crate::i18n::Lang) -> String {
+    let t = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+    let diff = val ^ pval;
+    // Binaire groupé par octets : 64 chiffres d'affilée sont illisibles.
+    let grouped: Vec<String> = (0..8)
+        .map(|b| format!("{:08b}", (val >> (56 - b * 8)) & 0xFF))
+        .collect();
+    format!(
+        "{}\n\n{}\n{}\n{}\n\n{} : {}\n{}\n{}",
+        t(
+            "Les 64 bits du registre — bit 63 à gauche, bit 0 à droite.",
+            "The register's 64 bits — bit 63 on the left, bit 0 on the right.",
+            "Los 64 bits del registro — bit 63 a la izquierda, bit 0 a la derecha.",
+        ),
+        t(
+            "▌ haute et vive    bit qui vient de passer à 1",
+            "▌ tall and bright  bit that just became 1",
+            "▌ alta y viva      bit que acaba de pasar a 1",
+        ),
+        t(
+            "▌ haute et sombre  bit qui vient de passer à 0",
+            "▌ tall and dark    bit that just became 0",
+            "▌ alta y oscura    bit que acaba de pasar a 0",
+        ),
+        t(
+            "▪ basse            bit inchangé (clair = 1, creux = 0)",
+            "▪ short            unchanged bit (light = 1, hollow = 0)",
+            "▪ baja             bit sin cambio (claro = 1, hueco = 0)",
+        ),
+        t("Bits modifiés", "Changed bits", "Bits modificados"),
+        diff.count_ones(),
+        t("Les traits séparent les octets.", "The ticks separate bytes.", "Las marcas separan bytes."),
+        format!("0b {}", grouped.join(" ")),
+    )
+}
+
 /// Bande de 64 cellules montrant quels bits ont basculé entre `pval` et `val` :
 /// cellule vive = bit modifié (clignote), cellule mate = bit inchangé.
 /// Les bits à 1 sont pleins, ceux à 0 sont en creux — l'élève voit le motif binaire.
-pub(super) fn bit_diff_strip(ui: &mut egui::Ui, val: u64, pval: u64, blink: f32) {
+///
+/// Encadrée de « 63 » et « 0 » : sans repère, rien n'indique le sens de lecture,
+/// et la bande passe pour une décoration.
+pub(super) fn bit_diff_strip(ui: &mut egui::Ui, val: u64, pval: u64, blink: f32, lang: crate::i18n::Lang) {
     const CELL: f32 = 2.6;
     const GAP: f32 = 0.6;
     const H: f32 = 9.0;
+    /// Hauteur de la zone sensible : la bande fait 9 px, trop fin pour viser
+    /// l'infobulle à la souris.
+    const HOVER_H: f32 = 18.0;
+
     let diff = val ^ pval;
     let w = 64.0 * CELL + 63.0 * GAP;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, H), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    let off = ui.visuals().extreme_bg_color;
-    let on = ui.visuals().weak_text_color().gamma_multiply(0.55);
-    let hot = lerp_color(CHANGED, FLASH_BRIGHT, blink);
-    // Bit 63 à gauche, bit 0 à droite (ordre de lecture d'un nombre binaire).
-    for i in 0..64u32 {
-        let bit = 63 - i;
-        let set = (val >> bit) & 1 == 1;
-        let flipped = (diff >> bit) & 1 == 1;
-        let x = rect.left() + i as f32 * (CELL + GAP);
-        let cell = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(CELL, H));
-        let col = match (flipped, set) {
-            (true, true) => hot,
-            (true, false) => hot.gamma_multiply(0.4),
-            (false, true) => on,
-            (false, false) => off,
-        };
-        // Un bit modifié occupe toute la hauteur ; un bit stable reste discret.
-        let r = if flipped { cell } else { cell.shrink2(egui::vec2(0.0, 2.0)) };
-        painter.rect_filled(r, 0.8, col);
-    }
-    // Séparateurs tous les 8 bits (frontières d'octet) pour aider à compter.
-    for b in 1..8 {
-        let x = rect.left() + (b as f32 * 8.0) * (CELL + GAP) - GAP * 0.5;
-        painter.line_segment(
-            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-            egui::Stroke::new(0.6_f32, ui.visuals().weak_text_color().gamma_multiply(0.35)),
+    let edge = |ui: &mut egui::Ui, txt: &str| {
+        ui.label(
+            RichText::new(txt)
+                .monospace()
+                .size(8.5)
+                .color(ui.visuals().weak_text_color()),
         );
-    }
-    if resp.hovered() {
-        resp.on_hover_text(format!(
-            "{} bit(s) modifié(s)\n0b{val:064b}",
-            diff.count_ones()
-        ));
-    }
+    };
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        edge(ui, "63");
+        // Zone sensible plus haute que la bande, qui est peinte en son centre.
+        let (hover_rect, resp) = ui.allocate_exact_size(egui::vec2(w, HOVER_H), egui::Sense::hover());
+        let rect = egui::Rect::from_center_size(hover_rect.center(), egui::vec2(w, H));
+        let painter = ui.painter_at(hover_rect);
+        let off = ui.visuals().extreme_bg_color;
+        let on = ui.visuals().weak_text_color().gamma_multiply(0.55);
+        let hot = lerp_color(CHANGED, FLASH_BRIGHT, blink);
+        // Bit 63 à gauche, bit 0 à droite (ordre de lecture d'un nombre binaire).
+        for i in 0..64u32 {
+            let bit = 63 - i;
+            let set = (val >> bit) & 1 == 1;
+            let flipped = (diff >> bit) & 1 == 1;
+            let x = rect.left() + i as f32 * (CELL + GAP);
+            let cell = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(CELL, H));
+            let col = match (flipped, set) {
+                (true, true) => hot,
+                (true, false) => hot.gamma_multiply(0.4),
+                (false, true) => on,
+                (false, false) => off,
+            };
+            // Un bit modifié occupe toute la hauteur ; un bit stable reste discret.
+            let r = if flipped { cell } else { cell.shrink2(egui::vec2(0.0, 2.0)) };
+            painter.rect_filled(r, 0.8, col);
+        }
+        // Séparateurs tous les 8 bits (frontières d'octet) pour aider à compter.
+        for b in 1..8 {
+            let x = rect.left() + (b as f32 * 8.0) * (CELL + GAP) - GAP * 0.5;
+            painter.line_segment(
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                egui::Stroke::new(0.6_f32, ui.visuals().weak_text_color().gamma_multiply(0.35)),
+            );
+        }
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Help);
+        }
+        resp.on_hover_text(bit_strip_tooltip(val, pval, lang));
+        edge(ui, "0");
+    });
 }
 
 impl App {
@@ -845,5 +906,52 @@ mod tests {
         assert!(one > empty, "une voie visée doit être plus haute");
         // Mais l'écart reste raisonnable : pas de voie géante contre une naine.
         assert!(one < empty * 2.0, "écart trop brutal : {empty} → {one}");
+    }
+
+    /// L'infobulle doit EXPLIQUER le codage, pas le supposer connu : c'est ce
+    /// qui manquait — la bande passait pour une décoration.
+    #[test]
+    fn bit_strip_tooltip_explains_the_encoding() {
+        use crate::i18n::Lang;
+        // RAX passe de 0 à 1 : un seul bit, le plus bas.
+        let txt = bit_strip_tooltip(1, 0, Lang::Fr);
+
+        assert!(txt.contains("63") && txt.contains("0"), "sens de lecture : {txt}");
+        assert!(txt.contains("Bits modifiés : 1"), "nombre de bits changés : {txt}");
+        // La légende décrit les trois aspects de cellule.
+        assert!(txt.contains("passer à 1"), "légende bit monté : {txt}");
+        assert!(txt.contains("passer à 0"), "légende bit descendu : {txt}");
+        assert!(txt.contains("inchangé"), "légende bit stable : {txt}");
+        // Binaire groupé par octets, pas 64 chiffres d'affilée.
+        assert!(txt.contains("00000000 00000001"), "binaire groupé : {txt}");
+        assert!(!txt.contains("0000000000000001"), "les octets doivent être séparés");
+    }
+
+    /// Le compte de bits modifiés doit être exact, y compris quand plusieurs
+    /// basculent d'un coup (décalage, xor, masque).
+    #[test]
+    fn changed_bit_count_is_exact() {
+        use crate::i18n::Lang;
+        let count = |val: u64, pval: u64| {
+            let t = bit_strip_tooltip(val, pval, Lang::Fr);
+            let line = t.lines().find(|l| l.starts_with("Bits modifiés")).unwrap();
+            line.rsplit(':').next().unwrap().trim().parse::<u32>().unwrap()
+        };
+        assert_eq!(count(1, 0), 1, "un seul bit");
+        assert_eq!(count(0, 0), 0, "aucun changement");
+        assert_eq!(count(0xFF, 0), 8, "un octet entier");
+        // shl rax, 3 depuis 1 : le bit 0 s'éteint, le bit 3 s'allume.
+        assert_eq!(count(0b1000, 0b1), 2);
+        assert_eq!(count(u64::MAX, 0), 64, "tous les bits");
+    }
+
+    #[test]
+    fn tooltip_is_written_in_every_language() {
+        use crate::i18n::Lang;
+        for lang in [Lang::Fr, Lang::En, Lang::Es] {
+            let txt = bit_strip_tooltip(0x1234, 0x1200, lang);
+            assert!(txt.len() > 120, "explication trop courte en {lang:?} : {txt}");
+            assert!(txt.contains("0b "), "la valeur binaire manque en {lang:?}");
+        }
     }
 }

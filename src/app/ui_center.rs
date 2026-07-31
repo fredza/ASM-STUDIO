@@ -8,7 +8,7 @@ use crate::syscall;
 
 use super::{
     App, ACCENT, ACTION, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, GUTTER,
-    badge, card, panel_header, icon_img,
+    badge, card,
 };
 
 impl App {
@@ -211,16 +211,8 @@ impl App {
     // ---------- Panneau INSTRUCTION ----------
 
     pub(super) fn instruction_ui(&mut self, ui: &mut egui::Ui) {
-        let bulb_ic = self.icons.as_ref().map(|i| i.instruction.clone());
-        let hdr = self.c_header();
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
-        panel_header(ui, |ui| {
-            super::header_title(ui, hdr, None, "INSTRUCTION");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                icon_img(ui, bulb_ic.as_ref(), 16.0);
-            });
-        });
 
         // FLAGS n'est plus épinglé ici : c'est un panneau ancrable à part
         // entière, et le garder aussi en bas de INSTRUCTION affichait les mêmes

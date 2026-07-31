@@ -1,36 +1,80 @@
-; asmstd.inc — bibliothèque standard pédagogique pour ASM Studio
-; Linux x86-64 (NASM) · syscalls + utilitaires courants
+; ======================================================================
+;  asmstd.inc — bibliothèque standard pédagogique pour ASM Studio
+;  Linux x86-64 (NASM)
+; ======================================================================
 ;
-; === Convention d'appel (Linux x86-64 / System V ABI) =================
+; À QUOI ÇA SERT
+;   Écrire « bonjour » en assembleur nu demande de connaître le numéro du
+;   syscall write (1), l'ordre exact de ses arguments, et de compter soi-même
+;   la longueur de la chaîne. Ce n'est pas de l'assembleur : c'est de la
+;   paperasse, et elle décourage avant d'avoir rien appris.
+;
+;   asmstd met un nom lisible sur cette paperasse. Au lieu de :
+;
+;       mov  rax, 1          ; quel numéro, déjà ?
+;       mov  rdi, 1
+;       lea  rsi, [msg]
+;       mov  rdx, 13         ; longueur comptée à la main
+;       syscall
+;
+;   on écrit :
+;
+;       lea  rdi, [msg]
+;       call asm.print       ; la longueur est calculée pour vous
+;
+;   Le programme reste du vrai assembleur, exécuté par le vrai noyau : rien
+;   n'est simulé. On déplace seulement l'effort vers ce qu'on veut apprendre.
+;
+;   Chaque fonction reste lisible dans ce fichier : quand une notion est
+;   acquise, on peut ouvrir asmstd.inc et voir exactement ce qu'elle fait.
+;
+; UTILISATION
+;   %include "asmstd.inc"     ; une seule fois (protégé par %ifndef)
+;   Activez « Bibliothèque asmstd » dans Fichier ▸ Préférences pour qu'ASM
+;   Studio trouve ce fichier depuis n'importe quel dossier.
+;
+; CONVENTION D'APPEL (System V AMD64 — celle de Linux)
 ;   Arguments  : rdi  rsi  rdx  rcx  r8   r9
-;   Retour     : rax  (valeur négative = -errno pour les wrappers syscall)
-;   Préservés  : rbx  rbp  r12..r15  (callee-saved ; restaurés si modifiés)
-;   Écrasés    : rax  rcx  rdx  rsi  rdi  r8..r11  (caller-saved)
+;   Retour     : rax  (négatif = -errno pour les enveloppes de syscall)
+;   Préservés  : rbx  rbp  r12..r15   (restaurés par la fonction appelée)
+;   Écrasés    : rax  rcx  rdx  rsi  rdi  r8..r11
 ;
-; === 4e argument syscall vs appel de fonction =========================
-;   En C/ABI fonction, le 4e argument va dans rcx.
-;   Mais le noyau Linux attend le 4e argument dans r10 (pas rcx !).
-;   Les wrappers asm.mmap, asm.wait4, asm.send… font mov r10, rcx
-;   pour vous : passez vos 4 arguments normalement dans rdi/rsi/rdx/rcx.
+;   Piège classique : le noyau attend le 4e argument dans r10, pas rcx.
+;   Les enveloppes concernées (asm.mmap, asm.wait4, asm.send…) font le
+;   « mov r10, rcx » pour vous — passez vos arguments normalement.
 ;
-; === Utilisation ======================================================
-;   %include "asmstd.inc"       ; une seule inclusion suffit (%ifndef guard)
+; ----------------------------------------------------------------------
+;  INDEX
+; ----------------------------------------------------------------------
+;  Sortie          print  println  print_num  print_hex  print_bin
+;                  print_char  print_stderr  newline
+;  Entrée          read_line
+;  Fichiers        open  close  read  write  lseek  stat  fstat  lstat
+;                  access  truncate  ftruncate  unlink  rename  link
+;                  symlink  readlink  chmod  dup  dup2  pipe  fcntl  ioctl
+;                  poll  getdents64
+;  Dossiers        mkdir  rmdir  chdir  getcwd
+;  Processus       fork  execve  exit  exit_group  wait4  waitpid  kill
+;                  getpid  getppid  getuid  geteuid  getgid  getegid
+;  Mémoire         mmap  munmap  mremap  mprotect  brk
+;                  memcpy  memmove  memset  memcmp
+;  Réseau          socket  bind  listen  accept  connect  send  recv
+;                  shutdown  setsockopt
+;  Temps           nanosleep  gettimeofday  clock_gettime
+;  Chaînes         strlen  strcpy  strncpy  strcat  strcmp  strncmp
+;                  strchr  strrchr  strstr  str_upper  str_lower
+;                  str_reverse  str_count
+;  Caractères      is_digit  is_alpha  is_alnum  is_space  is_upper
+;                  is_lower  to_upper  to_lower
+;  Nombres         atoi  itoa  abs  sign  min  max  clamp  divmod
+;                  gcd  lcm  pow
+;  Tableaux (q)    arr_sum  arr_max  arr_min  arr_find  arr_reverse
+;                  arr_sort
+;  Vérification    assert_eq
 ;
-;   ; Syscall brut :
-;   mov  rdi, 1                 ; fd = stdout
-;   lea  rsi, [msg]
-;   mov  rdx, len
-;   call asm.write
-;
-;   ; Helper haut niveau :
-;   lea  rdi, [msg]             ; chaîne terminée par 0
-;   call asm.print              ; écrit sur stdout (calcule la longueur seul)
-;
-;   mov  rdi, 42
-;   call asm.print_num          ; affiche "42\n" sur stdout
-;
-;   xor  rdi, rdi
-;   call asm.exit
+;  Chaque fonction porte en commentaire sa signature exacte, juste au-dessus
+;  de son code. Cherchez « .nom: » dans ce fichier.
+; ======================================================================
 
 %ifndef ASMSTD_INC
 %define ASMSTD_INC
@@ -672,11 +716,715 @@ asm:            ; label parent — les fonctions sont ses labels locaux (.xxx)
     pop     rbx
     ret
 
+; ======================================================================
+;  CARACTÈRES — classification et conversion (sur al / dil)
+; ======================================================================
+;   Toutes prennent le caractère dans dil et renvoient dans rax.
+;   Les prédicats renvoient 1 (vrai) ou 0 (faux) : utilisables tels quels
+;   avec « test rax, rax » puis « jz ».
+
+.is_digit:      ; (dil=car) -> rax = 1 si '0'..'9', sinon 0
+    xor     rax, rax
+    cmp     dil, '0'
+    jb      .isd_no
+    cmp     dil, '9'
+    ja      .isd_no
+    inc     rax
+.isd_no:
+    ret
+
+.is_upper:      ; (dil=car) -> rax = 1 si 'A'..'Z'
+    xor     rax, rax
+    cmp     dil, 'A'
+    jb      .isu_no
+    cmp     dil, 'Z'
+    ja      .isu_no
+    inc     rax
+.isu_no:
+    ret
+
+.is_lower:      ; (dil=car) -> rax = 1 si 'a'..'z'
+    xor     rax, rax
+    cmp     dil, 'a'
+    jb      .isl_no
+    cmp     dil, 'z'
+    ja      .isl_no
+    inc     rax
+.isl_no:
+    ret
+
+.is_alpha:      ; (dil=car) -> rax = 1 si lettre (majuscule ou minuscule)
+    call    asm.is_upper
+    test    rax, rax
+    jnz     .isa_yes
+    call    asm.is_lower
+    ret
+.isa_yes:
+    ret
+
+.is_alnum:      ; (dil=car) -> rax = 1 si lettre ou chiffre
+    call    asm.is_alpha
+    test    rax, rax
+    jnz     .isan_yes
+    call    asm.is_digit
+    ret
+.isan_yes:
+    ret
+
+.is_space:      ; (dil=car) -> rax = 1 si espace, tabulation, \n, \r, \f, \v
+    xor     rax, rax
+    cmp     dil, ' '
+    je      .iss_yes
+    cmp     dil, 9          ; \t
+    jb      .iss_no
+    cmp     dil, 13         ; \r
+    ja      .iss_no
+.iss_yes:
+    inc     rax
+.iss_no:
+    ret
+
+.to_upper:      ; (dil=car) -> rax = car en majuscule (inchangé si pas 'a'..'z')
+    movzx   rax, dil
+    cmp     dil, 'a'
+    jb      .tu_done
+    cmp     dil, 'z'
+    ja      .tu_done
+    sub     rax, 32
+.tu_done:
+    ret
+
+.to_lower:      ; (dil=car) -> rax = car en minuscule (inchangé si pas 'A'..'Z')
+    movzx   rax, dil
+    cmp     dil, 'A'
+    jb      .tl_done
+    cmp     dil, 'Z'
+    ja      .tl_done
+    add     rax, 32
+.tl_done:
+    ret
+
+; ======================================================================
+;  CHAÎNES — au-delà de strlen / strcpy / strcmp
+; ======================================================================
+
+.strncmp:       ; (rdi=a, rsi=b, rdx=n) -> rax = 0 si les n premiers octets
+                ;   sont égaux, sinon différence (a[i] - b[i]) signée
+    xor     rcx, rcx
+.sncmp_lp:
+    cmp     rcx, rdx
+    jae     .sncmp_eq       ; n octets comparés sans différence
+    movzx   rax, byte [rdi + rcx]
+    movzx   r8,  byte [rsi + rcx]
+    sub     rax, r8
+    jnz     .sncmp_done     ; différence trouvée
+    cmp     byte [rdi + rcx], 0
+    je      .sncmp_eq       ; fin des deux chaînes
+    inc     rcx
+    jmp     .sncmp_lp
+.sncmp_eq:
+    xor     rax, rax
+.sncmp_done:
+    ret
+
+.strchr:        ; (rdi=str, sil=car) -> rax = pointeur sur la 1re occurrence,
+                ;   ou 0 si absente. Cherche aussi le '\0' si sil = 0.
+    mov     rax, rdi
+.schr_lp:
+    movzx   rcx, byte [rax]
+    cmp     cl, sil
+    je      .schr_done
+    test    cl, cl
+    jz      .schr_none
+    inc     rax
+    jmp     .schr_lp
+.schr_none:
+    xor     rax, rax
+.schr_done:
+    ret
+
+.strrchr:       ; (rdi=str, sil=car) -> rax = dernière occurrence, ou 0
+    xor     rax, rax        ; meilleur candidat trouvé
+    mov     rcx, rdi
+.srchr_lp:
+    movzx   r8, byte [rcx]
+    cmp     r8b, sil
+    jne     .srchr_next
+    mov     rax, rcx        ; on retient, mais on continue
+.srchr_next:
+    test    r8b, r8b
+    jz      .srchr_done
+    inc     rcx
+    jmp     .srchr_lp
+.srchr_done:
+    ret
+
+.strstr:        ; (rdi=botte, rsi=aiguille) -> rax = pointeur sur la 1re
+                ;   occurrence de l'aiguille, ou 0. Aiguille vide -> botte.
+    cmp     byte [rsi], 0
+    je      .sstr_found_here
+    mov     rax, rdi
+.sstr_outer:
+    cmp     byte [rax], 0
+    je      .sstr_none
+    xor     rcx, rcx
+.sstr_inner:
+    movzx   r8, byte [rsi + rcx]
+    test    r8b, r8b
+    jz      .sstr_done      ; aiguille épuisée : trouvée à rax
+    movzx   r9, byte [rax + rcx]
+    cmp     r8b, r9b
+    jne     .sstr_next
+    inc     rcx
+    jmp     .sstr_inner
+.sstr_next:
+    inc     rax
+    jmp     .sstr_outer
+.sstr_none:
+    xor     rax, rax
+    ret
+.sstr_found_here:
+    mov     rax, rdi
+.sstr_done:
+    ret
+
+.strcat:        ; (rdi=dst, rsi=src) -> rax = dst
+                ;   Ajoute src à la fin de dst. dst doit avoir la place.
+    push    rbx
+    mov     rbx, rdi
+    call    asm.strlen      ; rax = longueur de dst
+    lea     rdi, [rbx + rax]
+    call    asm.strcpy      ; recopie src au bout
+    mov     rax, rbx
+    pop     rbx
+    ret
+
+.strncpy:       ; (rdi=dst, rsi=src, rdx=n) -> rax = dst
+                ;   Copie au plus n octets ; complète par des '\0'.
+    mov     rax, rdi
+    xor     rcx, rcx
+.sncpy_lp:
+    cmp     rcx, rdx
+    jae     .sncpy_done
+    movzx   r8, byte [rsi + rcx]
+    mov     byte [rdi + rcx], r8b
+    test    r8b, r8b
+    jz      .sncpy_pad      ; source finie : on complète de zéros
+    inc     rcx
+    jmp     .sncpy_lp
+.sncpy_pad:
+    inc     rcx
+    cmp     rcx, rdx
+    jae     .sncpy_done
+    mov     byte [rdi + rcx], 0
+    jmp     .sncpy_pad
+.sncpy_done:
+    ret
+
+.str_upper:     ; (rdi=str) -> rax = str, converti en majuscules SUR PLACE
+    push    rbx
+    mov     rbx, rdi
+    xor     rcx, rcx
+.supr_lp:
+    movzx   rdi, byte [rbx + rcx]
+    test    dil, dil
+    jz      .supr_done
+    push    rcx
+    call    asm.to_upper
+    pop     rcx
+    mov     byte [rbx + rcx], al
+    inc     rcx
+    jmp     .supr_lp
+.supr_done:
+    mov     rax, rbx
+    pop     rbx
+    ret
+
+.str_lower:     ; (rdi=str) -> rax = str, converti en minuscules SUR PLACE
+    push    rbx
+    mov     rbx, rdi
+    xor     rcx, rcx
+.slwr_lp:
+    movzx   rdi, byte [rbx + rcx]
+    test    dil, dil
+    jz      .slwr_done
+    push    rcx
+    call    asm.to_lower
+    pop     rcx
+    mov     byte [rbx + rcx], al
+    inc     rcx
+    jmp     .slwr_lp
+.slwr_done:
+    mov     rax, rbx
+    pop     rbx
+    ret
+
+.str_reverse:   ; (rdi=str) -> rax = str, inversée SUR PLACE
+    push    rbx
+    mov     rbx, rdi
+    call    asm.strlen      ; rax = longueur
+    mov     rdi, rbx
+    test    rax, rax
+    jz      .srev_done
+    lea     rcx, [rbx + rax - 1]    ; fin
+    mov     rdx, rbx                ; début
+.srev_lp:
+    cmp     rdx, rcx
+    jae     .srev_done
+    movzx   r8,  byte [rdx]
+    movzx   r9,  byte [rcx]
+    mov     byte [rdx], r9b
+    mov     byte [rcx], r8b
+    inc     rdx
+    dec     rcx
+    jmp     .srev_lp
+.srev_done:
+    mov     rax, rbx
+    pop     rbx
+    ret
+
+.str_count:     ; (rdi=str, sil=car) -> rax = nombre d'occurrences de car
+    xor     rax, rax
+    xor     rcx, rcx
+.scnt_lp:
+    movzx   r8, byte [rdi + rcx]
+    test    r8b, r8b
+    jz      .scnt_done
+    cmp     r8b, sil
+    jne     .scnt_next
+    inc     rax
+.scnt_next:
+    inc     rcx
+    jmp     .scnt_lp
+.scnt_done:
+    ret
+
+; ======================================================================
+;  MÉMOIRE — au-delà de memcpy / memset
+; ======================================================================
+
+.memcmp:        ; (rdi=a, rsi=b, rdx=n) -> rax = 0 si identiques,
+                ;   sinon différence signée du 1er octet qui diffère
+    xor     rcx, rcx
+.mcmp_lp:
+    cmp     rcx, rdx
+    jae     .mcmp_eq
+    movzx   rax, byte [rdi + rcx]
+    movzx   r8,  byte [rsi + rcx]
+    sub     rax, r8
+    jnz     .mcmp_done
+    inc     rcx
+    jmp     .mcmp_lp
+.mcmp_eq:
+    xor     rax, rax
+.mcmp_done:
+    ret
+
+.memmove:       ; (rdi=dst, rsi=src, rdx=n) -> rax = dst
+                ;   Contrairement à memcpy, gère les zones qui SE CHEVAUCHENT :
+                ;   copie d'arrière en avant quand dst est au-dessus de src.
+    mov     rax, rdi
+    test    rdx, rdx
+    jz      .mmv_done
+    cmp     rdi, rsi
+    jbe     .mmv_fwd        ; dst <= src : copie normale
+    ;   dst > src : si les zones se chevauchent, copier en avant écraserait
+    ;   la source. On part donc de la fin.
+    mov     rcx, rdx
+.mmv_bwd:
+    dec     rcx
+    movzx   r8, byte [rsi + rcx]
+    mov     byte [rdi + rcx], r8b
+    test    rcx, rcx
+    jnz     .mmv_bwd
+    ret
+.mmv_fwd:
+    xor     rcx, rcx
+.mmv_flp:
+    movzx   r8, byte [rsi + rcx]
+    mov     byte [rdi + rcx], r8b
+    inc     rcx
+    cmp     rcx, rdx
+    jb      .mmv_flp
+.mmv_done:
+    ret
+
+; ======================================================================
+;  ARITHMÉTIQUE — entiers signés 64 bits
+; ======================================================================
+
+.abs:           ; (rdi=n i64) -> rax = |n|
+    mov     rax, rdi
+    cqo                     ; rdx = signe étendu de rax
+    xor     rax, rdx        ; si négatif : complément à un…
+    sub     rax, rdx        ; …puis +1  => valeur absolue
+    ret
+
+.sign:          ; (rdi=n i64) -> rax = -1, 0 ou 1
+    xor     rax, rax
+    test    rdi, rdi
+    jz      .sgn_done
+    mov     rax, 1
+    jg      .sgn_done
+    mov     rax, -1
+.sgn_done:
+    ret
+
+.min:           ; (rdi=a, rsi=b) -> rax = plus petit (SIGNÉ)
+    mov     rax, rdi
+    cmp     rsi, rax
+    cmovl   rax, rsi
+    ret
+
+.max:           ; (rdi=a, rsi=b) -> rax = plus grand (SIGNÉ)
+    mov     rax, rdi
+    cmp     rsi, rax
+    cmovg   rax, rsi
+    ret
+
+.clamp:         ; (rdi=n, rsi=bas, rdx=haut) -> rax = n ramené dans [bas, haut]
+    mov     rax, rdi
+    cmp     rax, rsi
+    cmovl   rax, rsi
+    cmp     rax, rdx
+    cmovg   rax, rdx
+    ret
+
+.divmod:        ; (rdi=a, rsi=b) -> rax = a/b, rdx = a%b  (division SIGNÉE)
+                ;   Renvoie rax=0, rdx=0 si b vaut 0 — plutôt que de laisser le
+                ;   processeur lever une exception qui tuerait le programme.
+    test    rsi, rsi
+    jz      .dm_zero
+    mov     rax, rdi
+    cqo                     ; étend le signe de rax dans rdx (obligatoire)
+    idiv    rsi
+    ret
+.dm_zero:
+    xor     rax, rax
+    xor     rdx, rdx
+    ret
+
+.gcd:           ; (rdi=a, rsi=b) -> rax = PGCD(|a|, |b|)  — algorithme d'Euclide
+    push    rbx
+    call    asm.abs
+    mov     rbx, rax        ; rbx = |a|
+    mov     rdi, rsi
+    call    asm.abs         ; rax = |b|
+.gcd_lp:
+    test    rax, rax
+    jz      .gcd_done
+    ;   (rbx, rax) <- (rax, rbx mod rax)
+    mov     rcx, rax
+    mov     rax, rbx
+    cqo
+    idiv    rcx             ; rdx = rbx mod rcx
+    mov     rbx, rcx
+    mov     rax, rdx
+    jmp     .gcd_lp
+.gcd_done:
+    mov     rax, rbx
+    pop     rbx
+    ret
+
+.lcm:           ; (rdi=a, rsi=b) -> rax = PPCM(|a|, |b|), ou 0 si a ou b = 0
+    push    rbx
+    push    r12
+    mov     rbx, rdi
+    mov     r12, rsi
+    test    rbx, rbx
+    jz      .lcm_zero
+    test    r12, r12
+    jz      .lcm_zero
+    call    asm.gcd         ; rax = pgcd
+    mov     rcx, rax
+    mov     rdi, rbx
+    call    asm.abs
+    cqo
+    idiv    rcx             ; rax = |a| / pgcd
+    mov     rbx, rax
+    mov     rdi, r12
+    call    asm.abs
+    imul    rax, rbx
+    jmp     .lcm_done
+.lcm_zero:
+    xor     rax, rax
+.lcm_done:
+    pop     r12
+    pop     rbx
+    ret
+
+.pow:           ; (rdi=base, rsi=exposant >= 0) -> rax = base^exposant
+                ;   Exponentiation rapide : O(log n) multiplications.
+    mov     rax, 1
+    test    rsi, rsi
+    jle     .pow_done       ; exposant nul ou négatif -> 1
+    mov     rcx, rdi        ; puissance courante de la base
+.pow_lp:
+    test    rsi, 1
+    jz      .pow_sq
+    imul    rax, rcx
+.pow_sq:
+    shr     rsi, 1
+    jz      .pow_done
+    imul    rcx, rcx
+    jmp     .pow_lp
+.pow_done:
+    ret
+
+; ======================================================================
+;  TABLEAUX de qwords (entiers 64 bits)
+; ======================================================================
+;   Partout : rdi = adresse du tableau, rsi = nombre d'éléments.
+
+.arr_sum:       ; (rdi=tab, rsi=n) -> rax = somme des éléments
+    xor     rax, rax
+    xor     rcx, rcx
+.asum_lp:
+    cmp     rcx, rsi
+    jae     .asum_done
+    add     rax, [rdi + rcx * 8]
+    inc     rcx
+    jmp     .asum_lp
+.asum_done:
+    ret
+
+.arr_max:       ; (rdi=tab, rsi=n) -> rax = plus grand élément (0 si n = 0)
+    xor     rax, rax
+    test    rsi, rsi
+    jz      .amax_done
+    mov     rax, [rdi]
+    mov     rcx, 1
+.amax_lp:
+    cmp     rcx, rsi
+    jae     .amax_done
+    mov     r8, [rdi + rcx * 8]
+    cmp     r8, rax
+    cmovg   rax, r8
+    inc     rcx
+    jmp     .amax_lp
+.amax_done:
+    ret
+
+.arr_min:       ; (rdi=tab, rsi=n) -> rax = plus petit élément (0 si n = 0)
+    xor     rax, rax
+    test    rsi, rsi
+    jz      .amin_done
+    mov     rax, [rdi]
+    mov     rcx, 1
+.amin_lp:
+    cmp     rcx, rsi
+    jae     .amin_done
+    mov     r8, [rdi + rcx * 8]
+    cmp     r8, rax
+    cmovl   rax, r8
+    inc     rcx
+    jmp     .amin_lp
+.amin_done:
+    ret
+
+.arr_find:      ; (rdi=tab, rsi=n, rdx=valeur) -> rax = index, ou -1 si absente
+    xor     rcx, rcx
+.afind_lp:
+    cmp     rcx, rsi
+    jae     .afind_none
+    cmp     [rdi + rcx * 8], rdx
+    je      .afind_done
+    inc     rcx
+    jmp     .afind_lp
+.afind_none:
+    mov     rax, -1
+    ret
+.afind_done:
+    mov     rax, rcx
+    ret
+
+.arr_reverse:   ; (rdi=tab, rsi=n) -> rax = tab, inversé SUR PLACE
+    mov     rax, rdi
+    test    rsi, rsi
+    jz      .arev_done
+    xor     rcx, rcx        ; index de gauche
+    mov     rdx, rsi
+    dec     rdx             ; index de droite
+.arev_lp:
+    cmp     rcx, rdx
+    jae     .arev_done
+    mov     r8, [rdi + rcx * 8]
+    mov     r9, [rdi + rdx * 8]
+    mov     [rdi + rcx * 8], r9
+    mov     [rdi + rdx * 8], r8
+    inc     rcx
+    dec     rdx
+    jmp     .arev_lp
+.arev_done:
+    ret
+
+.arr_sort:      ; (rdi=tab, rsi=n) -> rax = tab, trié en ORDRE CROISSANT
+                ;   Tri à bulles : O(n²), mais court et facile à suivre pas à
+                ;   pas — c'est le but ici, pas la vitesse.
+    mov     rax, rdi
+    cmp     rsi, 2
+    jb      .asort_done
+    mov     r10, rsi
+    dec     r10             ; limite du balayage
+.asort_pass:
+    xor     r11, r11        ; drapeau « un échange a eu lieu »
+    xor     rcx, rcx
+.asort_lp:
+    cmp     rcx, r10
+    jae     .asort_check
+    mov     r8, [rdi + rcx * 8]
+    mov     r9, [rdi + rcx * 8 + 8]
+    cmp     r8, r9
+    jle     .asort_next
+    mov     [rdi + rcx * 8], r9
+    mov     [rdi + rcx * 8 + 8], r8
+    mov     r11, 1
+.asort_next:
+    inc     rcx
+    jmp     .asort_lp
+.asort_check:
+    test    r11, r11
+    jz      .asort_done     ; passe sans échange : c'est trié
+    dec     r10
+    jnz     .asort_pass
+.asort_done:
+    ret
+
+; ======================================================================
+;  ENTRÉES / SORTIES de confort
+; ======================================================================
+
+.print_char:    ; (dil=car) — écrit un seul caractère sur stdout
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 16
+    mov     [rsp], dil
+    mov     rdi, 1
+    mov     rsi, rsp
+    mov     rdx, 1
+    mov     rax, 1
+    syscall
+    leave
+    ret
+
+.print_bin:     ; (rdi=val u64, rsi=bits à afficher, 1..64) — motif binaire
+                ;   Affiche les `rsi` bits de poids faible, du plus fort au plus
+                ;   faible. Utile pour VOIR ce que font shl, and, xor…
+    push    rbx
+    push    r12
+    mov     rbx, rdi
+    mov     r12, rsi
+    cmp     r12, 1
+    jb      .pbin_done
+    cmp     r12, 64
+    jbe     .pbin_lp
+    mov     r12, 64
+.pbin_lp:
+    dec     r12
+    mov     rcx, r12
+    mov     rax, rbx
+    shr     rax, cl
+    and     rax, 1
+    add     rax, '0'
+    mov     rdi, rax
+    call    asm.print_char
+    test    r12, r12
+    jnz     .pbin_lp
+.pbin_done:
+    pop     r12
+    pop     rbx
+    ret
+
+.read_line:     ; (rdi=buf, rsi=taille) -> rax = longueur lue (sans le \n)
+                ;   Lit une ligne sur stdin. Le \n final n'est PAS conservé ;
+                ;   la chaîne est terminée par '\0'. Renvoie 0 sur fin de
+                ;   fichier, ou -errno en cas d'erreur.
+    push    rbx
+    push    r12
+    mov     rbx, rdi
+    mov     r12, rsi
+    test    r12, r12
+    jz      .rdl_empty
+    dec     r12             ; garde la place du '\0'
+    xor     rdi, rdi        ; fd = stdin
+    mov     rsi, rbx
+    mov     rdx, r12
+    mov     rax, 0          ; sys_read
+    syscall
+    test    rax, rax
+    jle     .rdl_done       ; 0 = EOF, < 0 = erreur
+    ;   Retire le saut de ligne final s'il est présent.
+    cmp     byte [rbx + rax - 1], 10
+    jne     .rdl_term
+    dec     rax
+.rdl_term:
+    mov     byte [rbx + rax], 0
+    jmp     .rdl_done
+.rdl_empty:
+    xor     rax, rax
+.rdl_done:
+    pop     r12
+    pop     rbx
+    ret
+
+; ======================================================================
+;  VÉRIFICATION — pour écrire des programmes qui se contrôlent eux-mêmes
+; ======================================================================
+
+.assert_eq:     ; (rdi=obtenu, rsi=attendu, rdx=nom) -> rax = 1 si égaux
+                ;   Affiche « nom : OK » ou « nom : ÉCHEC (obtenu N, attendu M) »
+                ;   et renvoie 1 ou 0. N'interrompt PAS le programme : à
+                ;   l'appelant de décider quoi faire du résultat.
+    push    rbx
+    push    r12
+    push    r13
+    mov     rbx, rdi        ; obtenu
+    mov     r12, rsi        ; attendu
+    mov     r13, rdx        ; nom
+
+    mov     rdi, r13
+    call    asm.print
+    mov     rdi, ' '
+    call    asm.print_char
+    mov     rdi, ':'
+    call    asm.print_char
+    mov     rdi, ' '
+    call    asm.print_char
+
+    cmp     rbx, r12
+    jne     .aeq_fail
+    lea     rdi, [_asmstd_ok]
+    call    asm.print
+    call    asm.newline
+    mov     rax, 1
+    jmp     .aeq_done
+.aeq_fail:
+    lea     rdi, [_asmstd_ko]
+    call    asm.print
+    mov     rdi, rbx
+    call    asm.print_num
+    lea     rdi, [_asmstd_exp]
+    call    asm.print
+    mov     rdi, r12
+    call    asm.print_num
+    mov     rdi, ')'
+    call    asm.print_char
+    call    asm.newline
+    xor     rax, rax
+.aeq_done:
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
 ; ---- Données internes (lecture seule) --------------------------------
 
 section .rodata
 _asmstd_nl: db 10           ; '\n'
 _asmstd_0x: db '0', 'x'
+_asmstd_ok:  db 'OK', 0
+_asmstd_ko:  db 'ECHEC (obtenu ', 0
+_asmstd_exp: db ', attendu ', 0
 
 section .text               ; rétablit .text pour le code suivant l'%include
 

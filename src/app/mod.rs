@@ -183,13 +183,14 @@ pub(super) enum StackTab {
 /// Icônes de l'app (planche `src/Assets`, découpées dans `assets/icons/`),
 /// chargées une fois comme textures egui.
 ///
-/// `editor` n'est plus utilisée depuis que les onglets du centre sont gérés par
-/// la barre d'onglets de la zone d'ancrage, qui n'accepte que du texte.
+/// Plusieurs icônes ont disparu avec les en-têtes de panneau : la barre
+/// d'onglets nomme chaque panneau, un pictogramme répété dans le corps n'était
+/// qu'une redite. Ne restent que celles des boutons et des rares en-têtes qui
+/// portent des contrôles.
 pub(super) struct Icons {
     pub(super) assembler: egui::TextureHandle,
     pub(super) run: egui::TextureHandle,
     pub(super) debug: egui::TextureHandle,
-    pub(super) registers: egui::TextureHandle,
     pub(super) stack: egui::TextureHandle,
     pub(super) heap: egui::TextureHandle,
     // Icônes complémentaires (même thème, générées) — boutons et panneaux.
@@ -198,12 +199,7 @@ pub(super) struct Icons {
     pub(super) restart: egui::TextureHandle,
     pub(super) attach: egui::TextureHandle,
     pub(super) memory: egui::TextureHandle,
-    pub(super) timeline: egui::TextureHandle,
     pub(super) console: egui::TextureHandle,
-    pub(super) syscalls: egui::TextureHandle,
-    pub(super) callstack: egui::TextureHandle,
-    pub(super) explorer: egui::TextureHandle,
-    pub(super) instruction: egui::TextureHandle,
 }
 
 impl Icons {
@@ -217,7 +213,6 @@ impl Icons {
             assembler: ic!("assembler"),
             run: ic!("run"),
             debug: ic!("debug"),
-            registers: ic!("registers"),
             stack: ic!("stack"),
             heap: ic!("heap"),
             stop: ic!("stop"),
@@ -225,12 +220,7 @@ impl Icons {
             restart: ic!("restart"),
             attach: ic!("attach"),
             memory: ic!("memory"),
-            timeline: ic!("timeline"),
             console: ic!("console"),
-            syscalls: ic!("syscalls"),
-            callstack: ic!("callstack"),
-            explorer: ic!("explorer"),
-            instruction: ic!("instruction"),
         }
     }
 }

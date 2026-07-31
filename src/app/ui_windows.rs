@@ -345,12 +345,40 @@ impl App {
             "Activar asmstd (call asm.write, asm.exit, asm.mkdir…)",
         );
         let t_asmstd_tip = self.tr3(
-            "Rend asmstd.inc disponible pour %include depuis n'importe quel fichier.\n\
-             Masque les numéros de syscalls derrière des noms lisibles.",
-            "Makes asmstd.inc available for %include from any file.\n\
-             Hides syscall numbers behind readable names.",
-            "Hace asmstd.inc disponible para %include desde cualquier archivo.\n\
-             Oculta los números de syscall detrás de nombres legibles.",
+            "Ajoute le dossier des exemples aux chemins d'inclusion de nasm, pour que\n\
+             %include \"asmstd.inc\" fonctionne depuis n'importe quel dossier.",
+            "Adds the examples folder to nasm's include paths, so that\n\
+             %include \"asmstd.inc\" works from any folder.",
+            "Añade la carpeta de ejemplos a las rutas de inclusión de nasm, para que\n\
+             %include \"asmstd.inc\" funcione desde cualquier carpeta.",
+        );
+        let t_asmstd_what = self.tr3(
+            "Écrire « bonjour » en assembleur nu demande de connaître le numéro du syscall \
+             write, l'ordre de ses arguments, et de compter soi-même la longueur de la \
+             chaîne. asmstd met un nom lisible sur cette paperasse : « call asm.print » \
+             remplace cinq lignes. Le programme reste du vrai assembleur exécuté par le \
+             vrai noyau — rien n'est simulé.",
+            "Writing \"hello\" in bare assembly means knowing the write syscall number, its \
+             argument order, and counting the string length yourself. asmstd puts a readable \
+             name on that paperwork: \"call asm.print\" replaces five lines. The program is \
+             still real assembly run by the real kernel — nothing is simulated.",
+            "Escribir «hola» en ensamblador puro exige conocer el número del syscall write, \
+             el orden de sus argumentos y contar la longitud a mano. asmstd pone un nombre \
+             legible a ese papeleo: «call asm.print» sustituye cinco líneas. El programa \
+             sigue siendo ensamblador real ejecutado por el núcleo real.",
+        );
+        let t_asmstd_scope = self.tr3(
+            "Environ 100 fonctions : sortie et saisie, fichiers, dossiers, processus, \
+             mémoire, réseau, temps, chaînes, caractères, nombres, tableaux, et une \
+             vérification (asm.assert_eq) pour écrire des programmes qui se contrôlent \
+             eux-mêmes. L'index complet est en tête d'asmstd.inc.",
+            "About 100 functions: output and input, files, directories, processes, memory, \
+             networking, time, strings, characters, numbers, arrays, and a check \
+             (asm.assert_eq) to write self-verifying programs. The full index is at the top \
+             of asmstd.inc.",
+            "Unas 100 funciones: salida y entrada, archivos, directorios, procesos, memoria, \
+             red, tiempo, cadenas, caracteres, números, arrays, y una verificación \
+             (asm.assert_eq). El índice completo está al principio de asmstd.inc.",
         );
         let t_asmstd_note = self.tr3(
             "Dans le code : %include \"asmstd.inc\" puis call asm.write",
@@ -408,6 +436,12 @@ impl App {
                     .on_hover_text(t_asmstd_tip)
                     .changed();
                 ui.weak(t_asmstd_note);
+                ui.add_space(6.0);
+                super::card(ui, |ui| {
+                    ui.label(egui::RichText::new(t_asmstd_what).size(12.5));
+                    ui.add_space(5.0);
+                    ui.label(egui::RichText::new(t_asmstd_scope).size(12.0).weak());
+                });
                 ui.separator();
 
                 ui.label(RichText::new(t_pedagogy_h).strong());
