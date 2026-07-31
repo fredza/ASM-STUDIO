@@ -495,7 +495,7 @@ mod tests {
     /// Le centre doit rester la zone principale, avec l'éditeur au premier plan.
     #[test]
     fn default_layout_focuses_the_editor() {
-        let mut state = default_layout();
+        let state = default_layout();
         let found = state.find_tab(&Panel::Editor);
         assert!(found.is_some(), "l'éditeur doit être présent");
         let (surface, _, _) = found.unwrap();

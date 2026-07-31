@@ -10,8 +10,8 @@
 
 use eframe::egui::{self, RichText};
 
-use super::{App, CHANGED, FALSE_COL, FLAG_ON, card, parse_hex};
-use crate::i18n;
+use super::{ACCENT, App, CHANGED, FALSE_COL, FLAG_ON, card, parse_hex};
+use crate::i18n::{self, Lang};
 
 /// Résultat d'une prédiction résolue.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -33,6 +33,11 @@ pub(crate) struct Prediction {
     pub(crate) insn: String,
     /// Étape à laquelle la prédiction a été posée.
     pub(crate) step: usize,
+    /// Texte brut saisi : nécessaire pour repérer une confusion décimal/hexa,
+    /// que la valeur analysée seule ne permettrait plus de distinguer.
+    pub(crate) input: String,
+    /// Valeur du registre AVANT le pas, pour expliquer la transition.
+    pub(crate) before: u64,
     /// `None` tant que le pas n'a pas été fait.
     pub(crate) got: Option<u64>,
 }
@@ -40,6 +45,194 @@ pub(crate) struct Prediction {
 impl Prediction {
     pub(crate) fn verdict(&self) -> Option<Verdict> {
         self.got.map(|g| if g == self.expected { Verdict::Right } else { Verdict::Wrong })
+    }
+}
+
+/// Erreur reconnue dans une prédiction fausse.
+///
+/// Une prédiction ratée est le moment le plus instructif de l'exercice : encore
+/// faut-il dire à l'élève *en quoi* il s'est trompé. Un écart chiffré ne
+/// l'apprend pas ; un motif nommé, si.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Mistake {
+    /// Le champ attend de l'hexadécimal, la valeur a été écrite en décimal.
+    DecimalWrittenAsHex { typed: String, hex: u64 },
+    /// C'est la valeur d'AVANT l'instruction qui a été annoncée.
+    GaveValueBefore,
+    /// Le registre n'a pas bougé, contrairement à ce qui était annoncé.
+    RegisterDidNotChange,
+    /// Complément à deux : l'opposé a été annoncé (ou lu comme non signé).
+    TwosComplement { signed: i64 },
+    /// Écriture 32 bits : les 32 bits hauts ont été remis à zéro.
+    ZeroExtended32,
+    /// Facteur 8 : confusion entre un nombre d'octets et un nombre de mots.
+    WordSizeFactor,
+    /// Écart de un — souvent une borne de boucle.
+    OffByOne { diff: i64 },
+    /// La valeur annoncée existe, mais dans un autre registre.
+    ValueIsInRegister(&'static str),
+    /// Aucun motif reconnu : on explique au moins la transition.
+    Unrecognised,
+}
+
+impl Mistake {
+    /// Analyse une prédiction fausse.
+    ///
+    /// `others` = (nom, valeur) des autres registres APRÈS le pas, pour repérer
+    /// une valeur annoncée qui a atterri ailleurs. L'ordre des tests va du motif
+    /// le plus spécifique au plus général.
+    pub(crate) fn detect(
+        typed: &str,
+        expected: u64,
+        got: u64,
+        before: u64,
+        others: &[(&'static str, u64)],
+    ) -> Mistake {
+        // Décimal saisi dans un champ hexa : « 60 » vaut 0x60 = 96, alors que
+        // l'élève pensait au 60 décimal, soit 0x3C. Piège le plus fréquent.
+        if let Ok(as_decimal) = typed.trim().trim_start_matches("0x").parse::<u64>()
+            && !typed.trim().starts_with("0x")
+            && as_decimal == got
+            && expected != got
+        {
+            return Mistake::DecimalWrittenAsHex { typed: typed.trim().to_string(), hex: got };
+        }
+        if expected == before && got != before {
+            return Mistake::GaveValueBefore;
+        }
+        if got == before {
+            return Mistake::RegisterDidNotChange;
+        }
+        if expected != 0 && got == expected.wrapping_neg() {
+            return Mistake::TwosComplement { signed: got as i64 };
+        }
+        if expected > u32::MAX as u64 && got == expected & 0xFFFF_FFFF {
+            return Mistake::ZeroExtended32;
+        }
+        if expected != 0 && (got == expected.wrapping_mul(8) || expected == got.wrapping_mul(8)) {
+            return Mistake::WordSizeFactor;
+        }
+        let diff = got.wrapping_sub(expected) as i64;
+        if diff == 1 || diff == -1 {
+            return Mistake::OffByOne { diff };
+        }
+        if let Some((name, _)) = others.iter().find(|(_, v)| *v == expected) {
+            return Mistake::ValueIsInRegister(name);
+        }
+        Mistake::Unrecognised
+    }
+
+    /// Titre court de l'erreur.
+    pub(crate) fn title(&self, lang: Lang) -> String {
+        let t = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        match self {
+            Mistake::DecimalWrittenAsHex { .. } => {
+                t("Décimal écrit dans un champ hexadécimal", "Decimal typed into a hex field", "Decimal escrito en un campo hexadecimal").into()
+            }
+            Mistake::GaveValueBefore => t("C'est la valeur d'avant", "That was the value before", "Ese era el valor anterior").into(),
+            Mistake::RegisterDidNotChange => t("Ce registre n'a pas bougé", "This register did not change", "Este registro no cambió").into(),
+            Mistake::TwosComplement { .. } => t("Question de signe", "A matter of sign", "Cuestión de signo").into(),
+            Mistake::ZeroExtended32 => t("Écriture 32 bits", "32-bit write", "Escritura de 32 bits").into(),
+            Mistake::WordSizeFactor => t("Octets ou mots de 8 ?", "Bytes or 8-byte words?", "¿Bytes o palabras de 8?").into(),
+            Mistake::OffByOne { .. } => t("À une unité près", "Off by one", "Por una unidad").into(),
+            Mistake::ValueIsInRegister(_) => t("Bonne valeur, mauvais registre", "Right value, wrong register", "Valor correcto, registro equivocado").into(),
+            Mistake::Unrecognised => t("Voyons ce qui s'est passé", "Let's see what happened", "Veamos qué pasó").into(),
+        }
+    }
+
+    /// Explication détaillée, avec les valeurs en jeu.
+    pub(crate) fn explanation(&self, lang: Lang, reg: &str, expected: u64, got: u64, before: u64) -> String {
+        let t = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        match self {
+            Mistake::DecimalWrittenAsHex { typed, hex } => format!(
+                "{} {typed} {} 0x{typed} = {} {}. {} {hex} {} 0x{hex:X}.",
+                t("Tu as tapé", "You typed", "Escribiste"),
+                t(", que le champ a lu comme", ", which the field read as", ", que el campo leyó como"),
+                expected,
+                t("en décimal", "in decimal", "en decimal"),
+                t("La bonne réponse était bien", "The right answer was indeed", "La respuesta correcta era"),
+                t("en décimal, mais il s'écrit", "in decimal, but it is written", "en decimal, pero se escribe"),
+            ),
+            Mistake::GaveValueBefore => format!(
+                "{reg} {} 0x{before:X} {} 0x{got:X}. {}",
+                t("valait", "held", "valía"),
+                t("avant l'instruction, et vaut maintenant", "before the instruction, and now holds", "antes de la instrucción, y ahora vale"),
+                t(
+                    "Tu as annoncé l'état d'avant : l'instruction a bien écrit dans ce registre.",
+                    "You gave the previous state: the instruction did write to this register.",
+                    "Diste el estado anterior: la instrucción sí escribió en este registro.",
+                ),
+            ),
+            Mistake::RegisterDidNotChange => format!(
+                "{reg} {} 0x{before:X}. {}",
+                t("est resté à", "stayed at", "se quedó en"),
+                t(
+                    "Cette instruction ne le touche pas — regarde quel registre elle prend pour destination.",
+                    "This instruction does not touch it — look at which register it writes to.",
+                    "Esta instrucción no lo toca — mira en qué registro escribe.",
+                ),
+            ),
+            Mistake::TwosComplement { signed } => format!(
+                "0x{got:X} {} {signed} {}. {}",
+                t("vaut", "is", "vale"),
+                t("en complément à deux", "in two's complement", "en complemento a dos"),
+                t(
+                    "Un nombre négatif est stocké comme son opposé binaire : tous les bits hauts sont à 1.",
+                    "A negative number is stored as its binary opposite: all the high bits are 1.",
+                    "Un número negativo se guarda como su opuesto binario: todos los bits altos están a 1.",
+                ),
+            ),
+            Mistake::ZeroExtended32 => format!(
+                "{} 0x{expected:X}, {} 0x{got:X}. {}",
+                t("Tu attendais", "You expected", "Esperabas"),
+                t("le registre contient", "the register holds", "el registro contiene"),
+                t(
+                    "Écrire dans la moitié 32 bits (eax, ebx…) remet automatiquement à zéro les 32 bits hauts du registre 64 bits.",
+                    "Writing to the 32-bit half (eax, ebx…) automatically zeroes the upper 32 bits of the 64-bit register.",
+                    "Escribir en la mitad de 32 bits (eax, ebx…) pone automáticamente a cero los 32 bits altos.",
+                ),
+            ),
+            Mistake::WordSizeFactor => format!(
+                "{} 8 {} 0x{expected:X} {} 0x{got:X}. {}",
+                t("Il y a un facteur", "There is a factor of", "Hay un factor"),
+                t("entre", "between", "entre"),
+                t("et", "and", "y"),
+                t(
+                    "Sur la pile, une case fait 8 octets : compter les cases et compter les octets ne donne pas le même nombre.",
+                    "On the stack a slot is 8 bytes: counting slots and counting bytes do not give the same number.",
+                    "En la pila una casilla ocupa 8 bytes: contar casillas y contar bytes no da lo mismo.",
+                ),
+            ),
+            Mistake::OffByOne { diff } => format!(
+                "{} {}. {}",
+                t("Il manque exactement", "You are off by exactly", "Falta exactamente"),
+                diff,
+                t(
+                    "Vérifie l'ordre des opérations : le décrément a-t-il lieu avant ou après la lecture ?",
+                    "Check the order of operations: does the decrement happen before or after the read?",
+                    "Comprueba el orden: ¿el decremento ocurre antes o después de la lectura?",
+                ),
+            ),
+            Mistake::ValueIsInRegister(other) => format!(
+                "0x{expected:X} {} {other}, {} {reg} {} 0x{got:X}. {}",
+                t("se trouve bien dans", "is indeed in", "está en"),
+                t("mais", "but", "pero"),
+                t("contient", "holds", "contiene"),
+                t(
+                    "Relis la destination de l'instruction : c'est l'opérande de gauche.",
+                    "Re-read the instruction's destination: it is the left-hand operand.",
+                    "Relee el destino de la instrucción: es el operando de la izquierda.",
+                ),
+            ),
+            Mistake::Unrecognised => format!(
+                "{reg} : 0x{before:X} → 0x{got:X}. {}",
+                t(
+                    "Compare avec ce que fait l'instruction, décrit juste au-dessus.",
+                    "Compare with what the instruction does, described just above.",
+                    "Compara con lo que hace la instrucción, descrito arriba.",
+                ),
+            ),
+        }
     }
 }
 
@@ -218,8 +411,6 @@ impl App {
                                 .color(col),
                         );
                         ui.end_row();
-                        // L'écart aide à comprendre l'erreur (souvent un facteur 8,
-                        // une confusion signé/non signé, ou un décalage de 1).
                         if v == Verdict::Wrong {
                             let got = p.got.unwrap_or(0);
                             let delta = got.wrapping_sub(p.expected) as i64;
@@ -229,6 +420,65 @@ impl App {
                         }
                     });
                 });
+
+            // --- Pourquoi c'est faux ---
+            // Un écart chiffré n'apprend rien. On nomme l'erreur, on rappelle ce
+            // que fait l'instruction, et on donne quoi regarder.
+            if v == Verdict::Wrong {
+                let got = p.got.unwrap_or(0);
+                let others: Vec<(&'static str, u64)> = self
+                    .snap()
+                    .map(|s| {
+                        s.regs
+                            .named()
+                            .iter()
+                            .filter(|(n, _)| *n != p.reg)
+                            .map(|(n, v)| (*n, *v))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mistake = Mistake::detect(&p.input, p.expected, got, p.before, &others);
+
+                ui.add_space(6.0);
+                egui::Frame::default()
+                    .fill(ACCENT.linear_multiply(0.10))
+                    .stroke(egui::Stroke::new(1.0_f32, ACCENT.linear_multiply(0.5)))
+                    .rounding(egui::Rounding::same(5.0))
+                    .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            RichText::new(format!("💡 {}", mistake.title(lang)))
+                                .strong()
+                                .color(ACCENT),
+                        );
+                        ui.add_space(3.0);
+                        ui.label(
+                            RichText::new(mistake.explanation(lang, p.reg, p.expected, got, p.before))
+                                .size(12.5),
+                        );
+                    });
+
+                // Ce que fait réellement l'instruction, dans les mots du panneau
+                // INSTRUCTION : l'élève n'a pas à changer de panneau pour l'avoir.
+                if let Some(insn) = self.disasm.iter().find(|i| {
+                    format!("{} {}", i.mnemonic, i.operands) == p.insn
+                }) {
+                    let flags = self
+                        .snap()
+                        .map(|s| crate::debugger::Flags::from_eflags(s.regs.eflags))
+                        .unwrap_or_default();
+                    let e = crate::explain::explain(&insn.mnemonic, &insn.operands, flags, lang);
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(format!("{} {}", tr("Rappel —", "Reminder —", "Recordatorio —"), e.title))
+                            .small()
+                            .strong()
+                            .color(hdr),
+                    );
+                    ui.label(RichText::new(&e.description).size(12.0));
+                }
+            }
             ui.add_space(6.0);
             if ui.button(tr("Prédire le pas suivant", "Predict next step", "Predecir el siguiente paso")).clicked() {
                 self.prediction = None;
@@ -281,6 +531,8 @@ impl App {
                             expected: v,
                             insn: next_insn.clone().unwrap_or_default(),
                             step: self.view_index,
+                            input: self.pred_input.clone(),
+                            before: self.reg_value(self.pred_reg).unwrap_or(0),
                             got: None,
                         });
                         // Le pas exécute l'instruction et résout la prédiction.
@@ -336,6 +588,8 @@ mod tests {
             expected: 0x3C,
             insn: "mov rax, 60".into(),
             step: 0,
+            input: "3C".into(),
+            before: 0,
             got: None,
         };
         assert_eq!(p.verdict(), None, "non résolue tant que got est None");
@@ -374,6 +628,8 @@ mod tests {
             expected: 0x3C,
             insn: "mov rax, 60".into(),
             step: app.view_index,
+            input: "3C".into(),
+            before: app.reg_value("RAX").unwrap_or(0),
             got: None,
         });
         app.step();
@@ -389,6 +645,8 @@ mod tests {
             expected: 0xDEAD,
             insn: "mov rbx, 8".into(),
             step: app.view_index,
+            input: "DEAD".into(),
+            before: app.reg_value("RBX").unwrap_or(0),
             got: None,
         });
         app.step();
@@ -410,7 +668,8 @@ mod tests {
     fn resolution_is_idempotent() {
         let mut app = App::new();
         app.prediction = Some(Prediction {
-            reg: "RAX", expected: 1, insn: String::new(), step: 0, got: Some(2),
+            reg: "RAX", expected: 1, insn: String::new(), step: 0,
+            input: "1".into(), before: 0, got: Some(2),
         });
         app.pred_score = Score { right: 0, total: 1 };
         app.resolve_prediction();
@@ -460,5 +719,116 @@ mod tests {
         app.pred_score = Score { right: 3, total: 4 };
         let _ = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
         assert_eq!(pos_of(&ctx), first, "la position doit survivre au changement de titre");
+    }
+
+    /// Le piège que le champ hexadécimal tend lui-même : l'élève pense « 60 »
+    /// en décimal, le champ lit 0x60 = 96. C'est l'erreur la plus fréquente et
+    /// elle doit être nommée, pas présentée comme un écart de 36.
+    #[test]
+    fn decimal_typed_into_a_hex_field_is_recognised() {
+        // « mov rax, 60 » → RAX = 0x3C. L'élève tape « 60 », lu 0x60.
+        let m = Mistake::detect("60", 0x60, 0x3C, 0, &[]);
+        assert_eq!(m, Mistake::DecimalWrittenAsHex { typed: "60".into(), hex: 0x3C });
+        let txt = m.explanation(Lang::Fr, "RAX", 0x60, 0x3C, 0);
+        assert!(txt.contains("60"), "doit citer ce qui a été tapé : {txt}");
+        assert!(txt.contains("3C"), "et la bonne écriture hexa : {txt}");
+
+        // Mais « 0x60 » est une saisie hexa assumée : ce n'est plus ce piège.
+        let m = Mistake::detect("0x60", 0x60, 0x3C, 0, &[]);
+        assert_ne!(m, Mistake::DecimalWrittenAsHex { typed: "0x60".into(), hex: 0x3C });
+    }
+
+    #[test]
+    fn giving_the_previous_value_is_recognised() {
+        // RAX valait 5, l'instruction le met à 60 ; l'élève annonce 5.
+        let m = Mistake::detect("5", 5, 60, 5, &[]);
+        assert_eq!(m, Mistake::GaveValueBefore);
+        assert!(m.explanation(Lang::Fr, "RAX", 5, 60, 5).contains("avant"));
+    }
+
+    #[test]
+    fn an_untouched_register_is_recognised() {
+        // RBX vaut 7 avant et après ; l'élève annonçait 9.
+        let m = Mistake::detect("9", 9, 7, 7, &[]);
+        assert_eq!(m, Mistake::RegisterDidNotChange);
+    }
+
+    #[test]
+    fn twos_complement_is_recognised() {
+        // L'élève annonce 5, le registre contient -5.
+        let neg5 = 5u64.wrapping_neg();
+        let m = Mistake::detect("5", 5, neg5, 0, &[]);
+        assert_eq!(m, Mistake::TwosComplement { signed: -5 });
+        assert!(m.explanation(Lang::Fr, "RAX", 5, neg5, 0).contains("-5"));
+    }
+
+    /// `mov eax, …` remet à zéro les 32 bits hauts : surprise classique.
+    #[test]
+    fn zero_extension_of_a_32_bit_write_is_recognised() {
+        let m = Mistake::detect("1122334455", 0x1122_3344_5566_7788, 0x5566_7788, 0, &[]);
+        assert_eq!(m, Mistake::ZeroExtended32);
+        assert!(m.explanation(Lang::Fr, "RAX", 0x1122_3344_5566_7788, 0x5566_7788, 0).contains("32"));
+    }
+
+    #[test]
+    fn stack_word_factor_is_recognised() {
+        // L'élève compte 2 cases de pile, le registre a bougé de 16 octets.
+        let m = Mistake::detect("2", 2, 16, 0, &[]);
+        assert_eq!(m, Mistake::WordSizeFactor);
+        assert!(m.explanation(Lang::Fr, "RSP", 2, 16, 0).contains("8"));
+    }
+
+    #[test]
+    fn off_by_one_is_recognised() {
+        let m = Mistake::detect("9", 9, 10, 0, &[]);
+        assert_eq!(m, Mistake::OffByOne { diff: 1 });
+        let m = Mistake::detect("b", 11, 10, 0, &[]);
+        assert_eq!(m, Mistake::OffByOne { diff: -1 });
+    }
+
+    /// Bonne valeur, mauvaise destination : on nomme le registre qui la porte.
+    #[test]
+    fn value_landing_in_another_register_is_recognised() {
+        let others = [("RBX", 0x2A_u64), ("RCX", 0)];
+        let m = Mistake::detect("2a", 0x2A, 0x99, 0x99, &others);
+        // RegisterDidNotChange est plus spécifique et l'emporte ici…
+        assert_eq!(m, Mistake::RegisterDidNotChange);
+        // …mais si le registre a bien changé, c'est le bon registre qu'on cite.
+        let m = Mistake::detect("2a", 0x2A, 0x99, 0x11, &others);
+        assert_eq!(m, Mistake::ValueIsInRegister("RBX"));
+        assert!(m.explanation(Lang::Fr, "RAX", 0x2A, 0x99, 0x11).contains("RBX"));
+    }
+
+    /// Sans motif reconnu, on explique au moins la transition — jamais de
+    /// message vide.
+    #[test]
+    fn unrecognised_still_explains_the_transition() {
+        let m = Mistake::detect("dead", 0xDEAD, 0x1234, 0x7777, &[]);
+        assert_eq!(m, Mistake::Unrecognised);
+        let txt = m.explanation(Lang::Fr, "RAX", 0xDEAD, 0x1234, 0x7777);
+        assert!(txt.contains("7777") && txt.contains("1234"), "avant → après : {txt}");
+    }
+
+    /// Chaque motif doit être titré et expliqué dans les trois langues.
+    #[test]
+    fn every_mistake_is_explained_in_every_language() {
+        let all = [
+            Mistake::DecimalWrittenAsHex { typed: "60".into(), hex: 0x3C },
+            Mistake::GaveValueBefore,
+            Mistake::RegisterDidNotChange,
+            Mistake::TwosComplement { signed: -5 },
+            Mistake::ZeroExtended32,
+            Mistake::WordSizeFactor,
+            Mistake::OffByOne { diff: 1 },
+            Mistake::ValueIsInRegister("RBX"),
+            Mistake::Unrecognised,
+        ];
+        for m in &all {
+            for lang in [Lang::Fr, Lang::En, Lang::Es] {
+                assert!(!m.title(lang).is_empty(), "{m:?} sans titre en {lang:?}");
+                let e = m.explanation(lang, "RAX", 5, 9, 1);
+                assert!(e.len() > 20, "{m:?} : explication trop courte en {lang:?} : {e}");
+            }
+        }
     }
 }
