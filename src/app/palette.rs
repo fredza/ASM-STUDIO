@@ -45,8 +45,9 @@ pub(crate) enum Command {
     Shortcuts,
     About,
     CheckUpdates,
-    // Langue
+    // Langue et mode d'affichage
     SetLang(Lang),
+    SetMode(crate::app::UiMode),
 }
 
 impl Command {
@@ -88,6 +89,11 @@ impl Command {
             Command::SetLang(Lang::Fr) => t("Langue : Français", "Language: French", "Idioma: Francés").into(),
             Command::SetLang(Lang::En) => t("Langue : Anglais", "Language: English", "Idioma: Inglés").into(),
             Command::SetLang(Lang::Es) => t("Langue : Espagnol", "Language: Spanish", "Idioma: Español").into(),
+            Command::SetMode(m) => format!(
+                "{} : {}",
+                t("Mode d'affichage", "Display mode", "Modo de visualización"),
+                m.label(lang)
+            ),
         }
     }
 
@@ -141,6 +147,8 @@ impl Command {
             Command::Shortcuts,
             Command::CheckUpdates,
             Command::About,
+            Command::SetMode(crate::app::UiMode::Learning),
+            Command::SetMode(crate::app::UiMode::Full),
             Command::SetLang(Lang::Fr),
             Command::SetLang(Lang::En),
             Command::SetLang(Lang::Es),
@@ -276,6 +284,7 @@ impl App {
                 self.lang = l;
                 self.save_settings();
             }
+            Command::SetMode(m) => self.set_ui_mode(m),
         }
     }
 
@@ -522,6 +531,8 @@ mod tests {
     #[test]
     fn running_a_command_acts_on_the_app() {
         let mut app = App::new();
+        // Mode complet : le test manipule des panneaux avancés.
+        app.set_ui_mode(crate::app::UiMode::Full);
 
         // Fermer puis rouvrir la console par la palette.
         app.run_command(Command::TogglePanel(Panel::Console));

@@ -476,6 +476,7 @@ mod tests {
     #[test]
     fn tab_cycle_is_safe_without_focus() {
         let mut app = App::new();
+        app.set_ui_mode(crate::app::UiMode::Full);
         app.cycle_tab(false);
         app.cycle_tab(true);
         // La disposition reste intacte.
@@ -488,6 +489,8 @@ mod tests {
     #[test]
     fn tab_cycle_moves_within_the_focused_node() {
         let mut app = App::new();
+        // L'éditeur ne partage un nœud avec le désassemblage qu'en mode complet.
+        app.set_ui_mode(crate::app::UiMode::Full);
         app.focus_panel(Panel::Editor);
         assert_eq!(app.focused_panel(), Some(Panel::Editor));
 

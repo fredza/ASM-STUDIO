@@ -122,6 +122,58 @@ pub(super) fn changed_color2(flash: Option<f32>, base: Color32) -> Color32 {
     }
 }
 
+/// Mode d'affichage de l'interface.
+///
+/// L'application montre par défaut tout ce qu'un débogueur peut montrer, ce qui
+/// est écrasant quand on découvre l'assembleur. Le mode apprentissage réduit
+/// l'écran à ce qui sert les premières semaines : le code, ce que fait
+/// l'instruction courante, les registres, la pile et la sortie du programme.
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+pub(crate) enum UiMode {
+    /// Panneaux essentiels, registres généraux seulement.
+    #[default]
+    Learning,
+    /// Tous les panneaux et tous les registres.
+    Full,
+}
+
+impl UiMode {
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            UiMode::Learning => "learning",
+            UiMode::Full => "full",
+        }
+    }
+    pub(crate) fn from_key(k: &str) -> UiMode {
+        match k {
+            "full" => UiMode::Full,
+            _ => UiMode::Learning,
+        }
+    }
+    pub(crate) fn label(self, lang: Lang) -> &'static str {
+        match self {
+            UiMode::Learning => i18n::tr3(lang, "Apprentissage", "Learning", "Aprendizaje"),
+            UiMode::Full => i18n::tr3(lang, "Complet", "Full", "Completo"),
+        }
+    }
+    pub(crate) fn description(self, lang: Lang) -> &'static str {
+        match self {
+            UiMode::Learning => i18n::tr3(
+                lang,
+                "L'essentiel : code, instruction expliquée, registres généraux, pile, console.",
+                "The essentials: code, explained instruction, general registers, stack, console.",
+                "Lo esencial: código, instrucción explicada, registros generales, pila, consola.",
+            ),
+            UiMode::Full => i18n::tr3(
+                lang,
+                "Tout : désassemblage, vue mémoire, vidage hexa, pile d'appels, appels système.",
+                "Everything: disassembly, memory view, hex dump, call stack, system calls.",
+                "Todo: desensamblado, vista de memoria, volcado hexa, pila de llamadas, syscalls.",
+            ),
+        }
+    }
+}
+
 #[derive(PartialEq, Clone, Copy)]
 pub(super) enum StackTab {
     Stack,
@@ -277,6 +329,8 @@ pub struct App {
     pub(super) icons: Option<Icons>,
     /// Dialogue « Ouvrir » natif en cours sur un thread de fond (sinon `None`).
     /// Sondé chaque frame → l'UI ne se fige pas pendant que le sélecteur est ouvert.
+    /// Mode d'affichage : apprentissage (épuré) ou complet.
+    pub(super) mode: UiMode,
     /// Palette de commandes (Ctrl+Maj+P) : ouverte, requête, sélection.
     pub(super) palette_open: bool,
     pub(super) palette_query: String,
@@ -372,13 +426,14 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
+            mode: UiMode::Learning,
             palette_open: false,
             palette_query: String::new(),
             palette_sel: 0,
             palette_focus: false,
             focused_panel_name: None,
             ctx_surrender_focus: false,
-            dock: Some(dock::default_layout()),
+            dock: Some(dock::learning_layout()),
             pedagogy_predict: false,
             prediction: None,
             pred_score: predict::Score::default(),
@@ -421,6 +476,7 @@ impl App {
                     }
                 }
                 "lang" => self.lang = Lang::from_key(v),
+                "mode" => self.mode = UiMode::from_key(v),
                 "tooltips" => self.show_tooltips = v == "true",
                 "asmstd" => self.use_asmstd = v == "true",
                 "animate" => self.animate = v == "true",
@@ -431,8 +487,11 @@ impl App {
                 _ => {}
             }
         }
-        if let Some(layout) = saved_dock {
-            self.apply_dock_layout(&layout);
+        match saved_dock {
+            Some(layout) => self.apply_dock_layout(&layout),
+            // Pas de disposition enregistrée : celle du mode relu, sinon un
+            // réglage `mode=full` afficherait la disposition d'apprentissage.
+            None => self.dock = Some(dock::layout_for(self.mode)),
         }
     }
 
@@ -454,10 +513,11 @@ impl App {
             _ => "dark",
         };
         let content = format!(
-            "theme={theme}\nlang={}\ntooltips={}\nasmstd={}\nanimate={}\n\
+            "theme={theme}\nlang={}\nmode={}\ntooltips={}\nasmstd={}\nanimate={}\n\
              pedagogy_anim={}\npedagogy_memview={}\npedagogy_predict={}\n\
              dock={}\n",
             self.lang.key(),
+            self.mode.key(),
             self.show_tooltips,
             self.use_asmstd,
             self.animate,

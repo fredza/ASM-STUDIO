@@ -726,6 +726,8 @@ mod tests {
         app.pedagogy_anim = true;
         app.pedagogy_memview = true;
         app.animate = true;
+        // La vue mémoire est un panneau avancé : mode complet.
+        app.set_ui_mode(crate::app::UiMode::Full);
 
         app.launch();
         assert!(app.dbg.is_some(), "le programme doit être lancé");

@@ -329,167 +329,204 @@ impl App {
     pub(super) fn menu_bar(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+
+        // Organisation conventionnelle : Fichier / Exécution / Affichage /
+        // Outils / Aide. « Build » et « Debug » n'étaient qu'un seul sujet —
+        // faire tourner le programme — et se recoupaient (Lancer figurait dans
+        // les deux). Les réglages quittent « Aide », où personne ne les cherche.
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
+                // Entrée de menu : libellé à gauche, raccourci aligné à droite.
+                fn item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
+                    let clicked = ui
+                        .add(egui::Button::new(label).shortcut_text(shortcut))
+                        .clicked();
+                    if clicked {
+                        ui.close_menu();
+                    }
+                    clicked
+                }
+
                 ui.menu_button(tr("Fichier", "File", "Archivo"), |ui| {
-                    if ui.button(tr("Nouveau            Ctrl+N", "New                Ctrl+N", "Nuevo               Ctrl+N")).clicked() {
+                    if item(ui, tr("Nouveau", "New", "Nuevo"), "Ctrl+N") {
                         self.new_file();
-                        ui.close_menu();
                     }
-                    if ui.button(tr("Ouvrir…            Ctrl+O", "Open…              Ctrl+O", "Abrir…              Ctrl+O")).clicked() {
+                    if item(ui, tr("Ouvrir…", "Open…", "Abrir…"), "Ctrl+O") {
                         self.open_browser();
-                        ui.close_menu();
-                    }
-                    if ui.button(tr("Enregistrer        Ctrl+S", "Save               Ctrl+S", "Guardar            Ctrl+S")).clicked() {
-                        self.save_source();
-                        ui.close_menu();
-                    }
-                    if ui.button(tr("Enregistrer sous…", "Save As…", "Guardar como…")).clicked() {
-                        self.open_saveas();
-                        ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button(tr("Quitter", "Quit", "Salir")).clicked() {
+                    if item(ui, tr("Enregistrer", "Save", "Guardar"), "Ctrl+S") {
+                        self.save_source();
+                    }
+                    if item(ui, tr("Enregistrer sous…", "Save As…", "Guardar como…"), "") {
+                        self.open_saveas();
+                    }
+                    ui.separator();
+                    if item(ui, tr("Préférences…", "Preferences…", "Preferencias…"), "") {
+                        self.show_settings = true;
+                    }
+                    ui.separator();
+                    if item(ui, tr("Quitter", "Quit", "Salir"), "") {
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
-                ui.menu_button("Build", |ui| {
-                    if ui.button(tr("Assembler + Lier   Ctrl+B", "Assemble + Link    Ctrl+B", "Ensamblar + Enlazar   Ctrl+B")).clicked() {
+
+                ui.menu_button(tr("Exécution", "Run", "Ejecución"), |ui| {
+                    if item(ui, tr("Assembler", "Build", "Ensamblar"), "Ctrl+B") {
                         self.build();
-                        ui.close_menu();
                     }
-                    if ui.button(tr("Exécuter (Lancer)  F5", "Run                F5", "Ejecutar           F5")).clicked() {
+                    if item(ui, tr("Lancer", "Run", "Ejecutar"), "F5") {
                         self.launch();
-                        ui.close_menu();
                     }
-                });
-                ui.menu_button("Debug", |ui| {
-                    if ui.button(tr("Lancer / Restart   F5", "Run / Restart      F5", "Ejecutar / Reiniciar  F5")).clicked() {
-                        self.launch();
-                        ui.close_menu();
-                    }
-                    if ui.button(tr("Pas à pas          F10", "Step               F10", "Paso a paso         F10")).clicked() {
+                    ui.separator();
+                    if item(ui, tr("Pas à pas", "Step", "Paso a paso"), "F10") {
                         self.step();
-                        ui.close_menu();
                     }
-                    if ui.button(tr("Stop               Échap", "Stop               Esc", "Detener             Esc")).clicked() {
+                    if item(ui, tr("Arrêter", "Stop", "Detener"), "Échap") {
                         self.stop();
-                        ui.close_menu();
                     }
-                });
-                ui.menu_button(tr("Affichage", "View", "Vista"), |ui| {
-                    ui.label(RichText::new(tr("Panneaux", "Panels", "Paneles")).small().weak());
-                    ui.label(
-                        RichText::new(tr(
-                            "Glissez un onglet pour le déplacer, l'empiler ou le détacher.",
-                            "Drag a tab to move, stack or detach it.",
-                            "Arrastre una pestaña para moverla, apilarla o desacoplarla.",
-                        ))
-                        .small()
-                        .weak(),
-                    );
-                    ui.add_space(3.0);
-                    // Une case par panneau : cochée = présent quelque part dans
-                    // la disposition (ancré ou en fenêtre).
-                    let mut toggle: Option<super::dock::Panel> = None;
-                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                        for p in super::dock::Panel::ALL {
-                            let mut open = self.panel_is_open(p);
-                            if ui.checkbox(&mut open, p.title(lang)).changed() {
-                                toggle = Some(p);
-                            }
+                    ui.separator();
+                    ui.add_enabled_ui(self.dbg.is_some(), |ui| {
+                        if item(ui, tr("Début de la timeline", "Timeline start", "Inicio de la línea"), "Home") {
+                            self.set_view(0);
+                        }
+                        if item(ui, tr("Étape précédente", "Previous step", "Paso anterior"), "←") {
+                            self.set_view(self.view_index as i64 - 1);
+                        }
+                        if item(ui, tr("Étape suivante", "Next step", "Paso siguiente"), "→") {
+                            self.set_view(self.view_index as i64 + 1);
+                        }
+                        if item(ui, tr("Fin de la timeline", "Timeline end", "Fin de la línea"), "End") {
+                            self.set_view(i64::MAX);
+                        }
+                        ui.separator();
+                        if item(ui, tr("Reprendre ici", "Resume here", "Reanudar aquí"), "") {
+                            self.resume_here();
                         }
                     });
-                    if let Some(p) = toggle {
-                        self.toggle_panel(p);
-                        self.save_settings();
-                    }
-
-                    ui.separator();
-                    ui.label(RichText::new(tr("Fenêtres", "Windows", "Ventanas")).small().weak());
-                    if ui
-                        .checkbox(&mut self.pedagogy_predict, tr("Prédiction              Ctrl+5", "Prediction              Ctrl+5", "Predicción              Ctrl+5"))
-                        .changed()
-                    {
-                        self.save_settings();
-                    }
-
-                    ui.separator();
-                    if ui.button(tr("Tout afficher", "Show all", "Mostrar todo")).clicked() {
-                        for p in super::dock::Panel::ALL {
-                            if !self.panel_is_open(p) {
-                                self.show_panel(p);
-                            }
-                        }
-                        self.save_settings();
-                        ui.close_menu();
-                    }
-                    if ui
-                        .button(tr("Réinitialiser la disposition", "Reset layout", "Restablecer disposición"))
-                        .on_hover_text(tr(
-                            "Remet les panneaux à leur place d'origine.",
-                            "Puts every panel back in its original place.",
-                            "Devuelve cada panel a su lugar original.",
-                        ))
-                        .clicked()
-                    {
-                        self.reset_dock_layout();
-                        ui.close_menu();
-                    }
                 });
-                ui.menu_button(tr("Aide", "Help", "Ayuda"), |ui| {
-                    if ui
-                        .button(tr("Palette de commandes…  Ctrl+Maj+P", "Command palette…  Ctrl+Shift+P", "Paleta de comandos…  Ctrl+May+P"))
-                        .on_hover_text(tr(
-                            "Toutes les actions de l'application, au clavier.",
-                            "Every action in the application, from the keyboard.",
-                            "Todas las acciones de la aplicación, desde el teclado.",
-                        ))
-                        .clicked()
-                    {
+
+                ui.menu_button(tr("Affichage", "View", "Vista"), |ui| self.view_menu(ui));
+
+                ui.menu_button(tr("Outils", "Tools", "Herramientas"), |ui| {
+                    if item(ui, tr("Palette de commandes…", "Command palette…", "Paleta de comandos…"), "Ctrl+Maj+P") {
                         self.open_palette();
-                        ui.close_menu();
                     }
-                    ui.separator();
-                    if ui.button(tr("Réglages…", "Settings…", "Configuración…")).clicked() {
-                        self.show_settings = true;
-                        ui.close_menu();
-                    }
-                    if ui.button(tr("Raccourcis clavier…", "Keyboard shortcuts…", "Accesos directos…")).clicked() {
-                        self.show_shortcuts = true;
-                        ui.close_menu();
-                    }
-                    if ui.button(tr("Calculatrice…", "Calculator…", "Calculadora…")).clicked() {
+                    if item(ui, tr("Calculatrice multi-base…", "Multi-base calculator…", "Calculadora multibase…"), "") {
                         self.show_calculator = true;
-                        ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button(tr("Vérifier les mises à jour…", "Check for updates…", "Buscar actualizaciones…")).clicked() {
+                    if item(ui, tr("Vérifier les mises à jour", "Check for updates", "Buscar actualizaciones"), "") {
                         self.updater.check();
-                        ui.close_menu();
                     }
                     #[cfg(debug_assertions)]
-                    {
-                        if ui.button(
-                            egui::RichText::new("🧪 Simuler une mise à jour")
-                                .color(egui::Color32::from_rgb(180, 140, 60))
-                                .italics(),
-                        ).clicked() {
-                            self.updater.simulate();
-                            ui.close_menu();
-                        }
+                    if item(ui, "🧪 Simuler une mise à jour", "") {
+                        self.updater.simulate();
+                    }
+                });
+
+                ui.menu_button(tr("Aide", "Help", "Ayuda"), |ui| {
+                    if item(ui, tr("Raccourcis clavier…", "Keyboard shortcuts…", "Atajos de teclado…"), "F1") {
+                        self.show_shortcuts = true;
                     }
                     ui.separator();
-                    if ui.button(tr("À propos ASM Studio…", "About ASM Studio…", "Acerca de ASM Studio…")).clicked() {
+                    if item(ui, tr("À propos", "About", "Acerca de"), "") {
                         self.show_about = true;
-                        ui.close_menu();
                     }
                 });
             });
         });
     }
 
-    // ---------- Barre d'outils ----------
+    /// Contenu du menu Affichage : mode d'abord, puis panneaux, puis disposition.
+    fn view_menu(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        use super::UiMode;
+
+        ui.label(RichText::new(tr("Mode d'affichage", "Display mode", "Modo de visualización")).small().weak());
+        let mut wanted = self.mode;
+        for m in [UiMode::Learning, UiMode::Full] {
+            ui.radio_value(&mut wanted, m, m.label(lang))
+                .on_hover_text(m.description(lang));
+        }
+        if wanted != self.mode {
+            self.set_ui_mode(wanted);
+            ui.close_menu();
+        }
+
+        ui.separator();
+        ui.menu_button(tr("Panneaux", "Panels", "Paneles"), |ui| {
+            ui.label(
+                RichText::new(tr(
+                    "Glissez un onglet pour le déplacer, l'empiler ou le détacher.",
+                    "Drag a tab to move, stack or detach it.",
+                    "Arrastre una pestaña para moverla, apilarla o desacoplarla.",
+                ))
+                .small()
+                .weak(),
+            );
+            ui.add_space(3.0);
+            let mut toggle: Option<super::dock::Panel> = None;
+            let advanced = super::dock::ADVANCED;
+            // Les panneaux avancés sont regroupés à part et annoncés comme tels,
+            // plutôt que noyés dans une liste de quatorze cases à cocher.
+            for p in super::dock::Panel::ALL {
+                if advanced.contains(&p) {
+                    continue;
+                }
+                let mut open = self.panel_is_open(p);
+                if ui.checkbox(&mut open, p.title(lang)).changed() {
+                    toggle = Some(p);
+                }
+            }
+            ui.separator();
+            ui.label(RichText::new(tr("Avancé", "Advanced", "Avanzado")).small().weak());
+            for p in advanced {
+                let mut open = self.panel_is_open(p);
+                if ui.checkbox(&mut open, p.title(lang)).changed() {
+                    toggle = Some(p);
+                }
+            }
+            if let Some(p) = toggle {
+                self.toggle_panel(p);
+                self.save_settings();
+            }
+        });
+
+        if ui
+            .checkbox(
+                &mut self.pedagogy_predict,
+                tr("Fenêtre Prédiction", "Prediction window", "Ventana Predicción"),
+            )
+            .changed()
+        {
+            self.save_settings();
+        }
+
+        ui.separator();
+        if ui.button(tr("Tout afficher", "Show all", "Mostrar todo")).clicked() {
+            for p in super::dock::Panel::ALL {
+                if !self.panel_is_open(p) {
+                    self.show_panel(p);
+                }
+            }
+            self.save_settings();
+            ui.close_menu();
+        }
+        if ui
+            .button(tr("Réinitialiser la disposition", "Reset layout", "Restablecer disposición"))
+            .on_hover_text(tr(
+                "Remet les panneaux à la disposition du mode courant.",
+                "Puts every panel back to the current mode's layout.",
+                "Devuelve los paneles a la disposición del modo actual.",
+            ))
+            .clicked()
+        {
+            self.reset_dock_layout();
+            ui.close_menu();
+        }
+    }
 
     pub(super) fn toolbar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -689,6 +726,9 @@ mod keyboard_tests {
     /// parallèle assemblent dans le même dossier et s'écrasent l'un l'autre.
     fn running_app(tag: &str) -> App {
         let mut app = App::new();
+        // Ces tests visent le désassemblage, la mémoire et la vue mémoire,
+        // qui sont des panneaux du mode complet.
+        app.set_ui_mode(crate::app::UiMode::Full);
         app.src_path = PathBuf::from(format!("build/kbnav-{tag}.asm"));
         app.out_dir = PathBuf::from(format!("build/kbnav-{tag}"));
         app.source = "section .text\n global _start\n_start:\n mov rax,1\n mov rbx,2\n \

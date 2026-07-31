@@ -265,15 +265,26 @@ impl App {
 
     // ---------- Registres + Flags ----------
 
-    /// (nom, valeur, valeur précédente) des registres à afficher.
+    /// Registres montrés en mode apprentissage : les huit généraux hérités du
+    /// 8086 plus RIP. R8–R15 et EFLAGS brut viennent plus tard — EFLAGS est de
+    /// toute façon décodé par le panneau FLAGS.
+    const LEARNING_REGS: [&'static str; 9] = [
+        "RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RBP", "RSP", "RIP",
+    ];
+
+    /// (nom, valeur, valeur précédente) des registres à afficher, filtrés selon
+    /// le mode. Source unique : la navigation clavier et la vue mémoire s'y
+    /// réfèrent aussi, donc les index restent cohérents.
     pub(super) fn reg_rows(&self) -> Option<Vec<(&'static str, u64, u64)>> {
         let snap = self.snap()?;
         let prev = self.prev_snap()?;
+        let learning = self.mode == super::UiMode::Learning;
         Some(
             snap.regs
                 .named()
                 .iter()
                 .zip(prev.regs.named())
+                .filter(|((n, _), _)| !learning || Self::LEARNING_REGS.contains(n))
                 .map(|((n, v), (_, p))| (*n, *v, p))
                 .collect(),
         )
@@ -281,8 +292,7 @@ impl App {
 
     /// Déplace la sélection clavier dans le panneau des registres.
     pub(super) fn move_reg_selection(&mut self, down: bool) {
-        let Some(snap) = self.snap() else { return };
-        let n = snap.regs.named().len();
+        let n = self.reg_rows().map_or(0, |r| r.len());
         if n == 0 {
             return;
         }
@@ -297,8 +307,7 @@ impl App {
 
     /// Déplace la sélection d'un registre (←/→, dans la ligne).
     pub(super) fn move_reg_selection_sideways(&mut self, right: bool) {
-        let Some(snap) = self.snap() else { return };
-        let n = snap.regs.named().len();
+        let n = self.reg_rows().map_or(0, |r| r.len());
         if n == 0 {
             return;
         }
@@ -314,9 +323,8 @@ impl App {
         if !self.can_step() {
             return;
         }
-        let Some(snap) = self.snap() else { return };
-        let named = snap.regs.named();
-        let Some((name, val)) = named.get(self.reg_sel).copied() else { return };
+        let Some(rows) = self.reg_rows() else { return };
+        let Some(&(name, val, _)) = rows.get(self.reg_sel) else { return };
         self.edit_reg = Some(name);
         self.edit_buf = format!("{val:X}");
         self.edit_focus = true;
@@ -1127,5 +1135,48 @@ niveau2:
         app.edit_selected_register();
         assert_eq!(app.reg_sel, 0);
         assert_eq!(app.edit_reg, None, "rien à éditer sans processus");
+    }
+
+    /// Le mode apprentissage masque R8–R15 et EFLAGS : neuf registres au lieu
+    /// de dix-huit. La navigation clavier doit suivre la même liste, sinon les
+    /// flèches désigneraient des registres invisibles.
+    #[test]
+    fn learning_mode_shows_fewer_registers() {
+        use std::path::PathBuf;
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/regmode.asm");
+        app.out_dir = PathBuf::from("build/regmode");
+        app.source = "section .text\n global _start\n_start:\n mov rax,5\n \
+                       mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+        app.launch();
+        app.step();
+
+        let learning = app.reg_rows().expect("registres disponibles");
+        assert_eq!(learning.len(), 9, "les huit généraux + RIP");
+        for n in ["R8", "R15", "EFLAGS"] {
+            assert!(!learning.iter().any(|(name, _, _)| *name == n), "{n} ne doit pas apparaître");
+        }
+        for n in ["RAX", "RSP", "RIP"] {
+            assert!(learning.iter().any(|(name, _, _)| *name == n), "{n} doit apparaître");
+        }
+
+        app.set_ui_mode(super::super::UiMode::Full);
+        let full = app.reg_rows().expect("registres disponibles");
+        assert!(full.len() > learning.len(), "le mode complet en montre davantage");
+        assert!(full.iter().any(|(n, _, _)| *n == "R15"));
+
+        // La navigation clavier est bornée par la liste VISIBLE.
+        app.set_ui_mode(super::super::UiMode::Learning);
+        app.reg_sel = 0;
+        for _ in 0..30 {
+            app.move_reg_selection_sideways(true);
+        }
+        assert!(app.reg_sel < 9, "sélection {} hors des 9 registres visibles", app.reg_sel);
+
+        // Et Entrée édite bien le registre visible retenu, pas un homonyme d'index.
+        app.reg_sel = 8;
+        app.edit_selected_register();
+        assert_eq!(app.edit_reg, Some("RIP"), "le 9e registre visible est RIP");
     }
 }

@@ -136,6 +136,49 @@ pub(crate) fn default_layout() -> DockState<Panel> {
     state
 }
 
+/// Panneaux réservés au mode complet : ils supposent des notions qui viennent
+/// plus tard (code machine, adressage, conventions d'appel, appels système).
+pub(crate) const ADVANCED: [Panel; 5] = [
+    Panel::Disasm,
+    Panel::MemMap,
+    Panel::Memory,
+    Panel::CallStack,
+    Panel::Syscalls,
+];
+
+/// Disposition du mode apprentissage : neuf panneaux au lieu de quatorze.
+///
+/// ```text
+///   ┌──────────┬──────────────────────┬─────────────┐
+///   │ EXPLORER │  Éditeur             │ Instruction │
+///   │          │                      │ / Exercice  │
+///   │          ├──────────────────────┤ ─────────── │
+///   │          │ Registres │ Pile     │ Flags       │
+///   │          ├──────────────────────┤             │
+///   │          │ Console │ Timeline   │             │
+///   └──────────┴──────────────────────┴─────────────┘
+/// ```
+pub(crate) fn learning_layout() -> DockState<Panel> {
+    let mut state = DockState::new(vec![Panel::Editor]);
+    let surface = state.main_surface_mut();
+    let [center, _explorer] = surface.split_left(NodeIndex::root(), 0.17, vec![Panel::Explorer]);
+    let [center, right] =
+        surface.split_right(center, 0.72, vec![Panel::Instruction, Panel::Exercise]);
+    surface.split_below(right, 0.60, vec![Panel::Flags]);
+    let [center, cpu] = surface.split_below(center, 0.55, vec![Panel::Registers, Panel::Stack]);
+    surface.split_below(cpu, 0.55, vec![Panel::Console, Panel::Timeline]);
+    let _ = center;
+    state
+}
+
+/// Disposition correspondant au mode demandé.
+pub(crate) fn layout_for(mode: super::UiMode) -> DockState<Panel> {
+    match mode {
+        super::UiMode::Learning => learning_layout(),
+        super::UiMode::Full => default_layout(),
+    }
+}
+
 /// Adaptateur entre `egui_dock` et les méthodes de rendu de [`App`].
 pub(super) struct Viewer<'a> {
     pub(super) app: &'a mut App,
@@ -376,7 +419,7 @@ impl App {
         if wanted_docked.is_empty() && wanted_windowed.is_empty() {
             return;
         }
-        self.dock = Some(default_layout());
+        self.dock = Some(layout_for(self.mode));
         for p in Panel::ALL {
             if !wanted_docked.contains(&p) {
                 self.hide_panel(p);
@@ -389,9 +432,23 @@ impl App {
         }
     }
 
-    /// Remet la disposition d'origine.
+    /// Remet la disposition d'origine du mode courant.
     pub(super) fn reset_dock_layout(&mut self) {
-        self.dock = Some(default_layout());
+        self.dock = Some(layout_for(self.mode));
+        self.save_settings();
+    }
+
+    /// Bascule vers un mode d'affichage et applique sa disposition.
+    ///
+    /// Changer de mode REMPLACE la disposition : c'est le sens du réglage.
+    /// Sans effet si le mode est déjà celui demandé, pour ne pas détruire un
+    /// agencement que l'élève vient de composer.
+    pub(super) fn set_ui_mode(&mut self, mode: super::UiMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        self.dock = Some(layout_for(mode));
         self.save_settings();
     }
 }
@@ -450,6 +507,7 @@ mod tests {
     #[test]
     fn every_panel_can_be_closed_and_reopened() {
         let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
         for p in Panel::ALL {
             assert!(app.panel_is_open(p), "{p:?} devrait être ouvert au départ");
             app.hide_panel(p);
@@ -483,6 +541,7 @@ mod tests {
     #[test]
     fn layout_round_trips_through_settings() {
         let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
         app.hide_panel(Panel::Console);
         app.hide_panel(Panel::MemMap);
         if let Some(d) = app.dock.as_mut() {
@@ -497,6 +556,7 @@ mod tests {
         assert!(!saved.contains("console"), "console fermée : {saved}");
 
         let mut restored = App::new();
+        restored.set_ui_mode(super::super::UiMode::Full);
         restored.apply_dock_layout(&saved);
         assert!(!restored.panel_is_open(Panel::Console), "console doit rester fermée");
         assert!(!restored.panel_is_open(Panel::MemMap), "vue mémoire doit rester fermée");
@@ -510,6 +570,7 @@ mod tests {
     fn corrupt_layout_falls_back_to_default() {
         for saved in ["", "   ", "n_importe_quoi", "x:zzz,y:www"] {
             let mut app = App::new();
+            app.set_ui_mode(super::super::UiMode::Full);
             app.apply_dock_layout(saved);
             assert!(
                 app.panel_is_open(Panel::Editor),
@@ -522,11 +583,12 @@ mod tests {
     #[test]
     fn reset_restores_every_panel() {
         let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
         for p in Panel::ALL {
             app.hide_panel(p);
         }
         assert!(!app.panel_is_open(Panel::Editor));
-        app.dock = Some(default_layout());
+        app.reset_dock_layout();
         for p in Panel::ALL {
             assert!(app.panel_is_open(p), "{p:?} manquant après réinitialisation");
         }
@@ -539,6 +601,7 @@ mod tests {
     #[test]
     fn serialized_layout_matches_the_parser() {
         let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
         app.hide_panel(Panel::Console);
         app.hide_panel(Panel::Syscalls);
         if let Some(d) = app.dock.as_mut() {
@@ -557,6 +620,7 @@ mod tests {
 
         // Et le lecteur restitue exactement cet ensemble.
         let mut restored = App::new();
+        restored.set_ui_mode(super::super::UiMode::Full);
         restored.apply_dock_layout(&saved);
         for p in Panel::ALL {
             assert_eq!(
@@ -573,6 +637,7 @@ mod tests {
     #[test]
     fn f6_reaches_every_panel_in_one_cycle() {
         let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
         let total = app.focus_order().len();
         assert_eq!(total, Panel::ALL.len(), "l'ordre doit couvrir tous les panneaux");
 
@@ -604,6 +669,7 @@ mod tests {
     #[test]
     fn focus_order_skips_closed_panels() {
         let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
         app.hide_panel(Panel::Console);
         app.hide_panel(Panel::Flags);
         let order = app.focus_order();
@@ -630,6 +696,7 @@ mod tests {
     #[test]
     fn detached_panels_stay_reachable() {
         let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
         app.hide_panel(Panel::Timeline);
         if let Some(d) = app.dock.as_mut() {
             d.add_window(vec![Panel::Timeline]);
@@ -641,5 +708,72 @@ mod tests {
             Some(&Panel::Timeline),
             "les détachés viennent après les ancrés"
         );
+    }
+
+    /// Le mode apprentissage doit être réellement plus simple : strictement
+    /// moins de panneaux, et aucun panneau avancé.
+    #[test]
+    fn learning_mode_is_actually_simpler() {
+        let learning: Vec<Panel> = learning_layout().iter_all_tabs().map(|(_, t)| *t).collect();
+        let full: Vec<Panel> = default_layout().iter_all_tabs().map(|(_, t)| *t).collect();
+
+        assert!(
+            learning.len() < full.len(),
+            "apprentissage {} panneaux vs complet {}",
+            learning.len(),
+            full.len()
+        );
+        for p in ADVANCED {
+            assert!(!learning.contains(&p), "{p:?} est avancé, hors du mode apprentissage");
+            assert!(full.contains(&p), "{p:?} doit exister en mode complet");
+        }
+        // Mais l'essentiel doit y être : sans éditeur ni instruction, le mode
+        // n'apprendrait rien.
+        for p in [Panel::Editor, Panel::Instruction, Panel::Registers, Panel::Console] {
+            assert!(learning.contains(&p), "{p:?} manque au mode apprentissage");
+        }
+        // Aucun doublon.
+        let mut u = learning.clone();
+        u.sort_by_key(|p| p.key());
+        u.dedup();
+        assert_eq!(u.len(), learning.len(), "panneau dupliqué : {learning:?}");
+    }
+
+    /// Changer de mode remplace la disposition ; rester dans le même mode ne
+    /// doit RIEN toucher, sinon on détruirait l'agencement composé par l'élève.
+    #[test]
+    fn switching_mode_replaces_layout_but_re_selecting_does_not() {
+        use super::super::UiMode;
+        let mut app = App::new();
+        assert_eq!(app.mode, UiMode::Learning, "apprentissage par défaut");
+        assert!(!app.panel_is_open(Panel::Disasm), "pas de désassemblage au départ");
+
+        app.set_ui_mode(UiMode::Full);
+        assert!(app.panel_is_open(Panel::Disasm), "le mode complet l'ouvre");
+
+        // L'élève ferme un panneau, puis re-sélectionne le mode déjà actif.
+        app.hide_panel(Panel::Console);
+        app.set_ui_mode(UiMode::Full);
+        assert!(!app.panel_is_open(Panel::Console), "sa disposition doit être préservée");
+
+        // Changer réellement de mode remet la disposition du nouveau mode.
+        app.set_ui_mode(UiMode::Learning);
+        assert!(app.panel_is_open(Panel::Console), "l'apprentissage rétablit la console");
+        assert!(!app.panel_is_open(Panel::Syscalls));
+    }
+
+    /// La clé du mode doit faire un aller-retour, et une valeur inconnue
+    /// retomber sur l'apprentissage plutôt que d'échouer.
+    #[test]
+    fn mode_key_round_trips() {
+        use super::super::UiMode;
+        for m in [UiMode::Learning, UiMode::Full] {
+            assert_eq!(UiMode::from_key(m.key()), m);
+            for lang in [Lang::Fr, Lang::En, Lang::Es] {
+                assert!(!m.label(lang).is_empty());
+                assert!(!m.description(lang).is_empty());
+            }
+        }
+        assert_eq!(UiMode::from_key("n_importe_quoi"), UiMode::Learning);
     }
 }
