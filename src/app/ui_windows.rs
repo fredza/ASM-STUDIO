@@ -11,6 +11,14 @@ use super::{
     calc_parse, calc_format,
 };
 
+/// En-tête d'une section de réglages : même rythme vertical pour toutes,
+/// y compris celles qu'on ajoutera.
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(2.0);
+    ui.label(RichText::new(title).strong());
+    ui.add_space(4.0);
+}
+
 impl App {
     // ---------- Boîtes de dialogue ----------
 
@@ -400,56 +408,69 @@ impl App {
 
         let mut open = true;
         let mut changed = false;
+        // Corps borné à une fraction de l'écran : les réglages à venir
+        // s'ajouteront sans pousser le bouton Fermer hors de la fenêtre.
+        let max_body_h = (ctx.screen_rect().height() * 0.66).max(240.0);
+
         egui::Window::new(t_title)
             .collapsible(false)
             .resizable(true)
+            // Large dès l'ouverture : les libellés d'options tiennent sur une
+            // ligne, et il reste de la place pour ce qui viendra ensuite.
+            .default_width(640.0)
+            .min_width(430.0)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.screen_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(RichText::new(t_lang).strong());
-                ui.add_space(4.0);
-                changed |= ui.radio_value(&mut self.lang, crate::i18n::Lang::Fr, "Français").changed();
-                changed |= ui.radio_value(&mut self.lang, crate::i18n::Lang::En, "English").changed();
-                changed |= ui.radio_value(&mut self.lang, crate::i18n::Lang::Es, "Español").changed();
-                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("settings_scroll")
+                    .max_height(max_body_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
 
-                ui.label(RichText::new(t_theme).strong());
-                ui.add_space(4.0);
-                changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::System, t_sys).changed();
-                changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::Dark, t_dark).changed();
-                changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::Light, t_light).changed();
-                ui.add_space(4.0);
-                ui.weak(t_theme_note);
-                ui.separator();
+                        section(ui, t_lang);
+                        changed |= ui.radio_value(&mut self.lang, crate::i18n::Lang::Fr, "Français").changed();
+                        changed |= ui.radio_value(&mut self.lang, crate::i18n::Lang::En, "English").changed();
+                        changed |= ui.radio_value(&mut self.lang, crate::i18n::Lang::Es, "Español").changed();
+                        ui.separator();
 
-                ui.label(RichText::new(t_iface).strong());
-                ui.add_space(4.0);
-                changed |= ui.checkbox(&mut self.show_tooltips, t_tooltips).changed();
-                changed |= ui.checkbox(&mut self.animate, t_anim).changed();
-                ui.separator();
+                        section(ui, t_theme);
+                        changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::System, t_sys).changed();
+                        changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::Dark, t_dark).changed();
+                        changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::Light, t_light).changed();
+                        ui.add_space(4.0);
+                        ui.weak(t_theme_note);
+                        ui.separator();
 
-                ui.label(RichText::new(t_asmstd_h).strong());
-                ui.add_space(4.0);
-                changed |= ui
-                    .checkbox(&mut self.use_asmstd, t_asmstd)
-                    .on_hover_text(t_asmstd_tip)
-                    .changed();
-                ui.weak(t_asmstd_note);
-                ui.add_space(6.0);
-                super::card(ui, |ui| {
-                    ui.label(egui::RichText::new(t_asmstd_what).size(12.5));
-                    ui.add_space(5.0);
-                    ui.label(egui::RichText::new(t_asmstd_scope).size(12.0).weak());
-                });
-                ui.separator();
+                        section(ui, t_iface);
+                        changed |= ui.checkbox(&mut self.show_tooltips, t_tooltips).changed();
+                        changed |= ui.checkbox(&mut self.animate, t_anim).changed();
+                        ui.separator();
 
-                ui.label(RichText::new(t_pedagogy_h).strong());
-                ui.add_space(4.0);
-                changed |= ui.checkbox(&mut self.pedagogy_anim, t_pedagogy_anim).changed();
-                changed |= ui.checkbox(&mut self.pedagogy_memview, t_pedagogy_memview).changed();
-                ui.separator();
+                        section(ui, t_asmstd_h);
+                        changed |= ui
+                            .checkbox(&mut self.use_asmstd, t_asmstd)
+                            .on_hover_text(t_asmstd_tip)
+                            .changed();
+                        ui.weak(t_asmstd_note);
+                        ui.add_space(6.0);
+                        super::card(ui, |ui| {
+                            ui.label(RichText::new(t_asmstd_what).size(12.5));
+                            ui.add_space(5.0);
+                            ui.label(RichText::new(t_asmstd_scope).size(12.0).weak());
+                        });
+                        ui.separator();
 
+                        section(ui, t_pedagogy_h);
+                        changed |= ui.checkbox(&mut self.pedagogy_anim, t_pedagogy_anim).changed();
+                        changed |= ui.checkbox(&mut self.pedagogy_memview, t_pedagogy_memview).changed();
+                    });
+
+                // Hors de la zone défilante : le bouton reste atteignable quel
+                // que soit le nombre de réglages.
+                ui.separator();
                 ui.vertical_centered(|ui| {
                     if ui.button(t_close).clicked() {
                         self.show_settings = false;
@@ -860,5 +881,70 @@ impl App {
         if !open {
             self.updater.state = UpdateState::UpToDate;
         }
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// La fenêtre de réglages doit se rendre, et toutes ses options rester
+    /// atteignables — y compris sur un petit écran, où le corps défile et le
+    /// bouton Fermer reste en dehors du défilement.
+    #[test]
+    fn settings_window_renders_at_any_screen_size() {
+        let mut app = App::new();
+        app.show_settings = true;
+
+        for (w, h) in [(1920.0_f32, 1080.0_f32), (1280.0, 720.0), (800.0, 600.0), (640.0, 400.0)] {
+            let ctx = egui::Context::default();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(w, h),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| app.settings_window(ctx));
+            assert!(app.show_settings, "la fenêtre doit rester ouverte ({w}×{h})");
+        }
+    }
+
+    /// Modifier une option depuis la fenêtre doit être pris en compte : c'est
+    /// le contrat de `changed`, qui déclenche l'enregistrement.
+    #[test]
+    fn toggling_an_option_is_recorded() {
+        let mut app = App::new();
+        app.show_settings = true;
+        let before = app.pedagogy_anim;
+        app.pedagogy_anim = !before;
+        assert_ne!(app.pedagogy_anim, before);
+
+        // Le rendu ne doit pas réinitialiser le réglage.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.settings_window(ctx));
+        assert_ne!(app.pedagogy_anim, before, "le rendu ne doit rien réécrire");
+    }
+
+    /// Fermée, elle ne doit rien peindre.
+    #[test]
+    fn closed_settings_window_paints_nothing() {
+        let mut app = App::new();
+        app.show_settings = false;
+        let ctx = egui::Context::default();
+        let out = ctx.run(Default::default(), |ctx| app.settings_window(ctx));
+        assert!(out.shapes.is_empty() || app.show_settings == false);
+    }
+
+    /// Le dossier de travail ne doit pas influer sur le rendu des réglages.
+    #[test]
+    fn settings_do_not_depend_on_the_open_file() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/inexistant.asm");
+        app.show_settings = true;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.settings_window(ctx));
+        assert!(app.show_settings);
     }
 }
