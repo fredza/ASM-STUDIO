@@ -91,16 +91,15 @@ impl Lesson {
 //  Catalogue
 // ======================================================================
 //
-//  Les niveaux Débutant et Intermédiaire sont écrits intégralement :
-//  programme de départ, étapes, panneaux et attentes vérifiables. Avancé
-//  et Expert déclarent leur plan — titre et objectif — et se compléteront
-//  de la même façon. Annoncer un parcours vide serait pire que de le
-//  montrer en construction.
+//  Débutant, Intermédiaire et Avancé sont écrits intégralement : programme
+//  de départ, étapes, panneaux et attentes vérifiables. Expert déclare son
+//  plan — titre et objectif — et se complétera de la même façon. Annoncer
+//  un parcours vide serait pire que de le montrer en construction.
 //
 //  Un programme de départ doit ÉCHOUER tel quel et PASSER une fois son
 //  TODO appliqué : les deux moitiés sont vérifiées par le test
-//  `every_intermediate_lesson_fails_then_passes`, qui applique à la lettre
-//  la correction que le commentaire dicte.
+//  `every_written_lesson_fails_then_passes`, qui applique à la lettre la
+//  correction que le commentaire dicte.
 
 macro_rules! t {
     ($fr:expr, $en:expr, $es:expr) => {
@@ -494,6 +493,213 @@ _start:
     jb .boucle                  ; partirait au loin dans la mémoire
 
 .fin:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_ELF: &str = r#";@titre Le format ELF
+;@enonce Ton programme peut relire son propre en-tête. Vérifie que le champ
+;@enonce e_entry contient bien l'adresse de _start : RBX doit tomber à 0.
+;@attendu rcx == 0x464c457f
+;@attendu rbx == 0
+;@attendu exit == 0
+
+; Un exécutable ELF commence par son en-tête, et le noyau le mappe en mémoire
+; AVEC le reste du programme. Rien n'empêche donc de se relire soi-même.
+;   +0x00  e_ident   7F 'E' 'L' 'F', puis classe, boutisme, version
+;   +0x10  e_type    2 = EXEC (adresses figées), 3 = DYN (PIE ou bibliothèque)
+;   +0x18  e_entry   adresse de la première instruction exécutée
+;   +0x20  e_phoff   table des SEGMENTS — ce que le noyau lit pour charger
+;   +0x28  e_shoff   table des SECTIONS — ce que ld lit pour assembler le tout
+extern __ehdr_start         ; symbole fabriqué par ld : où l'en-tête est mappé
+
+section .text
+    global _start
+
+_start:
+    mov rsi, __ehdr_start
+
+    mov ecx, [rsi]          ; le nombre magique, 4 octets
+    ; En mémoire : 7F 45 4C 46. Relu comme un entier : 0x464C457F.
+    ; C'est le petit-boutisme de la leçon « La mémoire », sur un cas réel.
+
+    mov rbx, [rsi + 0x18]   ; e_entry
+    ; TODO : retrancher l'adresse de _start, il ne doit rien rester
+    ;        (« sub rbx, _start »)
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_LINKING: &str = r#";@titre Édition de liens
+;@enonce Calcule la taille de la section .bss dans RBX, en te servant des deux
+;@enonce symboles que ld fabrique. Elle vaut 4096.
+;@attendu rbx == 4096
+;@attendu exit == 0
+
+; nasm ne connaît qu'un fichier à la fois. Il ne SAIT pas où .bss atterrira,
+; ni quelle taille elle aura une fois toutes les sections rassemblées : il
+; laisse un trou et une consigne. C'est ld qui remplit, tout à la fin.
+;
+; ld fabrique au passage quelques symboles qu'aucun fichier ne définit :
+;   __ehdr_start  début de l'en-tête ELF
+;   __bss_start   début de la zone non initialisée
+;   _end          fin de l'image mémoire du programme — et début du tas
+extern __bss_start
+extern _end
+
+section .bss
+    tampon resb 4096        ; resb = réserver des octets, sans les écrire
+
+section .text
+    global _start
+
+_start:
+    mov rbx, _end
+    ; TODO : retrancher __bss_start pour obtenir la taille
+    ;        (« sub rbx, __bss_start »)
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_PLT_GOT: &str = r#";@titre PLT et GOT
+;@enonce Appelle « triple » sans écrire son nom : passe par la table, dont
+;@enonce c'est la deuxième entrée. RBX doit valoir 21.
+;@attendu rbx == 21
+;@attendu exit == 0
+
+; Un appel de bibliothèque partagée ne saute pas à la fonction : il saute à un
+; talon (la PLT) qui lit une ADRESSE dans une table (la GOT) et y va. Cette
+; indirection permet de placer la bibliothèque n'importe où, et de ne résoudre
+; l'adresse qu'au premier appel.
+;
+; Ici, pas de bibliothèque : on fabrique la table à la main. Le mécanisme est
+; le même, seul le remplissage automatique manque.
+section .data
+    table dq double, triple     ; notre GOT : un simple tableau d'adresses
+                                ; entrée 0 = double, entrée 1 = triple
+
+section .text
+    global _start
+
+double:
+    lea rax, [rdi + rdi]        ; n*2
+    ret
+
+triple:
+    lea rax, [rdi + rdi*2]      ; n*3
+    ret
+
+_start:
+    mov rdi, 7
+    lea rsi, [rel table]
+
+    ; « call rsi » sauterait DANS la table. Les crochets font la différence :
+    ; on veut appeler l'adresse RANGÉE là, pas la table elle-même.
+    call [rsi]                  ; TODO : viser la deuxième entrée, « call [rsi + 8] »
+    mov rbx, rax
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_RELOCATIONS: &str = r#";@titre Relocations
+;@enonce Les deux façons de désigner « valeur » doivent tomber sur le même
+;@enonce octet. Vise-la en RIP-relatif, et l'écart RBX deviendra nul.
+;@attendu rbx == 0
+;@attendu exit == 0
+
+; nasm ne connaît aucune adresse définitive : il écrit des zéros et joint une
+; consigne, la RELOCATION. « readelf -r » les montre dans le .o. Ici, deux
+; types, que ld traite différemment :
+;
+;   mov rbx, valeur        R_X86_64_64    « écris ici l'adresse ABSOLUE »
+;   lea rcx, [rel valeur]  R_X86_64_PC32  « écris ici l'ÉCART depuis RIP »
+;
+; Le premier fige le programme à son adresse de chargement. Le second le rend
+; déplaçable : c'est pourquoi tout code PIE ou partagé n'utilise que celui-là.
+section .data
+    valeur dq 0x1234
+
+section .text
+    global _start
+
+_start:
+    mov rbx, valeur         ; absolu : ld écrit 0x40… dans l'instruction
+    lea rcx, [rel _start]   ; TODO : viser « valeur », pas « _start »
+
+    sub rbx, rcx            ; même cible ⇒ écart nul
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_SIMD: &str = r#";@titre SIMD et AVX
+;@enonce Additionne les deux tableaux d'un coup, avec « paddd ». Les deux
+;@enonce premières sommes, 65536 et 22, doivent se retrouver dans RBX.
+;@attendu rbx == 94489346048
+;@attendu exit == 0
+
+; SIMD : une instruction, plusieurs données. Un registre XMM fait 128 bits,
+; soit quatre entiers de 32 bits côte à côte. « paddd » les additionne tous
+; les quatre en une fois — d = doubleword, la dernière lettre dit la découpe.
+;
+; Les valeurs ne sont pas choisies au hasard : 65535 + 1 déborde de 16 bits.
+; Avec « paddw », l'addition serait découpée en huit morceaux de 16 bits et la
+; retenue serait PERDUE — chaque tranche s'arrête au bord. Le résultat ne
+; passerait pas. La découpe n'est donc pas un détail d'écriture.
+;
+; « align 16 » n'est pas décoratif non plus : movdqa exige une adresse
+; multiple de 16 et plante sinon. (movdqu accepte tout, un peu plus lentement.)
+section .data
+    align 16
+    a dd 65535, 2, 3, 4
+    b dd     1, 20, 30, 40
+
+section .text
+    global _start
+
+_start:
+    movdqa xmm0, [rel a]    ; les quatre entiers de a, d'un seul chargement
+    movdqa xmm1, [rel b]
+
+    ; TODO : additionner les deux vecteurs  (« paddd xmm0, xmm1 »)
+
+    movq rbx, xmm0          ; ne redescend que les 64 bits bas : 65536 et 22
+    ; 65536 + (22 << 32) = 94489346048 : deux résultats dans un seul registre.
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_OPTIMISATION: &str = r#";@titre Optimisations
+;@enonce Multiplie RAX par 10 sans « imul », avec deux instructions seulement.
+;@enonce RBX doit valoir 70.
+;@attendu rbx == 70
+;@attendu exit == 0
+
+; « lea » calcule une adresse — mais rien n'oblige à s'en servir comme d'une
+; adresse. C'est l'additionneur-multiplieur du processeur, accessible
+; gratuitement : base + index × 1, 2, 4 ou 8.
+;
+;   x*5  =  lea rbx, [rax + rax*4]
+;   x*10 =  x*5, puis doublé
+section .text
+    global _start
+
+_start:
+    mov rax, 7
+
+    mov rbx, rax            ; TODO : « lea rbx, [rax + rax*4] » …
+    add rbx, 0              ; TODO : … puis « add rbx, rbx »
+
     mov rax, 60
     xor rdi, rdi
     syscall
@@ -985,42 +1191,215 @@ pub fn catalogue() -> Vec<Lesson> {
             starter: Some(L_CHAINES),
         },
         // ---------------- Avancé ----------------
-        planned("elf", Level::Advanced,
-            t!("Le format ELF", "The ELF format", "El formato ELF"),
-            t!("Reconnaître les en-têtes et les sections d'un exécutable Linux.",
-               "Recognise the headers and sections of a Linux executable.",
-               "Reconocer las cabeceras y secciones de un ejecutable Linux."),
-            &["editor", "memmap"]),
-        planned("linking", Level::Advanced,
-            t!("Édition de liens", "Linking", "Enlazado"),
-            t!("Comprendre ce que ld assemble entre le fichier objet et l'exécutable.",
-               "Understand what ld puts together between object file and executable.",
-               "Entender qué une ld entre el archivo objeto y el ejecutable."),
-            &["editor", "console"]),
-        planned("plt_got", Level::Advanced,
-            t!("PLT et GOT", "PLT and GOT", "PLT y GOT"),
-            t!("Suivre un appel de bibliothèque partagée à travers ses tables d'indirection.",
-               "Follow a shared-library call through its indirection tables.",
-               "Seguir una llamada a biblioteca compartida por sus tablas de indirección."),
-            &["disasm", "memmap"]),
-        planned("relocations", Level::Advanced,
-            t!("Relocations", "Relocations", "Relocalizaciones"),
-            t!("Voir quelles adresses sont corrigées au chargement, et pourquoi.",
-               "See which addresses are fixed up at load time, and why.",
-               "Ver qué direcciones se corrigen al cargar, y por qué."),
-            &["disasm", "memory"]),
-        planned("simd", Level::Advanced,
-            t!("SIMD et AVX", "SIMD and AVX", "SIMD y AVX"),
-            t!("Traiter plusieurs valeurs par instruction avec les registres vectoriels.",
-               "Process several values per instruction with vector registers.",
-               "Procesar varios valores por instrucción con registros vectoriales."),
-            &["editor", "registers", "instruction"]),
-        planned("optimisation", Level::Advanced,
-            t!("Optimisations", "Optimisations", "Optimizaciones"),
-            t!("Mesurer avant de récrire : coût des instructions et prédiction de branchement.",
-               "Measure before rewriting: instruction cost and branch prediction.",
-               "Medir antes de reescribir: coste de instrucciones y predicción de saltos."),
-            &["disasm", "instruction", "timeline"]),
+        Lesson {
+            id: "elf",
+            level: Level::Advanced,
+            title: t!("Le format ELF", "The ELF format", "El formato ELF"),
+            goal: t!(
+                "Reconnaître les en-têtes et les sections d'un exécutable Linux.",
+                "Recognise the headers and sections of a Linux executable.",
+                "Reconocer las cabeceras y secciones de un ejecutable Linux."
+            ),
+            steps: vec![
+                t!(
+                    "Le noyau mappe le fichier ELF en entier, en-tête compris. Un programme peut donc se relire lui-même : c'est ce que fait celui-ci.",
+                    "The kernel maps the whole ELF file, header included. A program can therefore read itself back: that is what this one does.",
+                    "El núcleo mapea el archivo ELF entero, cabecera incluida. Un programa puede así releerse a sí mismo: eso hace este."
+                ),
+                t!(
+                    "« __ehdr_start » n'est défini nulle part dans le source : c'est ld qui le fabrique. La leçon Édition de liens y revient.",
+                    "\"__ehdr_start\" is defined nowhere in the source: ld manufactures it. The Linking lesson comes back to this.",
+                    "«__ehdr_start» no está definido en ninguna parte del fuente: lo fabrica ld. La lección Enlazado vuelve sobre ello."
+                ),
+                t!(
+                    "Deux tables, deux lecteurs : les SEGMENTS (e_phoff) disent au noyau quoi charger, les SECTIONS (e_shoff) servent à ld et disparaissent à l'exécution.",
+                    "Two tables, two readers: the SEGMENTS (e_phoff) tell the kernel what to load, the SECTIONS (e_shoff) serve ld and are irrelevant at run time.",
+                    "Dos tablas, dos lectores: los SEGMENTOS (e_phoff) dicen al núcleo qué cargar, las SECCIONES (e_shoff) sirven a ld y desaparecen al ejecutar."
+                ),
+                t!(
+                    "Le panneau Carte mémoire montre le résultat : où chaque morceau a atterri, et avec quels droits — lecture, écriture, exécution.",
+                    "The Memory map panel shows the result: where each piece landed, and with which rights — read, write, execute.",
+                    "El panel Mapa de memoria muestra el resultado: dónde cayó cada trozo, y con qué permisos — lectura, escritura, ejecución."
+                ),
+            ],
+            panels: vec!["editor", "memmap", "memory"],
+            starter: Some(L_ELF),
+        },
+        Lesson {
+            id: "linking",
+            level: Level::Advanced,
+            title: t!("Édition de liens", "Linking", "Enlazado"),
+            goal: t!(
+                "Comprendre ce que ld assemble entre le fichier objet et l'exécutable.",
+                "Understand what ld puts together between object file and executable.",
+                "Entender qué une ld entre el archivo objeto y el ejecutable."
+            ),
+            steps: vec![
+                t!(
+                    "La Console montre les deux commandes : nasm fabrique un .o où rien n'a d'adresse définitive, ld en fait un exécutable où tout en a une.",
+                    "The Console shows both commands: nasm builds a .o where nothing has a final address, ld turns it into an executable where everything does.",
+                    "La Consola muestra ambos comandos: nasm fabrica un .o donde nada tiene dirección definitiva, ld hace un ejecutable donde todo la tiene."
+                ),
+                t!(
+                    "Cette soustraction, nasm ne peut PAS la calculer : les deux symboles ne sont pas à lui, et .bss n'a pas encore de place. Seul ld a la vue d'ensemble.",
+                    "nasm CANNOT compute this subtraction: neither symbol is its own, and .bss has no place yet. Only ld has the whole picture.",
+                    "nasm NO puede calcular esta resta: ninguno de los dos símbolos es suyo, y .bss aún no tiene sitio. Solo ld tiene la vista completa."
+                ),
+                t!(
+                    "« resb » ne met aucun octet dans le fichier : .bss est une simple promesse de place, que le noyau remplit de zéros au chargement.",
+                    "\"resb\" puts no byte in the file: .bss is merely a promise of room, which the kernel fills with zeros at load time.",
+                    "«resb» no pone ningún byte en el archivo: .bss es solo una promesa de espacio, que el núcleo llena de ceros al cargar."
+                ),
+                t!(
+                    "« _end » marque la fin de l'image mémoire — et c'est précisément là que commence le tas. La leçon Le tas partait de ce même endroit.",
+                    "\"_end\" marks the end of the memory image — and that is exactly where the heap begins. The Heap lesson started from that very spot.",
+                    "«_end» marca el fin de la imagen en memoria — y ahí justo empieza el montículo. La lección El montículo partía de ese mismo punto."
+                ),
+            ],
+            panels: vec!["editor", "console", "memmap"],
+            starter: Some(L_LINKING),
+        },
+        Lesson {
+            id: "plt_got",
+            level: Level::Advanced,
+            title: t!("PLT et GOT", "PLT and GOT", "PLT y GOT"),
+            goal: t!(
+                "Suivre un appel de bibliothèque partagée à travers ses tables d'indirection.",
+                "Follow a shared-library call through its indirection tables.",
+                "Seguir una llamada a biblioteca compartida por sus tablas de indirección."
+            ),
+            steps: vec![
+                t!(
+                    "Une GOT n'est rien d'autre qu'un tableau d'adresses de fonctions. Celle de cette leçon est écrite à la main : le mécanisme est le vrai, seul l'automatisme manque.",
+                    "A GOT is nothing but an array of function addresses. This lesson's is written by hand: the mechanism is the real one, only the automation is missing.",
+                    "Una GOT no es más que un array de direcciones de funciones. La de esta lección está escrita a mano: el mecanismo es el real, solo falta el automatismo."
+                ),
+                t!(
+                    "« call rsi » saute à l'adresse CONTENUE dans RSI ; « call [rsi] » va d'abord chercher l'adresse en mémoire. Une indirection de plus, et tout devient déplaçable.",
+                    "\"call rsi\" jumps to the address HELD in RSI; \"call [rsi]\" first fetches the address from memory. One more indirection, and everything becomes relocatable.",
+                    "«call rsi» salta a la dirección CONTENIDA en RSI; «call [rsi]» busca antes la dirección en memoria. Una indirección más, y todo se vuelve reubicable."
+                ),
+                t!(
+                    "Dans un vrai binaire dynamique, la GOT contient d'abord l'adresse du résolveur. Le premier appel le réveille, il écrit la vraie adresse, et les suivants vont droit au but.",
+                    "In a real dynamic binary, the GOT first holds the resolver's address. The first call wakes it, it writes the true address, and later calls go straight there.",
+                    "En un binario dinámico real, la GOT contiene primero la dirección del resolvedor. La primera llamada lo despierta, escribe la dirección real, y las siguientes van directas."
+                ),
+                t!(
+                    "C'est aussi la faiblesse : une GOT accessible en écriture se récrit. « relro » existe pour la refermer une fois la résolution faite.",
+                    "That is also the weakness: a writable GOT can be rewritten. \"relro\" exists to seal it once resolution is done.",
+                    "Esa es también la debilidad: una GOT escribible se puede reescribir. «relro» existe para cerrarla una vez hecha la resolución."
+                ),
+            ],
+            panels: vec!["editor", "disasm", "memory"],
+            starter: Some(L_PLT_GOT),
+        },
+        Lesson {
+            id: "relocations",
+            level: Level::Advanced,
+            title: t!("Relocations", "Relocations", "Relocalizaciones"),
+            goal: t!(
+                "Voir quelles adresses sont corrigées au chargement, et pourquoi.",
+                "See which addresses are fixed up at load time, and why.",
+                "Ver qué direcciones se corrigen al cargar, y por qué."
+            ),
+            steps: vec![
+                t!(
+                    "Une relocation est une consigne laissée à ld : « à cet endroit du code, écris l'adresse de tel symbole ». nasm y met des zéros en attendant.",
+                    "A relocation is an instruction left for ld: \"at this spot in the code, write the address of that symbol\". nasm puts zeros there meanwhile.",
+                    "Una relocalización es un encargo dejado a ld: «en este punto del código, escribe la dirección de tal símbolo». nasm pone ceros mientras tanto."
+                ),
+                t!(
+                    "R_X86_64_64 demande une adresse absolue, R_X86_64_PC32 un écart depuis RIP. Même cible, deux façons de la dire — d'où la soustraction nulle.",
+                    "R_X86_64_64 asks for an absolute address, R_X86_64_PC32 for an offset from RIP. Same target, two ways of saying it — hence the zero difference.",
+                    "R_X86_64_64 pide una dirección absoluta, R_X86_64_PC32 un desplazamiento desde RIP. Mismo destino, dos maneras de decirlo — de ahí la resta nula."
+                ),
+                t!(
+                    "Le panneau Désassemblage montre le résultat une fois ld passé : les zéros ont disparu, l'adresse est là, en clair dans l'instruction.",
+                    "The Disassembly panel shows the result once ld has run: the zeros are gone, the address sits there in plain sight inside the instruction.",
+                    "El panel Desensamblado muestra el resultado tras pasar ld: los ceros han desaparecido, la dirección está ahí, a la vista en la instrucción."
+                ),
+                t!(
+                    "Le RIP-relatif ne dépend d'aucune adresse de chargement : c'est ce qui rend un code déplaçable, et c'est pourquoi PIE et bibliothèques n'utilisent que lui.",
+                    "RIP-relative depends on no load address: that is what makes code relocatable, and why PIE binaries and libraries use nothing else.",
+                    "El RIP-relativo no depende de ninguna dirección de carga: eso hace el código reubicable, y por eso PIE y bibliotecas solo usan esa forma."
+                ),
+            ],
+            panels: vec!["editor", "disasm", "memory"],
+            starter: Some(L_RELOCATIONS),
+        },
+        Lesson {
+            id: "simd",
+            level: Level::Advanced,
+            title: t!("SIMD et AVX", "SIMD and AVX", "SIMD y AVX"),
+            goal: t!(
+                "Traiter plusieurs valeurs par instruction avec les registres vectoriels.",
+                "Process several values per instruction with vector registers.",
+                "Procesar varios valores por instrucción con registros vectoriales."
+            ),
+            steps: vec![
+                t!(
+                    "Un registre XMM fait 128 bits : quatre entiers de 32 bits côte à côte. « paddd » les additionne tous les quatre en une seule instruction.",
+                    "An XMM register is 128 bits: four 32-bit integers side by side. \"paddd\" adds all four in a single instruction.",
+                    "Un registro XMM tiene 128 bits: cuatro enteros de 32 bits uno al lado del otro. «paddd» los suma los cuatro en una sola instrucción."
+                ),
+                t!(
+                    "La dernière lettre donne la découpe : paddb par octets, paddw par mots, paddd par doubles mots, paddq par quadruples. Le registre ne change pas, le sens si.",
+                    "The last letter gives the slicing: paddb by bytes, paddw by words, paddd by doublewords, paddq by quadwords. The register stays, the meaning changes.",
+                    "La última letra da el troceado: paddb por bytes, paddw por palabras, paddd por dobles, paddq por cuádruples. El registro no cambia, el sentido sí."
+                ),
+                t!(
+                    "Chaque tranche s'arrête à son bord : la retenue ne passe pas à la voisine. C'est pourquoi 65535 + 1 ne donne le bon résultat qu'en découpe 32 bits.",
+                    "Each lane stops at its edge: the carry does not cross into its neighbour. That is why 65535 + 1 only gives the right answer at 32-bit slicing.",
+                    "Cada carril se detiene en su borde: el acarreo no pasa al vecino. Por eso 65535 + 1 solo da el resultado correcto con troceado de 32 bits."
+                ),
+                t!(
+                    "« align 16 » n'est pas décoratif : movdqa exige une adresse multiple de 16 et plante sinon. movdqu accepte tout, contre un peu de vitesse.",
+                    "\"align 16\" is not decorative: movdqa demands a 16-multiple address and faults otherwise. movdqu takes anything, at a small speed cost.",
+                    "«align 16» no es decorativo: movdqa exige una dirección múltiplo de 16 y falla si no. movdqu acepta cualquiera, a cambio de algo de velocidad."
+                ),
+                t!(
+                    "AVX élargit à 256 bits (YMM) puis 512 (ZMM), avec la même idée. Mais tout processeur ne les a pas : un binaire qui les suppose plante ailleurs.",
+                    "AVX widens to 256 bits (YMM) then 512 (ZMM), on the same idea. But not every processor has them: a binary that assumes them crashes elsewhere.",
+                    "AVX amplía a 256 bits (YMM) y luego 512 (ZMM), con la misma idea. Pero no todo procesador los tiene: un binario que los supone falla en otra máquina."
+                ),
+            ],
+            panels: vec!["editor", "registers", "instruction"],
+            starter: Some(L_SIMD),
+        },
+        Lesson {
+            id: "optimisation",
+            level: Level::Advanced,
+            title: t!("Optimisations", "Optimisations", "Optimizaciones"),
+            goal: t!(
+                "Mesurer avant de récrire : coût des instructions et prédiction de branchement.",
+                "Measure before rewriting: instruction cost and branch prediction.",
+                "Medir antes de reescribir: coste de instrucciones y predicción de saltos."
+            ),
+            steps: vec![
+                t!(
+                    "« lea » calcule une adresse, mais rien n'oblige à s'en servir comme telle : c'est l'additionneur-multiplieur du processeur, offert par l'adressage.",
+                    "\"lea\" computes an address, but nothing forces you to use it as one: it is the processor's adder-multiplier, handed over by the addressing mode.",
+                    "«lea» calcula una dirección, pero nada obliga a usarla como tal: es el sumador-multiplicador del procesador, regalado por el direccionamiento."
+                ),
+                t!(
+                    "Et pourtant : « imul » coûte trois cycles sur un processeur moderne, et il est le seul à dire ce qu'on veut dire. La ruse d'hier est souvent la lourdeur d'aujourd'hui.",
+                    "And yet: \"imul\" costs three cycles on a modern processor, and is the only form that says what you mean. Yesterday's trick is often today's clutter.",
+                    "Y sin embargo: «imul» cuesta tres ciclos en un procesador moderno, y es la única forma que dice lo que se quiere decir. La astucia de ayer suele ser el estorbo de hoy."
+                ),
+                t!(
+                    "La Timeline compte les instructions réellement exécutées. C'est la seule mesure qui vaille : le reste est une intuition, et l'intuition se trompe.",
+                    "The Timeline counts the instructions actually executed. That is the only measure worth having: the rest is intuition, and intuition is wrong.",
+                    "La Línea de tiempo cuenta las instrucciones realmente ejecutadas. Es la única medida que vale: lo demás es intuición, y la intuición se equivoca."
+                ),
+                t!(
+                    "Un saut bien prédit ne coûte presque rien ; un saut imprévisible vide le pipeline. Supprimer un branchement imprévisible rapporte plus que dix « lea ».",
+                    "A well-predicted branch costs almost nothing; an unpredictable one flushes the pipeline. Removing one unpredictable branch pays more than ten \"lea\"s.",
+                    "Un salto bien predicho casi no cuesta; uno impredecible vacía el cauce. Quitar un salto impredecible rinde más que diez «lea»."
+                ),
+            ],
+            panels: vec!["editor", "disasm", "timeline"],
+            starter: Some(L_OPTIMISATION),
+        },
         // ---------------- Expert ----------------
         planned("reverse", Level::Expert,
             t!("Rétro-ingénierie", "Reverse engineering", "Ingeniería inversa"),
@@ -1197,16 +1576,19 @@ mod tests {
         assert_eq!(with_code, b.len() - 1, "toutes sauf l'installation ont un programme");
     }
 
-    /// Le niveau Intermédiaire est écrit lui aussi : sept leçons, toutes
-    /// pratiques — aucune n'est purement explicative à ce palier.
+    /// Intermédiaire et Avancé sont écrits eux aussi, et entièrement
+    /// pratiques : passé le niveau Débutant, plus aucune leçon ne se contente
+    /// d'expliquer.
     #[test]
-    fn the_intermediate_level_is_fully_written() {
-        let m = lessons_of(Level::Intermediate);
-        assert_eq!(m.len(), 7, "sept leçons intermédiaires attendues, vu {}", m.len());
-        for l in &m {
-            assert!(l.steps.len() >= 3, "{} : moins de trois étapes", l.id);
-            assert!(l.has_starter(), "{} n'a pas de programme de départ", l.id);
-            assert!(!l.panels.is_empty(), "{} n'ouvre aucun panneau", l.id);
+    fn the_intermediate_and_advanced_levels_are_fully_written() {
+        for (level, count) in [(Level::Intermediate, 7), (Level::Advanced, 6)] {
+            let ls = lessons_of(level);
+            assert_eq!(ls.len(), count, "{level:?} : {count} leçons attendues, vu {}", ls.len());
+            for l in &ls {
+                assert!(l.steps.len() >= 3, "{} : moins de trois étapes", l.id);
+                assert!(l.has_starter(), "{} n'a pas de programme de départ", l.id);
+                assert!(!l.panels.is_empty(), "{} n'ouvre aucun panneau", l.id);
+            }
         }
     }
 

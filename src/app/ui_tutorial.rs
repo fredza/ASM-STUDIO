@@ -400,19 +400,20 @@ mod tests {
         assert!(back.is_done("premier_programme"));
     }
 
-    /// Chaque leçon intermédiaire doit ÉCHOUER telle quelle et PASSER une fois
-    /// son TODO appliqué. Sans les deux moitiés, l'exercice est un leurre : un
-    /// programme qui passe déjà n'apprend rien, un programme qu'aucune
+    /// Chaque leçon des niveaux écrits doit ÉCHOUER telle quelle et PASSER une
+    /// fois son TODO appliqué. Sans les deux moitiés, l'exercice est un leurre :
+    /// un programme qui passe déjà n'apprend rien, un programme qu'aucune
     /// correction ne sauve décourage.
     ///
     /// La correction est ici celle que le commentaire du TODO dicte, mot pour
     /// mot : le test vérifie donc aussi que la consigne écrite est la bonne.
     #[test]
-    fn every_intermediate_lesson_fails_then_passes() {
+    fn every_written_lesson_fails_then_passes() {
         use std::path::PathBuf;
 
         // (leçon, texte du TODO à remplacer, correction attendue)
         let fixes: &[(&str, &str, &str)] = &[
+            // --- Intermédiaire ---
             ("fonctions", "; TODO : multiplier RAX par RDI", "imul rax, rdi"),
             ("system_v", "; TODO : « push rbx » ici", "push rbx"),
             ("system_v", "; TODO : … et « pop rbx »", "pop rbx"),
@@ -422,9 +423,21 @@ mod tests {
             ("tableaux", "; TODO : ajouter l'élément courant", "add rbx, [tab + rcx*8]"),
             ("structures", "; TODO : ajouter le champ y", "add rbx, [rsi + pt_y]"),
             ("chaines", "; TODO : s'arrêter quand AL vaut 0", "test al, al\n    jz .fin"),
+            // --- Avancé ---
+            ("elf", "; TODO : retrancher l'adresse de _start", "sub rbx, _start"),
+            ("linking", "; TODO : retrancher __bss_start", "sub rbx, __bss_start"),
+            ("plt_got", "call [rsi]                  ; TODO", "call [rsi + 8]"),
+            ("relocations", "lea rcx, [rel _start]   ; TODO", "lea rcx, [rel valeur]"),
+            ("simd", "; TODO : additionner les deux vecteurs", "paddd xmm0, xmm1"),
+            ("optimisation", "mov rbx, rax            ; TODO", "lea rbx, [rax + rax*4]"),
+            ("optimisation", "add rbx, 0              ; TODO", "add rbx, rbx"),
         ];
 
-        for lesson in tutorial::lessons_of(tutorial::Level::Intermediate) {
+        let written = tutorial::lessons_of(tutorial::Level::Intermediate)
+            .into_iter()
+            .chain(tutorial::lessons_of(tutorial::Level::Advanced));
+
+        for lesson in written {
             let mut app = App::new();
             app.load_lesson(&lesson);
             let dir = PathBuf::from(format!("build/tuto-inter/{}", lesson.id));
