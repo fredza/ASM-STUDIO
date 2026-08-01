@@ -77,8 +77,8 @@ impl App {
         let dark = self.dark;
 
         // Coloration syntaxique NASM (retour à la ligne désactivé => aligné aux numéros).
-        let mut layouter = |ui: &egui::Ui, text: &str, _wrap: f32| {
-            ui.fonts(|f| f.layout_job(syntax::highlight(text, dark, hl)))
+        let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, _wrap: f32| {
+            ui.fonts_mut(|f| f.layout_job(syntax::highlight(text.as_str(), dark, hl)))
         };
 
         // Gouttière : numéros de ligne (▶ + accent sur la ligne courante).
@@ -104,7 +104,7 @@ impl App {
         }
 
         // Largeur du contenu = ligne la plus longue (pour le scroll horizontal).
-        let char_w = ui.fonts(|f| f.glyph_width(&gfont, 'M'));
+        let char_w = ui.fonts_mut(|f| f.glyph_width(&gfont, 'M'));
         let max_cols = self.source.lines().map(|l| l.chars().count()).max().unwrap_or(0);
         let content_w = (max_cols as f32 + 2.0) * char_w;
 
@@ -113,11 +113,11 @@ impl App {
             egui::ScrollArea::vertical()
                 .id_salt("gutter_scroll")
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .enable_scrolling(false)
+                .scroll_source(egui::scroll_area::ScrollSource::NONE)
                 .auto_shrink([true, false])
                 .vertical_scroll_offset(self.editor_scroll_y)
                 .show(ui, |ui| {
-                    let galley = ui.fonts(|f| f.layout_job(gutter_job));
+                    let galley = ui.fonts_mut(|f| f.layout_job(gutter_job));
                     ui.add(egui::Label::new(galley).selectable(false));
                 });
             ui.separator();
@@ -140,9 +140,13 @@ impl App {
                     }
                     // Position du curseur (Ln/Col) pour la barre d'état.
                     if let Some(range) = out.cursor_range {
-                        let p = range.primary.pcursor;
-                        self.editor_ln = p.paragraph + 1;
-                        self.editor_col = p.offset + 1;
+                        // Le curseur ne donne plus qu'un index de caractère :
+                        // on retrouve ligne et colonne en comptant les sauts de
+                        // ligne avant lui.
+                        let idx = range.primary.index;
+                        let before: String = self.source.chars().take(idx).collect();
+                        self.editor_ln = before.matches('\n').count() + 1;
+                        self.editor_col = before.chars().rev().take_while(|&c| c != '\n').count() + 1;
                     }
                 });
             // Synchronise la gouttière sur le défilement vertical de l'éditeur.
@@ -284,8 +288,8 @@ impl App {
             egui::Frame::default()
                 .fill(ACTION.linear_multiply(0.12))
                 .stroke(egui::Stroke::new(1.0_f32, ACTION.linear_multiply(0.6)))
-                .rounding(egui::Rounding::same(5.0))
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .corner_radius(egui::CornerRadius::same(5))
+                .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(
@@ -435,8 +439,8 @@ impl App {
                         };
                         egui::Frame::default()
                             .fill(fill)
-                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
-                            .rounding(egui::Rounding::same(4.0))
+                            .inner_margin(egui::Margin::symmetric(8, 4))
+                            .corner_radius(egui::CornerRadius::same(4))
                             .show(ui, |ui| {
                                 ui.label(RichText::new(txt).color(col).strong());
                             });

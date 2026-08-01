@@ -246,12 +246,12 @@ impl TabViewer for Viewer<'_> {
     ///
     /// Sans cela, `sync_tutorial_panel` le rouvrait au frame suivant et la
     /// croix semblait sans effet : l'utilisateur cliquait dans le vide.
-    fn on_close(&mut self, tab: &mut Panel) -> bool {
+    fn on_close(&mut self, tab: &mut Panel) -> egui_dock::tab_viewer::OnCloseResponse {
         if *tab == Panel::Tutorial {
             self.app.tutorial_enabled = false;
             self.app.save_settings();
         }
-        true
+        egui_dock::tab_viewer::OnCloseResponse::Close
     }
 
     /// Tout panneau peut être détaché en fenêtre flottante.
@@ -313,7 +313,7 @@ impl App {
             return;
         }
         let active = match &dock[surface][node] {
-            egui_dock::Node::Leaf { active, .. } => active.0,
+            egui_dock::Node::Leaf(leaf) => leaf.active.0,
             _ => return,
         };
         let next = if backwards { (active + n - 1) % n } else { (active + 1) % n };
@@ -397,6 +397,11 @@ impl App {
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(0.0))
             .show(ctx, |ui| {
+                // `show_window_close_buttons` est déprécié au profit de
+                // `show_leaf_close_buttons`, qui n'existe pas encore dans
+                // egui_dock 0.18 (palier retenu). On garde l'appel en l'état ;
+                // il sera remplacé quand on montera au-delà.
+                #[allow(deprecated)]
                 egui_dock::DockArea::new(&mut dock)
                     .style(style)
                     .draggable_tabs(true)
@@ -422,6 +427,7 @@ impl App {
                         rect.shrink(1.0),
                         4.0,
                         egui::Stroke::new(2.0_f32, super::ACCENT),
+                        egui::StrokeKind::Middle,
                     );
                 }
             });
@@ -906,7 +912,11 @@ mod tests {
         {
             let mut viewer = Viewer { app: &mut app };
             let mut tab = Panel::Tutorial;
-            assert!(viewer.on_close(&mut tab), "la fermeture doit être acceptée");
+            assert_eq!(
+                viewer.on_close(&mut tab),
+                egui_dock::tab_viewer::OnCloseResponse::Close,
+                "la fermeture doit être acceptée"
+            );
         }
         app.hide_panel(Panel::Tutorial);
 
@@ -927,7 +937,7 @@ mod tests {
         {
             let mut viewer = Viewer { app: &mut app };
             let mut tab = Panel::Console;
-            assert!(viewer.on_close(&mut tab));
+            assert_eq!(viewer.on_close(&mut tab), egui_dock::tab_viewer::OnCloseResponse::Close);
         }
         assert_eq!(app.tutorial_enabled, before);
     }

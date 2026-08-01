@@ -28,10 +28,10 @@ pub(super) fn panel_header(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
     ui.add_space(2.0);
     // Bandeau de titre teinté (style dashboard) : remplace l'ancien séparateur ;
     // hauteur constante ⇒ tous les bandeaux restent alignés d'un panneau à l'autre.
-    egui::Frame::none()
+    egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
-        .rounding(egui::Rounding::same(5.0))
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .corner_radius(egui::CornerRadius::same(5))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.allocate_ui_with_layout(
@@ -47,10 +47,10 @@ pub(super) fn panel_header(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
 /// interne, sur toute la largeur disponible. Structure et aère le contenu
 /// (utile pour une app pédagogique).
 pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::none()
+    egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-        .rounding(egui::Rounding::same(6.0))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .corner_radius(egui::CornerRadius::same(6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             content(ui);
@@ -131,7 +131,7 @@ pub(super) fn dir_tree(
             other_col
         };
         let label = RichText::new(format!("🗎  {}", file_name(&f))).color(col);
-        let resp = ui.add(egui::SelectableLabel::new(is_cur, label));
+        let resp = ui.add(egui::Button::selectable(is_cur, label));
         if is_cur && scroll_to_current {
             resp.scroll_to_me(Some(egui::Align::Center));
         }
@@ -210,7 +210,7 @@ pub(super) fn icon_tab(
         None => egui::Button::new(label),
     }
     .selected(selected)
-    .rounding(egui::Rounding::same(6.0));
+    .corner_radius(egui::CornerRadius::same(6));
     ui.add(btn)
 }
 
@@ -218,8 +218,8 @@ pub(super) fn icon_tab(
 pub(super) fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
     egui::Frame::default()
         .fill(color.linear_multiply(0.22))
-        .inner_margin(egui::Margin::symmetric(5.0, 2.0))
-        .rounding(egui::Rounding::same(4.0))
+        .inner_margin(egui::Margin::symmetric(5, 2))
+        .corner_radius(egui::CornerRadius::same(4))
         .show(ui, |ui| {
             ui.label(RichText::new(text).small().strong().color(color));
         });

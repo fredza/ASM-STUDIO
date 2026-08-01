@@ -266,7 +266,7 @@ impl App {
         for path in CANDIDATES {
             let Ok(bytes) = std::fs::read(path) else { continue };
             let name = format!("fallback{added}");
-            fonts.font_data.insert(name.clone(), egui::FontData::from_owned(bytes));
+            fonts.font_data.insert(name.clone(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
             for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
                 fonts.families.entry(family).or_default().push(name.clone());
             }
@@ -279,7 +279,7 @@ impl App {
 
     /// Applique le thème choisi (Système / Sombre / Clair) + le style moderne.
     pub(super) fn apply_theme(&mut self, ctx: &egui::Context) {
-        use egui::{FontId, Rounding, Theme, ThemePreference, TextStyle, vec2};
+        use egui::{FontId, CornerRadius, Theme, ThemePreference, TextStyle, vec2};
         let dark = match self.theme_pref {
             ThemePreference::Dark => true,
             ThemePreference::Light => false,
@@ -294,8 +294,8 @@ impl App {
         } else {
             egui::Visuals::light()
         };
-        v.window_rounding = Rounding::same(8.0);
-        v.menu_rounding = Rounding::same(6.0);
+        v.window_corner_radius = CornerRadius::same(8);
+        v.menu_corner_radius = CornerRadius::same(6);
         v.selection.bg_fill = ACCENT.linear_multiply(0.45);
         v.hyperlink_color = ACCENT;
         for w in [
@@ -305,7 +305,7 @@ impl App {
             &mut v.widgets.open,
             &mut v.widgets.noninteractive,
         ] {
-            w.rounding = Rounding::same(5.0);
+            w.corner_radius = CornerRadius::same(5);
         }
         if dark {
             v.panel_fill = Color32::from_rgb(0x1E, 0x1E, 0x22);
@@ -347,14 +347,14 @@ impl App {
         // faire tourner le programme — et se recoupaient (Lancer figurait dans
         // les deux). Les réglages quittent « Aide », où personne ne les cherche.
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
                 // Entrée de menu : libellé à gauche, raccourci aligné à droite.
                 fn item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
                     let clicked = ui
                         .add(egui::Button::new(label).shortcut_text(shortcut))
                         .clicked();
                     if clicked {
-                        ui.close_menu();
+                        ui.close();
                     }
                     clicked
                 }
@@ -464,7 +464,7 @@ impl App {
         }
         if wanted != self.mode {
             self.set_ui_mode(wanted);
-            ui.close_menu();
+            ui.close();
         }
 
         ui.separator();
@@ -529,7 +529,7 @@ impl App {
                 }
             }
             self.save_settings();
-            ui.close_menu();
+            ui.close();
         }
         if ui
             .button(tr("Réinitialiser la disposition", "Reset layout", "Restablecer disposición"))
@@ -541,7 +541,7 @@ impl App {
             .clicked()
         {
             self.reset_dock_layout();
-            ui.close_menu();
+            ui.close();
         }
     }
 
@@ -623,7 +623,7 @@ impl App {
                             .context_menu(|ui| {
                                 if ui.button(tr("🗙 Kill (SIGKILL)", "🗙 Kill (SIGKILL)", "🗙 Matar (SIGKILL)")).clicked() {
                                     kill_requested = true;
-                                    ui.close_menu();
+                                    ui.close();
                                 }
                             });
                     }

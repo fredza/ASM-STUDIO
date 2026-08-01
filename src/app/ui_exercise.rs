@@ -128,8 +128,8 @@ impl App {
                     egui::Frame::default()
                         .fill(FLAG_ON.linear_multiply(0.16))
                         .stroke(egui::Stroke::new(1.0_f32, FLAG_ON))
-                        .rounding(egui::Rounding::same(5.0))
-                        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                        .corner_radius(egui::CornerRadius::same(5))
+                        .inner_margin(egui::Margin::symmetric(8, 6))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.label(

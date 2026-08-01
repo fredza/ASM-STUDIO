@@ -35,7 +35,7 @@ impl App {
                         let txt = RichText::new(format!("{i}")).monospace().size(11.0).color(
                             if cur { Color32::WHITE } else { self.c_header() },
                         );
-                        let mut btn = egui::Button::new(txt).min_size(egui::vec2(22.0, 22.0)).rounding(egui::Rounding::same(11.0));
+                        let mut btn = egui::Button::new(txt).min_size(egui::vec2(22.0, 22.0)).corner_radius(egui::CornerRadius::same(11));
                         if cur {
                             btn = btn.fill(ACTION);
                         }
@@ -406,6 +406,7 @@ impl App {
                                 name_resp.rect.expand(2.0),
                                 3.0,
                                 egui::Stroke::new(1.0_f32, super::ACCENT),
+                                egui::StrokeKind::Middle,
                             );
                         }
                         if self.edit_reg == Some(name) {
@@ -471,7 +472,7 @@ impl App {
                                         let chip = egui::Button::new(t)
                                             .fill(bg)
                                             .stroke(stroke)
-                                            .rounding(egui::Rounding::same(4.0));
+                                            .corner_radius(egui::CornerRadius::same(4));
                                         let resp = ui.add(chip).on_hover_text(tr("Cliquer pour modifier", "Click to edit", "Clic para editar"));
                                         if resp.hovered() {
                                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -482,11 +483,11 @@ impl App {
                                             self.edit_focus = true;
                                         }
                                     } else {
-                                        egui::Frame::none()
+                                        egui::Frame::new()
                                             .fill(bg)
                                             .stroke(stroke)
-                                            .rounding(egui::Rounding::same(4.0))
-                                            .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+                                            .corner_radius(egui::CornerRadius::same(4))
+                                            .inner_margin(egui::Margin::symmetric(8, 3))
                                             .show(ui, |ui| {
                                                 ui.label(t);
                                             });
@@ -842,10 +843,10 @@ impl App {
                     // Barre verticale colorée (repère visuel du rôle de la case).
                     let (bar, _) = ui.allocate_exact_size(egui::vec2(4.0, 17.0), egui::Sense::hover());
                     ui.painter().rect_filled(bar.shrink2(egui::vec2(0.5, 1.0)), 2.0, bar_col);
-                    egui::Frame::none()
+                    egui::Frame::new()
                         .fill(fill)
-                        .rounding(egui::Rounding::same(3.0))
-                        .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                        .corner_radius(egui::CornerRadius::same(3))
+                        .inner_margin(egui::Margin::symmetric(4, 1))
                         .show(ui, |ui| {
                             ui.label(RichText::new(format!("0x{addr:012X}")).monospace().small().color(addr_c));
                             let mut vt = RichText::new(format!("0x{val:016X}")).monospace();

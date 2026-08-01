@@ -367,7 +367,7 @@ impl App {
             .resizable(false)
             .fixed_size(egui::vec2(460.0, 400.0))
             .pivot(egui::Align2::CENTER_TOP)
-            .default_pos(ctx.screen_rect().center_top() + egui::vec2(0.0, 90.0))
+            .default_pos(ctx.content_rect().center_top() + egui::vec2(0.0, 90.0))
             .show(ctx, |ui| {
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.palette_query)
@@ -403,8 +403,8 @@ impl App {
                             };
                             let r = egui::Frame::default()
                                 .fill(bg)
-                                .rounding(egui::Rounding::same(4.0))
-                                .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+                                .corner_radius(egui::CornerRadius::same(4))
+                                .inner_margin(egui::Margin::symmetric(6, 3))
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
                                     ui.horizontal(|ui| {

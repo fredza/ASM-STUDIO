@@ -415,6 +415,7 @@ impl App {
                         rect,
                         5.0,
                         egui::Stroke::new(stroke_w, col.gamma_multiply(if dim { 0.5 } else { 1.0 })),
+                        egui::StrokeKind::Middle,
                     );
                     // Bande d'accent à gauche de la voie.
                     painter.rect_filled(
@@ -518,7 +519,7 @@ impl App {
                         weak_col.gamma_multiply(0.5)
                     };
                     let sw = if w.changed && blink > 0.0 { 1.0 + 1.6 * blink } else if is_hov { 1.6 } else { 1.0 };
-                    painter.rect_stroke(rect, 4.0, egui::Stroke::new(sw, stroke_c));
+                    painter.rect_stroke(rect, 4.0, egui::Stroke::new(sw, stroke_c), egui::StrokeKind::Middle);
 
                     let name_c = if w.changed {
                         lerp_color(CHANGED, FLASH_BRIGHT, blink)

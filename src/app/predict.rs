@@ -318,7 +318,7 @@ impl App {
             .resizable(true)
             .default_width(320.0)
             .default_height(260.0)
-            .default_pos(ctx.screen_rect().center() + egui::vec2(180.0, -60.0))
+            .default_pos(ctx.content_rect().center() + egui::vec2(180.0, -60.0))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("predict_scroll")
@@ -375,8 +375,8 @@ impl App {
             egui::Frame::default()
                 .fill(col.linear_multiply(0.06))
                 .stroke(egui::Stroke::new(1.2_f32, col))
-                .rounding(egui::Rounding::same(5.0))
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .corner_radius(egui::CornerRadius::same(5))
+                .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
@@ -450,8 +450,8 @@ impl App {
                     // sous le seuil de lisibilité.
                     .fill(ACCENT.linear_multiply(0.045))
                     .stroke(egui::Stroke::new(1.2_f32, ACCENT.linear_multiply(0.7)))
-                    .rounding(egui::Rounding::same(5.0))
-                    .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                    .corner_radius(egui::CornerRadius::same(5))
+                    .inner_margin(egui::Margin::symmetric(8, 6))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(

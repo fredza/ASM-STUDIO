@@ -55,7 +55,7 @@ impl App {
             .default_width(580.0)
             .default_height(560.0)
             .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.screen_rect().center())
+            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().id_salt("microscope_scroll").show(ui, |ui| {
@@ -193,8 +193,8 @@ impl App {
                         ui.add_space(4.0);
                         egui::Frame::default()
                             .fill(ACTION.linear_multiply(0.08))
-                            .rounding(egui::Rounding::same(4.0))
-                            .inner_margin(egui::Margin::symmetric(8.0, 5.0))
+                            .corner_radius(egui::CornerRadius::same(4))
+                            .inner_margin(egui::Margin::symmetric(8, 5))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.add(egui::Label::new(RichText::new(note).size(12.0)).wrap());
@@ -364,7 +364,7 @@ impl App {
             .collapsible(false)
             .resizable(true)
             .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.screen_rect().center())
+            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
@@ -375,8 +375,8 @@ impl App {
                 // Bandeau alpha
                 egui::Frame::default()
                     .fill(egui::Color32::from_rgb(180, 60, 20))
-                    .rounding(egui::Rounding::same(6.0))
-                    .inner_margin(egui::Margin::symmetric(12.0, 6.0))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(egui::Margin::symmetric(12, 6))
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             ui.label(
@@ -543,7 +543,7 @@ impl App {
         let mut changed = false;
         // Corps borné à une fraction de l'écran : les réglages à venir
         // s'ajouteront sans pousser le bouton Fermer hors de la fenêtre.
-        let max_body_h = (ctx.screen_rect().height() * 0.66).max(240.0);
+        let max_body_h = (ctx.content_rect().height() * 0.66).max(240.0);
 
         egui::Window::new(t_title)
             .collapsible(false)
@@ -553,7 +553,7 @@ impl App {
             .default_width(640.0)
             .min_width(430.0)
             .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.screen_rect().center())
+            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
@@ -638,7 +638,7 @@ impl App {
             .collapsible(false)
             .resizable(true)
             .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.screen_rect().center())
+            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 let rows = [
@@ -707,7 +707,7 @@ impl App {
             .resizable(false)
             .default_width(360.0)
             .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.screen_rect().center())
+            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 // Sélecteur de base d'entrée.
@@ -799,15 +799,15 @@ impl App {
             .resizable(true)
             .default_width(520.0)
             .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.screen_rect().center())
+            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 // Bandeau de cause, en rouge.
                 egui::Frame::default()
                     .fill(FALSE_COL.linear_multiply(0.16))
                     .stroke(egui::Stroke::new(1.0_f32, FALSE_COL))
-                    .rounding(egui::Rounding::same(5.0))
-                    .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+                    .corner_radius(egui::CornerRadius::same(5))
+                    .inner_margin(egui::Margin::symmetric(10, 7))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(RichText::new(&diag.title).size(15.0).strong().color(FALSE_COL));
@@ -825,8 +825,8 @@ impl App {
                 ui.add_space(3.0);
                 egui::Frame::default()
                     .fill(ACTION.linear_multiply(0.12))
-                    .rounding(egui::Rounding::same(5.0))
-                    .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+                    .corner_radius(egui::CornerRadius::same(5))
+                    .inner_margin(egui::Margin::symmetric(10, 7))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(RichText::new(&diag.hint).size(13.0));
@@ -935,7 +935,7 @@ impl App {
             .resizable(false)
             .default_width(420.0)
             .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.screen_rect().center())
+            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 match &self.updater.state.clone() {
