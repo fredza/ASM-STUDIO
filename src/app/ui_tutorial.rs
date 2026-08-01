@@ -400,6 +400,85 @@ mod tests {
         assert!(back.is_done("premier_programme"));
     }
 
+    /// Chaque leçon intermédiaire doit ÉCHOUER telle quelle et PASSER une fois
+    /// son TODO appliqué. Sans les deux moitiés, l'exercice est un leurre : un
+    /// programme qui passe déjà n'apprend rien, un programme qu'aucune
+    /// correction ne sauve décourage.
+    ///
+    /// La correction est ici celle que le commentaire du TODO dicte, mot pour
+    /// mot : le test vérifie donc aussi que la consigne écrite est la bonne.
+    #[test]
+    fn every_intermediate_lesson_fails_then_passes() {
+        use std::path::PathBuf;
+
+        // (leçon, texte du TODO à remplacer, correction attendue)
+        let fixes: &[(&str, &str, &str)] = &[
+            ("fonctions", "; TODO : multiplier RAX par RDI", "imul rax, rdi"),
+            ("system_v", "; TODO : « push rbx » ici", "push rbx"),
+            ("system_v", "; TODO : … et « pop rbx »", "pop rbx"),
+            ("syscalls", "; TODO : RDX doit porter", ""),
+            ("syscalls", "xor rdx, rdx", "mov rdx, msg_len"),
+            ("tas", "mov rdi, r12        ; TODO", "lea rdi, [r12 + 4096]"),
+            ("tableaux", "; TODO : ajouter l'élément courant", "add rbx, [tab + rcx*8]"),
+            ("structures", "; TODO : ajouter le champ y", "add rbx, [rsi + pt_y]"),
+            ("chaines", "; TODO : s'arrêter quand AL vaut 0", "test al, al\n    jz .fin"),
+        ];
+
+        for lesson in tutorial::lessons_of(tutorial::Level::Intermediate) {
+            let mut app = App::new();
+            app.load_lesson(&lesson);
+            let dir = PathBuf::from(format!("build/tuto-inter/{}", lesson.id));
+            std::fs::create_dir_all(&dir).expect("dossier de travail");
+            app.out_dir = dir.clone();
+            app.src_path = dir.join(format!("{}.asm", lesson.id));
+
+            assert!(app.has_exercise(), "{} : attentes non armées", lesson.id);
+
+            // Tel quel : au moins une attente doit tomber.
+            run_to_completion(&mut app);
+            assert!(
+                !app.checks.is_empty() && !app.checks.iter().all(|c| c.passed()),
+                "{} : le programme de départ passe déjà, il n'y a rien à faire",
+                lesson.id
+            );
+
+            // On applique la consigne, à la lettre.
+            let mut applied = 0;
+            for (id, todo, fix) in fixes {
+                if *id != lesson.id {
+                    continue;
+                }
+                let line = app
+                    .source
+                    .lines()
+                    .find(|l| l.contains(todo))
+                    .unwrap_or_else(|| panic!("{} : TODO « {todo} » introuvable", lesson.id))
+                    .to_string();
+                let indent = " ".repeat(line.len() - line.trim_start().len());
+                app.source = app.source.replace(&line, &format!("{indent}{fix}"));
+                applied += 1;
+            }
+            assert!(applied > 0, "{} : aucune correction connue", lesson.id);
+
+            run_to_completion(&mut app);
+            assert!(
+                app.checks.iter().all(|c| c.passed()),
+                "{} : la correction dictée par le TODO ne suffit pas : {:?}",
+                lesson.id,
+                app.checks
+            );
+        }
+    }
+
+    /// Assemble, lance, et avance jusqu'à la fin du programme. La borne évite
+    /// qu'une boucle folle bloque la suite des tests.
+    fn run_to_completion(app: &mut App) {
+        app.launch();
+        for _ in 0..400 {
+            app.step();
+        }
+    }
+
     /// Le programme d'une leçon est écrit dans un dossier à part, pour ne pas
     /// écraser les exemples livrés.
     #[test]
