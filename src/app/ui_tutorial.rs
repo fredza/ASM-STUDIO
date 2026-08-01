@@ -414,6 +414,7 @@ mod tests {
         // (leçon, texte du TODO à remplacer, correction attendue)
         let fixes: &[(&str, &str, &str)] = &[
             // --- Intermédiaire ---
+            ("mul_div", "; TODO : multiplier RAX par R8", "imul rax, r8"),
             ("fonctions", "; TODO : multiplier RAX par RDI", "imul rax, rdi"),
             ("system_v", "; TODO : « push rbx » ici", "push rbx"),
             ("system_v", "; TODO : … et « pop rbx »", "pop rbx"),

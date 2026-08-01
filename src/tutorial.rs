@@ -928,6 +928,60 @@ _start:
     syscall
 "#;
 
+const L_TAILLES: &str = r#";@titre Les tailles
+;@enonce RAX contient 0x1234. Écris 0xFF dans son seul octet bas (AL), pour
+;@enonce que RBX reçoive 0x12FF.
+;@attendu rbx == 0x12FF
+;@attendu exit == 0
+
+; Un registre 64 bits se lit aussi par morceaux, qui se recouvrent :
+;   RAX = 64 bits    EAX = 32 bas    AX = 16 bas    AL = 8 bas    AH = bits 8-15
+; Écrire dans un petit morceau ne touche que lui — À UNE EXCEPTION : écrire dans
+; EAX met à zéro les 32 bits hauts. C'est le piège le plus célèbre de x86-64.
+section .text
+    global _start
+
+_start:
+    mov rax, 0x1234
+    ; TODO : écrire 0xFF dans l'octet bas seulement  (« mov al, 0xFF »)
+    mov rbx, rax
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_MUL_DIV: &str = r#";@titre Multiplication et division
+;@enonce Multiplie 7 par 6, divise le tout par 4, et garde le quotient dans
+;@enonce RBX (10) et le reste dans RCX (2).
+;@attendu rbx == 10
+;@attendu rcx == 2
+;@attendu exit == 0
+
+; « mul » et « div » ne travaillent qu'avec des registres imposés :
+;   « div r9 » calcule RDX:RAX ÷ r9 -> quotient dans RAX, reste dans RDX.
+; Oublier de remettre RDX à zéro avant une division non signée, c'est diviser
+; un nombre de 128 bits par accident — et souvent planter (#DE).
+section .text
+    global _start
+
+_start:
+    mov rax, 7
+    mov r8, 6
+    ; TODO : multiplier RAX par R8  (« imul rax, r8 »)  -> 42
+
+    xor rdx, rdx        ; le reste part de zéro : on divise un nombre de 64 bits
+    mov r9, 4           ; div n'accepte pas d'immédiat, il faut un registre
+    div r9              ; RAX = quotient, RDX = reste
+
+    mov rbx, rax        ; quotient
+    mov rcx, rdx        ; reste
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
 /// Toutes les leçons, dans l'ordre du parcours.
 pub fn catalogue() -> Vec<Lesson> {
     vec![
@@ -1028,6 +1082,40 @@ pub fn catalogue() -> Vec<Lesson> {
             ],
             panels: vec!["editor", "registers", "instruction"],
             starter: Some(L_REGISTRES),
+        },
+        Lesson {
+            id: "tailles",
+            level: Level::Beginner,
+            title: t!("Les tailles", "Register sizes", "Los tamaños"),
+            goal: t!(
+                "Voir qu'un registre se lit par morceaux, et connaître le piège d'EAX.",
+                "See that a register is read in parts, and know the EAX trap.",
+                "Ver que un registro se lee por partes, y conocer la trampa de EAX."
+            ),
+            steps: vec![
+                t!(
+                    "RAX (64), EAX (32), AX (16), AL (8) désignent le MÊME registre, par tranches qui se recouvrent. Le panneau Registres montre la valeur entière changer.",
+                    "RAX (64), EAX (32), AX (16), AL (8) name the SAME register, in overlapping slices. The Registers panel shows the whole value change.",
+                    "RAX (64), EAX (32), AX (16), AL (8) nombran el MISMO registro, en tramos que se solapan. El panel Registros muestra cambiar el valor entero."
+                ),
+                t!(
+                    "« mov al, 0xFF » n'écrit que l'octet bas : les autres octets de RAX restent intacts. 0x1234 devient 0x12FF, pas 0xFF.",
+                    "\"mov al, 0xFF\" writes only the low byte: the other bytes of RAX stay untouched. 0x1234 becomes 0x12FF, not 0xFF.",
+                    "«mov al, 0xFF» escribe solo el byte bajo: los demás bytes de RAX quedan intactos. 0x1234 pasa a 0x12FF, no 0xFF."
+                ),
+                t!(
+                    "L'exception à retenir : écrire dans EAX MET À ZÉRO les 32 bits hauts. « mov eax, 5 » donne RAX = 5, quoi qu'il y eût avant.",
+                    "The exception to remember: writing to EAX ZEROES the upper 32 bits. \"mov eax, 5\" gives RAX = 5, whatever was there before.",
+                    "La excepción a recordar: escribir en EAX PONE A CERO los 32 bits altos. «mov eax, 5» da RAX = 5, hubiera lo que hubiera antes."
+                ),
+                t!(
+                    "Choisir la bonne taille, c'est dire combien d'octets on touche : lire un caractère, c'est AL ; une adresse, c'est RAX. Le Microscope montre l'octet exact lu ou écrit.",
+                    "Choosing the right size says how many bytes you touch: reading a character is AL; an address is RAX. The Microscope shows the exact byte read or written.",
+                    "Elegir el tamaño correcto dice cuántos bytes se tocan: leer un carácter es AL; una dirección es RAX. El Microscopio muestra el byte exacto leído o escrito."
+                ),
+            ],
+            panels: vec!["editor", "registers", "instruction"],
+            starter: Some(L_TAILLES),
         },
         Lesson {
             id: "memoire",
@@ -1175,6 +1263,40 @@ pub fn catalogue() -> Vec<Lesson> {
             starter: Some(L_BOUCLES),
         },
         // ---------------- Intermédiaire ----------------
+        Lesson {
+            id: "mul_div",
+            level: Level::Intermediate,
+            title: t!("Multiplication et division", "Multiply and divide", "Multiplicación y división"),
+            goal: t!(
+                "Utiliser mul et div, qui imposent RAX et RDX, et récupérer le reste.",
+                "Use mul and div, which force RAX and RDX, and recover the remainder.",
+                "Usar mul y div, que imponen RAX y RDX, y recuperar el resto."
+            ),
+            steps: vec![
+                t!(
+                    "Contrairement à add, mul et div n'ont qu'un opérande explicite : l'autre est TOUJOURS RAX. Le panneau Registres montre RAX changer sans qu'on le nomme.",
+                    "Unlike add, mul and div take a single explicit operand: the other is ALWAYS RAX. The Registers panel shows RAX change without naming it.",
+                    "A diferencia de add, mul y div tienen un solo operando explícito: el otro es SIEMPRE RAX. El panel Registros muestra RAX cambiar sin nombrarlo."
+                ),
+                t!(
+                    "« div r9 » divise le nombre 128 bits RDX:RAX par r9 : le quotient revient dans RAX, le reste dans RDX. Une seule instruction donne les deux.",
+                    "\"div r9\" divides the 128-bit number RDX:RAX by r9: the quotient comes back in RAX, the remainder in RDX. One instruction yields both.",
+                    "«div r9» divide el número de 128 bits RDX:RAX entre r9: el cociente vuelve en RAX, el resto en RDX. Una sola instrucción da ambos."
+                ),
+                t!(
+                    "D'où le « xor rdx, rdx » avant : sans lui, RDX garde une vieille valeur et la division porte sur un nombre de 128 bits — résultat faux, ou plantage (#DE).",
+                    "Hence the \"xor rdx, rdx\" first: without it, RDX keeps an old value and the division runs on a 128-bit number — wrong result, or a crash (#DE).",
+                    "De ahí el «xor rdx, rdx» antes: sin él, RDX guarda un valor viejo y la división opera sobre un número de 128 bits — resultado falso, o fallo (#DE)."
+                ),
+                t!(
+                    "« imul » a une forme à deux opérandes (imul rax, r8) bien commode ; « div », non — son diviseur doit être un registre ou de la mémoire, jamais un immédiat.",
+                    "\"imul\" has a handy two-operand form (imul rax, r8); \"div\" does not — its divisor must be a register or memory, never an immediate.",
+                    "«imul» tiene una forma de dos operandos (imul rax, r8) muy cómoda; «div» no — su divisor debe ser registro o memoria, nunca un inmediato."
+                ),
+            ],
+            panels: vec!["editor", "registers", "instruction"],
+            starter: Some(L_MUL_DIV),
+        },
         Lesson {
             id: "fonctions",
             level: Level::Intermediate,
@@ -1949,7 +2071,7 @@ mod tests {
     #[test]
     fn the_upper_levels_are_fully_written() {
         for (level, count) in [
-            (Level::Intermediate, 7),
+            (Level::Intermediate, 8),
             (Level::Advanced, 6),
             (Level::Expert, 6),
         ] {
