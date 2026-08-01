@@ -431,11 +431,23 @@ mod tests {
             ("simd", "; TODO : additionner les deux vecteurs", "paddd xmm0, xmm1"),
             ("optimisation", "mov rbx, rax            ; TODO", "lea rbx, [rax + rax*4]"),
             ("optimisation", "add rbx, 0              ; TODO", "add rbx, rbx"),
+            // --- Expert ---
+            ("reverse", "; TODO : déchiffrer l'octet", "xor al, cle"),
+            (
+                "desassemblage",
+                "db 0x48, 0xc7, 0xc3, 0x00, 0x00, 0x00, 0x00",
+                "db 0x48, 0xc7, 0xc3, 0x2a, 0x00, 0x00, 0x00",
+            ),
+            ("syscalls_avances", "xor edi, edi", "mov edi, [rel fds]"),
+            ("shellcode", "; TODO : déposer \"Hi\" sur la pile", "mov rax, 0x6948\n    push rax"),
+            ("exploitation", "mov [rbp + 0], rax", "mov [rbp + 8], rax"),
+            ("performance", "add rax, 0", "shl rax, 3"),
         ];
 
         let written = tutorial::lessons_of(tutorial::Level::Intermediate)
             .into_iter()
-            .chain(tutorial::lessons_of(tutorial::Level::Advanced));
+            .chain(tutorial::lessons_of(tutorial::Level::Advanced))
+            .chain(tutorial::lessons_of(tutorial::Level::Expert));
 
         for lesson in written {
             let mut app = App::new();

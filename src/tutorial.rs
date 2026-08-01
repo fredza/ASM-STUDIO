@@ -91,10 +91,10 @@ impl Lesson {
 //  Catalogue
 // ======================================================================
 //
-//  Débutant, Intermédiaire et Avancé sont écrits intégralement : programme
-//  de départ, étapes, panneaux et attentes vérifiables. Expert déclare son
-//  plan — titre et objectif — et se complétera de la même façon. Annoncer
-//  un parcours vide serait pire que de le montrer en construction.
+//  Les quatre niveaux sont écrits intégralement : chaque leçon porte son
+//  programme de départ, ses étapes, ses panneaux et ses attentes
+//  vérifiables. Seule « installation » reste purement explicative — c'est
+//  le premier contact, avant tout code.
 //
 //  Un programme de départ doit ÉCHOUER tel quel et PASSER une fois son
 //  TODO appliqué : les deux moitiés sont vérifiées par le test
@@ -699,6 +699,227 @@ _start:
 
     mov rbx, rax            ; TODO : « lea rbx, [rax + rax*4] » …
     add rbx, 0              ; TODO : … puis « add rbx, rbx »
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_REVERSE: &str = r#";@titre Rétro-ingénierie
+;@enonce Ces cinq octets sont chiffrés par un XOR avec la clé 0x2A. Déchiffre-les
+;@enonce et mets la somme des octets clairs dans RBX. Elle vaut 532.
+;@attendu rbx == 532
+;@attendu exit == 0
+
+; Sans les sources, on lit ce que le programme FAIT. Le XOR est le chiffrement
+; le plus courant qu'on rencontre en analyse : réversible, et sa propre inverse
+; — déchiffrer, c'est refaire exactement la même opération.
+;
+; Astuce d'analyste : « xor al, al » met à zéro (le résultat est toujours nul),
+; tandis que « xor al, cle » chiffre ou déchiffre. Même instruction, deux rôles.
+section .data
+    secret db 0x42, 0x4f, 0x46, 0x46, 0x45   ; un mot de 5 lettres, chiffré
+    cle    equ 0x2a
+    n      equ 5
+
+section .text
+    global _start
+
+_start:
+    xor rcx, rcx        ; index
+    xor rbx, rbx        ; somme des octets clairs
+
+.boucle:
+    mov al, [secret + rcx]
+    ; TODO : déchiffrer l'octet  (« xor al, cle »)
+    add rbx, rax
+    inc rcx
+    cmp rcx, n
+    jb .boucle
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_DESASSEMBLAGE: &str = r#";@titre Désassemblage
+;@enonce Ces sept octets SONT une instruction : « mov rbx, imm32 ». Corrige
+;@enonce l'octet de l'immédiat pour que RBX vaille 42.
+;@attendu rbx == 42
+;@attendu exit == 0
+
+; Un désassembleur ne voit que des octets. Il reconnaît une instruction à son
+; premier octet, en déduit sa longueur, et sait ainsi où commence la suivante.
+; C'est ce découpage, et lui seul, qui sépare le code des données.
+;
+;   48        préfixe REX.W : « l'opérande fait 64 bits »
+;   C7        opcode : mov registre, immédiat sur 32 bits
+;   C3        ModR/M : désigne RBX comme destination
+;   2A 00 00 00   l'immédiat, 42 en petit-boutisme
+section .text
+    global _start
+
+_start:
+    ; TODO : le 4e octet porte l'immédiat ; 0x00 donne 0, il faut 42 (0x2A).
+    db 0x48, 0xc7, 0xc3, 0x00, 0x00, 0x00, 0x00
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_SYSCALLS_AVANCES: &str = r#";@titre Appels système avancés
+;@enonce Ce programme se parle à lui-même par un tube : il y écrit 42, puis le
+;@enonce relit. Complète la lecture pour que RBX récupère l'octet.
+;@attendu rbx == 42
+;@attendu exit == 0
+
+; Au-delà de read et write sur les flux standard, le noyau ouvre des canaux
+; entre processus. « pipe2 » en crée un : deux descripteurs, une extrémité pour
+; écrire, l'autre pour lire. Ici un seul processus s'en sert des deux côtés.
+;   fds[0] = lecture (fd bas)     fds[1] = écriture (fd haut)
+section .bss
+    fds  resd 2         ; deux entiers de 32 bits, remplis par pipe2
+    buf  resb 1         ; là où atterrira l'octet relu
+
+section .data
+    octet db 42
+
+section .text
+    global _start
+
+_start:
+    mov rax, 293        ; pipe2(fds, 0)
+    lea rdi, [rel fds]
+    xor rsi, rsi
+    syscall
+
+    mov rax, 1          ; write(fds[1], octet, 1)
+    mov edi, [rel fds + 4]      ; fds[1] : le descripteur d'écriture
+    lea rsi, [rel octet]
+    mov rdx, 1
+    syscall
+
+    mov rax, 0          ; read(fds[0], buf, 1)
+    ; TODO : charger fds[0] dans EDI  (« mov edi, [rel fds] »)
+    xor edi, edi
+    lea rsi, [rel buf]
+    mov rdx, 1
+    syscall
+
+    movzx rbx, byte [rel buf]
+
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_SHELLCODE: &str = r#";@titre Shellcode
+;@enonce Un shellcode transporte ses données avec lui, sur la pile — pas de
+;@enonce section .data. Dépose la chaîne "Hi", puis mesure-la : RBX doit valoir 2.
+;@attendu rbx == 2
+;@attendu exit == 0
+
+; Un shellcode est injecté dans un programme déjà lancé : il ne connaît aucune
+; adresse fixe et ne peut compter sur aucune section à lui. Deux contraintes en
+; découlent, que le Microscope met en évidence dans l'encodage :
+;
+;   • AUCUN octet nul : un octet nul terminerait la saisie qui le transporte.
+;     « mov rax, 60 » en contient (b'... 3C 00 00 00') ; « xor rax,rax / mov al,60 »
+;     n'en a aucun. Comparez les deux dans le panneau Instruction.
+;   • AUCUNE adresse absolue : d'où la chaîne construite sur la pile, ci-dessous.
+section .text
+    global _start
+
+_start:
+    xor rax, rax
+    push rax            ; le zéro terminal de la chaîne
+    ; TODO : déposer "Hi" sur la pile
+    ;        (« mov rax, 0x6948 » puis « push rax » — 'H'=0x48, 'i'=0x69)
+    mov rsi, rsp        ; RSI pointe la chaîne, là où on vient de l'écrire
+
+    xor rbx, rbx        ; longueur
+.mesure:
+    mov al, [rsi + rbx]
+    test al, al
+    jz .fin
+    inc rbx
+    jmp .mesure
+.fin:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"#;
+
+const L_EXPLOITATION: &str = r#";@titre Exploitation de binaires
+;@enonce Un débordement écrit au-delà du tampon jusqu'à l'adresse de retour.
+;@enonce Vise le bon décalage pour détourner « vulnerable » vers « gagne » :
+;@enonce le programme se terminera alors avec le code 57.
+;@attendu exit == 57
+
+; Voici, en miniature et de façon contrôlée, ce qu'exploite un débordement de
+; pile. « vulnerable » réserve un tampon, puis écrit AU-DELÀ — comme le ferait
+; une copie de saisie sans vérification de taille. Assez loin, on atteint
+; l'adresse de retour que « call » avait empilée, et « ret » y obéit.
+;
+; Disposition de la pile après le prologue, à partir de RBP :
+;   [rbp - 8]  … tampon local …
+;   [rbp + 0]  ancien RBP sauvegardé
+;   [rbp + 8]  ADRESSE DE RETOUR   <- la cible du détournement
+;
+; Ce qui l'empêche, dans un vrai programme : un canari entre le tampon et
+; l'adresse de retour (modifié = arrêt immédiat), une pile non exécutable (NX),
+; et des adresses rendues imprévisibles au chargement (ASLR).
+section .text
+    global _start
+
+gagne:                  ; jamais atteinte par le flot normal
+    mov rax, 60
+    mov rdi, 57
+    syscall
+
+vulnerable:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 16         ; le tampon
+
+    lea rax, [rel gagne]
+    ; TODO : écrire cette adresse SUR l'adresse de retour, en [rbp + 8].
+    ;        Un mauvais décalage rate la cible et le programme sort par 1.
+    mov [rbp + 0], rax
+
+    mov rsp, rbp
+    pop rbp
+    ret                 ; ret ordinaire — mais la cible a été remplacée
+
+_start:
+    call vulnerable
+    mov rax, 60         ; chemin normal : atteint seulement si l'exploit rate
+    mov rdi, 1
+    syscall
+"#;
+
+const L_PERFORMANCE: &str = r#";@titre Analyse de performances
+;@enonce Multiplie RAX par 8 avec l'instruction la plus rapide qui soit, un
+;@enonce décalage. RBX doit valoir 72.
+;@attendu rbx == 72
+;@attendu exit == 0
+
+; Avant de récrire, il faut MESURER. La Timeline compte les instructions
+; réellement exécutées : c'est la seule donnée qui ne ment pas.
+;
+; Multiplier par une puissance de deux, c'est décaler les bits vers la gauche.
+; « shl rax, 3 » fait ×8 en un cycle et sans dépendance ; « imul » demande la
+; même chose en trois. La règle n'est pourtant pas « fuir imul » : c'est
+; « mesurer », car sur un multiplicateur quelconque imul redevient le bon choix.
+section .text
+    global _start
+
+_start:
+    mov rax, 9
+    ; TODO : multiplier par 8 par décalage  (« shl rax, 3 »)
+    add rax, 0
+    mov rbx, rax
 
     mov rax, 60
     xor rdi, rdi
@@ -1401,66 +1622,211 @@ pub fn catalogue() -> Vec<Lesson> {
             starter: Some(L_OPTIMISATION),
         },
         // ---------------- Expert ----------------
-        planned("reverse", Level::Expert,
-            t!("Rétro-ingénierie", "Reverse engineering", "Ingeniería inversa"),
-            t!("Reconstituer l'intention d'un binaire dont on n'a pas les sources.",
-               "Reconstruct the intent of a binary you have no source for.",
-               "Reconstruir la intención de un binario sin fuentes."),
-            &["disasm", "memmap", "callstack"]),
-        planned("desassemblage", Level::Expert,
-            t!("Désassemblage", "Disassembly", "Desensamblado"),
-            t!("Lire le code machine sans étiquettes, et retrouver les frontières d'instruction.",
-               "Read machine code without labels, and find instruction boundaries.",
-               "Leer código máquina sin etiquetas y hallar los límites de instrucción."),
-            &["disasm", "instruction"]),
-        planned("syscalls_avances", Level::Expert,
-            t!("Appels système avancés", "Advanced system calls", "Llamadas al sistema avanzadas"),
-            t!("Processus, signaux, mémoire partagée : au-delà de read et write.",
-               "Processes, signals, shared memory: beyond read and write.",
-               "Procesos, señales, memoria compartida: más allá de read y write."),
-            &["editor", "syscalls"]),
-        planned("shellcode", Level::Expert,
-            t!("Shellcode", "Shellcode", "Shellcode"),
-            t!("Écrire du code sans octet nul ni adresse absolue, et comprendre les contraintes.",
-               "Write code with no null byte and no absolute address, and understand the constraints.",
-               "Escribir código sin bytes nulos ni direcciones absolutas, y entender las restricciones."),
-            &["editor", "disasm", "memmap"]),
-        planned("exploitation", Level::Expert,
-            t!("Exploitation de binaires", "Binary exploitation", "Explotación de binarios"),
-            t!("Comprendre comment un débordement de pile détourne l'adresse de retour — et ce qui l'en empêche.",
-               "Understand how a stack overflow hijacks the return address — and what prevents it.",
-               "Entender cómo un desbordamiento de pila secuestra la dirección de retorno — y qué lo impide."),
-            &["stack", "callstack", "memmap"]),
-        planned("performance", Level::Expert,
-            t!("Analyse de performances", "Performance analysis", "Análisis de rendimiento"),
-            t!("Compter les cycles, repérer les dépendances, et distinguer le coût réel du coût supposé.",
-               "Count cycles, spot dependencies, and tell real cost from assumed cost.",
-               "Contar ciclos, detectar dependencias y distinguir coste real de coste supuesto."),
-            &["disasm", "instruction", "timeline"]),
+        Lesson {
+            id: "reverse",
+            level: Level::Expert,
+            title: t!("Rétro-ingénierie", "Reverse engineering", "Ingeniería inversa"),
+            goal: t!(
+                "Reconstituer l'intention d'un binaire dont on n'a pas les sources.",
+                "Reconstruct the intent of a binary you have no source for.",
+                "Reconstruir la intención de un binario sin fuentes."
+            ),
+            steps: vec![
+                t!(
+                    "Sans les sources, on lit ce que le code FAIT, pas ce qu'il voulait dire. Ici, une boucle qui XOR chaque octet d'un bloc : la signature d'un déchiffrement.",
+                    "Without sources, you read what the code DOES, not what it meant. Here, a loop that XORs each byte of a block: the signature of a decryption.",
+                    "Sin fuentes, se lee lo que el código HACE, no lo que quería decir. Aquí, un bucle que hace XOR a cada byte de un bloque: la firma de un descifrado."
+                ),
+                t!(
+                    "Le XOR est sa propre inverse : chiffrer et déchiffrer sont la même opération. C'est pourquoi on le retrouve partout, du plus naïf des malwares aux vrais protocoles.",
+                    "XOR is its own inverse: encrypting and decrypting are the same operation. That is why it turns up everywhere, from the crudest malware to real protocols.",
+                    "El XOR es su propia inversa: cifrar y descifrar son la misma operación. Por eso aparece en todas partes, del malware más burdo a protocolos reales."
+                ),
+                t!(
+                    "Le panneau Mémoire montre les octets clairs apparaître un à un au fil des pas : la donnée se reconstitue sous les yeux, ce que ne montre aucun listing statique.",
+                    "The Memory panel shows the plaintext bytes appear one by one as you step: the data rebuilds before your eyes, which no static listing shows.",
+                    "El panel Memoria muestra los bytes claros aparecer uno a uno al avanzar: el dato se reconstruye ante los ojos, algo que ningún listado estático muestra."
+                ),
+                t!(
+                    "Trouver la clé, c'est souvent deviner un octet connu du clair — un octet nul de bourrage, une lettre attendue — et en déduire le reste.",
+                    "Finding the key is often guessing one known plaintext byte — a null padding byte, an expected letter — and deducing the rest.",
+                    "Hallar la clave suele ser adivinar un byte conocido del claro — un byte nulo de relleno, una letra esperada — y deducir el resto."
+                ),
+            ],
+            panels: vec!["editor", "memory", "disasm"],
+            starter: Some(L_REVERSE),
+        },
+        Lesson {
+            id: "desassemblage",
+            level: Level::Expert,
+            title: t!("Désassemblage", "Disassembly", "Desensamblado"),
+            goal: t!(
+                "Lire le code machine sans étiquettes, et retrouver les frontières d'instruction.",
+                "Read machine code without labels, and find instruction boundaries.",
+                "Leer código máquina sin etiquetas y hallar los límites de instrucción."
+            ),
+            steps: vec![
+                t!(
+                    "Le processeur ne voit pas d'instructions, mais des octets. Il reconnaît chacune à son opcode, en déduit sa longueur, et sait où commence la suivante.",
+                    "The processor sees no instructions, only bytes. It knows each by its opcode, deduces its length, and thus where the next one starts.",
+                    "El procesador no ve instrucciones, sino bytes. Reconoce cada una por su opcode, deduce su longitud, y así dónde empieza la siguiente."
+                ),
+                t!(
+                    "Ces sept octets déposés en « db » sont exécutés comme n'importe quels autres : rien ne distingue le code des données, sinon l'endroit où l'on saute.",
+                    "These seven \"db\" bytes execute like any others: nothing tells code from data, save the place you jump to.",
+                    "Estos siete bytes en «db» se ejecutan como cualesquiera: nada distingue código de datos, salvo el punto al que se salta."
+                ),
+                t!(
+                    "Le panneau Désassemblage relit ces octets et retrouve « mov rbx, … ». Le panneau Instruction en détaille l'encodage : REX, opcode, ModR/M, immédiat.",
+                    "The Disassembly panel reads these bytes back as \"mov rbx, …\". The Instruction panel breaks down the encoding: REX, opcode, ModR/M, immediate.",
+                    "El panel Desensamblado relee estos bytes como «mov rbx, …». El panel Instrucción detalla la codificación: REX, opcode, ModR/M, inmediato."
+                ),
+                t!(
+                    "Se tromper d'un octet sur le point d'entrée décale TOUT le désassemblage qui suit : les frontières glissent, et le code lu devient une fiction.",
+                    "Being one byte off on the entry point shifts ALL the disassembly that follows: boundaries slide, and the code you read becomes fiction.",
+                    "Equivocarse en un byte en el punto de entrada desplaza TODO el desensamblado que sigue: las fronteras se corren, y el código leído se vuelve ficción."
+                ),
+            ],
+            panels: vec!["editor", "disasm", "instruction"],
+            starter: Some(L_DESASSEMBLAGE),
+        },
+        Lesson {
+            id: "syscalls_avances",
+            level: Level::Expert,
+            title: t!("Appels système avancés", "Advanced system calls", "Llamadas al sistema avanzadas"),
+            goal: t!(
+                "Processus, signaux, mémoire partagée : au-delà de read et write.",
+                "Processes, signals, shared memory: beyond read and write.",
+                "Procesos, señales, memoria compartida: más allá de read y write."
+            ),
+            steps: vec![
+                t!(
+                    "« pipe2 » fabrique un canal : deux descripteurs reliés, ce qu'on écrit dans l'un ressort de l'autre. C'est ainsi qu'un shell relie deux commandes par « | ».",
+                    "\"pipe2\" makes a channel: two linked descriptors, what you write into one comes out of the other. That is how a shell links two commands with \"|\".",
+                    "«pipe2» fabrica un canal: dos descriptores enlazados, lo que se escribe en uno sale por el otro. Así enlaza un shell dos comandos con «|»."
+                ),
+                t!(
+                    "pipe2 écrit les deux descripteurs en mémoire, pas dans un registre : on lui passe l'ADRESSE d'un tableau, et on relit fds[0] et fds[1] ensuite.",
+                    "pipe2 writes the two descriptors to memory, not to a register: you pass the ADDRESS of an array, then read fds[0] and fds[1] back.",
+                    "pipe2 escribe los dos descriptores en memoria, no en un registro: se le pasa la DIRECCIÓN de un array, y luego se leen fds[0] y fds[1]."
+                ),
+                t!(
+                    "Le panneau Appels système journalise chaque appel avec ses arguments et sa réponse : on y suit le tube se créer, puis l'octet passer d'un descripteur à l'autre.",
+                    "The System calls panel logs each call with its arguments and its answer: you watch the pipe being created, then the byte cross from one descriptor to the other.",
+                    "El panel Llamadas al sistema registra cada llamada con sus argumentos y su respuesta: se ve crearse el tubo, y luego el byte pasar de un descriptor al otro."
+                ),
+                t!(
+                    "Les autres canaux du noyau suivent la même logique : fork duplique le processus, les signaux l'interrompent, mmap partage une page. Tous passent par des descripteurs ou des adresses.",
+                    "The kernel's other channels follow the same logic: fork duplicates the process, signals interrupt it, mmap shares a page. All go through descriptors or addresses.",
+                    "Los demás canales del núcleo siguen la misma lógica: fork duplica el proceso, las señales lo interrumpen, mmap comparte una página. Todos pasan por descriptores o direcciones."
+                ),
+            ],
+            panels: vec!["editor", "syscalls", "memory"],
+            starter: Some(L_SYSCALLS_AVANCES),
+        },
+        Lesson {
+            id: "shellcode",
+            level: Level::Expert,
+            title: t!("Shellcode", "Shellcode", "Shellcode"),
+            goal: t!(
+                "Écrire du code sans octet nul ni adresse absolue, et comprendre les contraintes.",
+                "Write code with no null byte and no absolute address, and understand the constraints.",
+                "Escribir código sin bytes nulos ni direcciones absolutas, y entender las restricciones."
+            ),
+            steps: vec![
+                t!(
+                    "Un shellcode est injecté dans un programme déjà lancé : il n'a ni section .data ni adresse fixe. Il transporte ses données avec lui, sur la pile.",
+                    "Shellcode is injected into a running program: it has no .data section and no fixed address. It carries its data with it, on the stack.",
+                    "Un shellcode se inyecta en un programa ya en marcha: no tiene sección .data ni dirección fija. Lleva sus datos consigo, en la pila."
+                ),
+                t!(
+                    "Zéro octet nul : souvent transporté par une fonction de chaîne, il serait tronqué au premier 00. « mov rax, 60 » en contient ; « xor rax,rax / mov al,60 » n'en a aucun.",
+                    "No null byte: often carried by a string function, it would be cut at the first 00. \"mov rax, 60\" contains some; \"xor rax,rax / mov al,60\" has none.",
+                    "Cero bytes nulos: transportado a menudo por una función de cadena, se cortaría en el primer 00. «mov rax, 60» contiene algunos; «xor rax,rax / mov al,60» ninguno."
+                ),
+                t!(
+                    "Le panneau Instruction montre l'encodage octet par octet : c'est LÀ qu'on vérifie l'absence de nul, pas dans le résultat. Comparez-y les deux façons d'écrire 60.",
+                    "The Instruction panel shows the encoding byte by byte: THAT is where you check for the absence of nulls, not in the result. Compare there the two ways of writing 60.",
+                    "El panel Instrucción muestra la codificación byte a byte: AHÍ se comprueba la ausencia de nulos, no en el resultado. Compare ahí las dos formas de escribir 60."
+                ),
+                t!(
+                    "Le contrôle automatique ne juge que le résultat : ici, la longueur mesurée. C'est à vous de lire l'encodage pour la seconde contrainte — l'outil la montre, il ne la note pas.",
+                    "The automatic check only judges the result: here, the measured length. Reading the encoding for the second constraint is up to you — the tool shows it, it does not grade it.",
+                    "El control automático solo juzga el resultado: aquí, la longitud medida. Leer la codificación para la segunda restricción le toca a usted — la herramienta la muestra, no la califica."
+                ),
+            ],
+            panels: vec!["editor", "instruction", "stack"],
+            starter: Some(L_SHELLCODE),
+        },
+        Lesson {
+            id: "exploitation",
+            level: Level::Expert,
+            title: t!("Exploitation de binaires", "Binary exploitation", "Explotación de binarios"),
+            goal: t!(
+                "Comprendre comment un débordement de pile détourne l'adresse de retour — et ce qui l'en empêche.",
+                "Understand how a stack overflow hijacks the return address — and what prevents it.",
+                "Entender cómo un desbordamiento de pila secuestra la dirección de retorno — y qué lo impide."
+            ),
+            steps: vec![
+                t!(
+                    "« call » empile l'adresse de retour ; « ret » y revient. Toute la sécurité de ce va-et-vient tient à ce que cette adresse, posée sur la pile, reste intacte.",
+                    "\"call\" pushes the return address; \"ret\" goes back to it. The safety of that round trip rests entirely on that address, sitting on the stack, staying intact.",
+                    "«call» apila la dirección de retorno; «ret» vuelve a ella. Toda la seguridad de ese ida y vuelta depende de que esa dirección, puesta en la pila, quede intacta."
+                ),
+                t!(
+                    "Un tampon local est en dessous de cette adresse sur la pile. Écrire au-delà de sa taille — une copie de saisie non vérifiée — finit par l'atteindre et la remplacer.",
+                    "A local buffer sits below that address on the stack. Writing past its size — an unchecked input copy — eventually reaches and overwrites it.",
+                    "Un tampón local está por debajo de esa dirección en la pila. Escribir más allá de su tamaño — una copia de entrada sin verificar — acaba alcanzándola y sustituyéndola."
+                ),
+                t!(
+                    "Le panneau Pile montre l'écriture atteindre le décalage [rbp+8] : à ce pas précis, l'adresse de retour change de valeur, et « ret » emmènera vers « gagne ».",
+                    "The Stack panel shows the write reaching offset [rbp+8]: at that exact step, the return address changes value, and \"ret\" will lead to \"gagne\".",
+                    "El panel Pila muestra la escritura alcanzar el desplazamiento [rbp+8]: en ese paso exacto, la dirección de retorno cambia de valor, y «ret» llevará a «gagne»."
+                ),
+                t!(
+                    "Trois défenses le contrent : un canari entre tampon et adresse (modifié = arrêt), une pile non exécutable (NX), et l'aléa d'adressage (ASLR) qui cache où sauter.",
+                    "Three defences counter it: a canary between buffer and address (modified = abort), a non-executable stack (NX), and address randomisation (ASLR) hiding where to jump.",
+                    "Tres defensas lo contrarrestan: un canario entre tampón y dirección (modificado = aborto), una pila no ejecutable (NX), y la aleatoriedad de direcciones (ASLR) que oculta adónde saltar."
+                ),
+            ],
+            panels: vec!["editor", "stack", "callstack"],
+            starter: Some(L_EXPLOITATION),
+        },
+        Lesson {
+            id: "performance",
+            level: Level::Expert,
+            title: t!("Analyse de performances", "Performance analysis", "Análisis de rendimiento"),
+            goal: t!(
+                "Compter les cycles, repérer les dépendances, et distinguer le coût réel du coût supposé.",
+                "Count cycles, spot dependencies, and tell real cost from assumed cost.",
+                "Contar ciclos, detectar dependencias y distinguir coste real de coste supuesto."
+            ),
+            steps: vec![
+                t!(
+                    "Mesurer d'abord : la Timeline compte les instructions réellement exécutées. Une boucle courte parcourue mille fois pèse plus qu'un long code linéaire.",
+                    "Measure first: the Timeline counts the instructions actually executed. A short loop run a thousand times weighs more than a long straight-line block.",
+                    "Medir primero: la Línea de tiempo cuenta las instrucciones realmente ejecutadas. Un bucle corto mil veces pesa más que un bloque largo lineal."
+                ),
+                t!(
+                    "Multiplier par une puissance de deux, c'est décaler les bits. « shl rax, 3 » fait ×8 en un cycle ; « imul » en demande trois pour le même résultat.",
+                    "Multiplying by a power of two is a bit shift. \"shl rax, 3\" does ×8 in one cycle; \"imul\" needs three for the same result.",
+                    "Multiplicar por una potencia de dos es un desplazamiento de bits. «shl rax, 3» hace ×8 en un ciclo; «imul» necesita tres para lo mismo."
+                ),
+                t!(
+                    "Mais la règle n'est pas « fuir imul » : sur un multiplicateur quelconque, imul redevient le meilleur choix. Le coût réel dépend des données, jamais du seul opcode.",
+                    "But the rule is not \"avoid imul\": for an arbitrary multiplier, imul is best again. Real cost depends on the data, never on the opcode alone.",
+                    "Pero la regla no es «evitar imul»: para un multiplicador cualquiera, imul vuelve a ser lo mejor. El coste real depende de los datos, nunca solo del opcode."
+                ),
+                t!(
+                    "Le vrai frein est ailleurs : une chaîne de dépendances où chaque instruction attend la précédente, ou un saut imprévisible qui vide le pipeline. Les rompre rapporte plus que tout décalage.",
+                    "The real brake lies elsewhere: a dependency chain where each instruction waits on the last, or an unpredictable branch that flushes the pipeline. Breaking those pays more than any shift.",
+                    "El verdadero freno está en otra parte: una cadena de dependencias donde cada instrucción espera a la anterior, o un salto impredecible que vacía el cauce. Romperlos rinde más que cualquier desplazamiento."
+                ),
+            ],
+            panels: vec!["editor", "timeline", "instruction"],
+            starter: Some(L_PERFORMANCE),
+        },
     ]
-}
-
-/// Leçon annoncée mais dont le contenu reste à écrire.
-///
-/// Elle apparaît dans le parcours avec son objectif : l'élève voit où il va.
-/// Masquer les leçons à venir donnerait l'illusion d'un parcours plus court
-/// qu'il ne l'est.
-fn planned(
-    id: &'static str,
-    level: Level,
-    title: Text,
-    goal: Text,
-    panels: &'static [PanelKey],
-) -> Lesson {
-    Lesson {
-        id,
-        level,
-        title,
-        goal,
-        steps: Vec::new(),
-        panels: panels.to_vec(),
-        starter: None,
-    }
 }
 
 /// Leçons d'un niveau, dans l'ordre.
@@ -1576,12 +1942,15 @@ mod tests {
         assert_eq!(with_code, b.len() - 1, "toutes sauf l'installation ont un programme");
     }
 
-    /// Intermédiaire et Avancé sont écrits eux aussi, et entièrement
-    /// pratiques : passé le niveau Débutant, plus aucune leçon ne se contente
-    /// d'expliquer.
+    /// Passé le niveau Débutant, tout le parcours est écrit et entièrement
+    /// pratique : plus aucune leçon ne se contente d'expliquer.
     #[test]
-    fn the_intermediate_and_advanced_levels_are_fully_written() {
-        for (level, count) in [(Level::Intermediate, 7), (Level::Advanced, 6)] {
+    fn the_upper_levels_are_fully_written() {
+        for (level, count) in [
+            (Level::Intermediate, 7),
+            (Level::Advanced, 6),
+            (Level::Expert, 6),
+        ] {
             let ls = lessons_of(level);
             assert_eq!(ls.len(), count, "{level:?} : {count} leçons attendues, vu {}", ls.len());
             for l in &ls {
@@ -1589,6 +1958,21 @@ mod tests {
                 assert!(l.has_starter(), "{} n'a pas de programme de départ", l.id);
                 assert!(!l.panels.is_empty(), "{} n'ouvre aucun panneau", l.id);
             }
+        }
+    }
+
+    /// Plus aucune leçon « planned » (sans étape) ne doit subsister : le
+    /// parcours entier a maintenant du contenu. Seule « installation » reste
+    /// purement explicative — c'est le tout premier contact, sans code encore.
+    #[test]
+    fn no_lesson_remains_a_stub() {
+        for l in catalogue() {
+            assert!(!l.steps.is_empty(), "{} est encore un plan vide", l.id);
+            assert!(
+                l.has_starter() || l.id == "installation",
+                "{} n'a toujours pas de programme",
+                l.id
+            );
         }
     }
 
