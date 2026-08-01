@@ -71,6 +71,19 @@ impl App {
                 .small()
                 .weak(),
             );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(tr(
+                    "« ;@interdit imul » et « ;@requis rel » contraignent la MANIÈRE : \
+                     elles portent sur le texte du code, hors commentaires.",
+                    "\";@forbid imul\" and \";@require rel\" constrain the WAY: they target \
+                     the code text, comments aside.",
+                    "«;@forbid imul» y «;@require rel» limitan el CÓMO: apuntan al texto \
+                     del código, sin contar comentarios.",
+                ))
+                .small()
+                .weak(),
+            );
             return;
         }
 
@@ -86,7 +99,7 @@ impl App {
                 } else {
                     super::badge(
                         ui,
-                        &format!("{}", self.exercise.expectations.len()),
+                        &format!("{}", self.exercise.requirement_count()),
                         hdr,
                     );
                 }
@@ -144,7 +157,7 @@ impl App {
                         let (icon, col) = if ok { ("✔", FLAG_ON) } else { ("✘", FALSE_COL) };
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(icon).strong().color(col));
-                            ui.label(RichText::new(c.expectation.label()).monospace().color(col));
+                            ui.label(RichText::new(c.label()).monospace().color(col));
                             if !ok {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
@@ -160,10 +173,16 @@ impl App {
                         });
                     }
                 } else {
-                    for e in &self.exercise.expectations {
+                    let pending = self
+                        .exercise
+                        .expectations
+                        .iter()
+                        .map(|e| e.label())
+                        .chain(self.exercise.text_rules.iter().map(|r| r.label()));
+                    for label in pending {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("○").color(self.c_bytes()));
-                            ui.label(RichText::new(e.label()).monospace().color(self.c_bytes()));
+                            ui.label(RichText::new(label).monospace().color(self.c_bytes()));
                         });
                     }
                     ui.add_space(4.0);

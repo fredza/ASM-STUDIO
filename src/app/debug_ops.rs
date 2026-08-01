@@ -55,7 +55,7 @@ impl App {
         }
         let Some(d) = self.dbg.as_ref() else { return };
         let regs = d.regs().clone();
-        self.checks = crate::exercise::check(&self.exercise, &regs, exit_code);
+        self.checks = crate::exercise::check(&self.exercise, &regs, exit_code, &self.source);
         let summary = crate::exercise::summary(&self.checks, self.lang);
         self.log(&summary);
         self.status = summary;

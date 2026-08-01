@@ -98,36 +98,143 @@ impl Expectation {
     }
 }
 
+/// Une attente de valeur porte sur l'état FINAL ; une contrainte de texte porte
+/// sur la MANIÈRE d'y parvenir. « rax == 10 » ne distingue pas `imul` d'un
+/// décalage ; « interdit imul » le fait. Les deux se complètent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextKind {
+    /// Le fragment doit apparaître dans le code.
+    Require,
+    /// Le fragment ne doit pas apparaître dans le code.
+    Forbid,
+}
+
+/// Contrainte sur le texte du programme : un fragment imposé ou proscrit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextRule {
+    pub kind: TextKind,
+    /// Fragment cherché, casse ignorée. Un seul mot est cherché comme un mot
+    /// entier ; un fragment ponctué est cherché tel quel.
+    pub needle: String,
+    pub line: usize,
+}
+
+impl TextRule {
+    /// Forme lisible, ex. « interdit: imul ».
+    pub fn label(&self) -> String {
+        let verb = match self.kind {
+            TextKind::Require => "requis",
+            TextKind::Forbid => "interdit",
+        };
+        format!("{verb}: {}", self.needle)
+    }
+
+    /// La contrainte est-elle respectée par ce source ? On ne regarde que le
+    /// CODE, commentaires ôtés : une contrainte ne se déclenche jamais sur sa
+    /// propre directive ni sur un commentaire qui cite le fragment.
+    pub fn holds(&self, source: &str) -> bool {
+        let present = fragment_present(&code_only(source), &self.needle);
+        match self.kind {
+            TextKind::Require => present,
+            TextKind::Forbid => !present,
+        }
+    }
+}
+
 /// L'énoncé complet extrait d'un fichier source.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Exercise {
     pub title: Option<String>,
     pub statement: Option<String>,
     pub expectations: Vec<Expectation>,
+    /// Contraintes sur le texte du programme (imposé / proscrit).
+    pub text_rules: Vec<TextRule>,
     /// Directives mal formées, signalées à l'auteur de l'exercice.
     pub errors: Vec<String>,
 }
 
 impl Exercise {
-    /// Vrai si le fichier déclare au moins une attente vérifiable.
+    /// Vrai si le fichier déclare au moins une attente exécutable. Les
+    /// contraintes de texte SEULES ne suffisent pas : sans état final à
+    /// observer, il n'y a rien à « lancer ».
     pub fn is_exercise(&self) -> bool {
         !self.expectations.is_empty()
     }
+
+    /// Nombre total de contrôles déclarés, valeurs et contraintes de texte.
+    pub fn requirement_count(&self) -> usize {
+        self.expectations.len() + self.text_rules.len()
+    }
 }
 
-/// Résultat de la vérification d'une attente.
+/// Ce qu'une ligne de la liste de contrôle vérifie.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Requirement {
+    /// Une valeur finale : registre ou code de sortie.
+    Value(Expectation),
+    /// Une contrainte sur le texte du programme.
+    Text(TextRule),
+}
+
+impl Requirement {
+    pub fn label(&self) -> String {
+        match self {
+            Requirement::Value(e) => e.label(),
+            Requirement::Text(t) => t.label(),
+        }
+    }
+}
+
+/// Le code du programme, commentaires ôtés et casse aplanie : le terrain sur
+/// lequel les contraintes de texte sont évaluées. Les directives « ;@… »
+/// disparaissent avec les commentaires, donc une contrainte ne se voit jamais
+/// elle-même.
+fn code_only(source: &str) -> String {
+    source
+        .lines()
+        .map(|l| l.split(';').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase()
+}
+
+/// Le fragment est-il présent dans ce code déjà normalisé ? Un fragment d'un
+/// seul mot (lettres, chiffres, `_`) est cherché comme un MOT ENTIER, pour que
+/// « imul » ne se déclenche pas sur `imulx` ni sur une étiquette. Un fragment
+/// ponctué (« rax*4 ») est cherché tel quel.
+fn fragment_present(code: &str, needle: &str) -> bool {
+    let needle = needle.to_lowercase();
+    if !needle.is_empty() && needle.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        code.split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|tok| tok == needle)
+    } else {
+        code.contains(&needle)
+    }
+}
+
+/// Résultat de la vérification d'un contrôle, valeur ou texte.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Check {
-    pub expectation: Expectation,
+    pub requirement: Requirement,
     /// Valeur observée, ou `None` si elle n'est pas disponible (ex. code de
-    /// sortie alors que le programme n'a pas encore quitté).
+    /// sortie alors que le programme n'a pas encore quitté). Ne concerne que
+    /// les contrôles de valeur.
     pub got: Option<i64>,
+    /// Verdict d'une contrainte de texte ; `None` pour un contrôle de valeur.
+    text_ok: Option<bool>,
 }
 
 impl Check {
     pub fn passed(&self) -> bool {
-        self.got
-            .is_some_and(|g| self.expectation.op.holds(g, self.expectation.want))
+        match &self.requirement {
+            Requirement::Value(e) => self.got.is_some_and(|g| e.op.holds(g, e.want)),
+            Requirement::Text(_) => self.text_ok.unwrap_or(false),
+        }
+    }
+
+    /// Étiquette lisible du contrôle.
+    pub fn label(&self) -> String {
+        self.requirement.label()
     }
 }
 
@@ -140,9 +247,10 @@ const REGS: [&str; 16] = [
 /// Extrait l'énoncé et les attentes d'un source NASM.
 ///
 /// Reconnaît, en français comme en anglais, `;@titre`/`;@title`,
-/// `;@enonce`/`;@statement`, `;@attendu`/`;@expect`. Les lignes qui ne sont pas
-/// des directives sont ignorées : un fichier ordinaire produit un [`Exercise`]
-/// vide dont [`Exercise::is_exercise`] est faux.
+/// `;@enonce`/`;@statement`, `;@attendu`/`;@expect`, ainsi que les contraintes
+/// de texte `;@interdit`/`;@forbid` et `;@requis`/`;@require`. Les lignes qui ne
+/// sont pas des directives sont ignorées : un fichier ordinaire produit un
+/// [`Exercise`] vide dont [`Exercise::is_exercise`] est faux.
 pub fn parse(source: &str) -> Exercise {
     let mut ex = Exercise::default();
 
@@ -170,6 +278,14 @@ pub fn parse(source: &str) -> Exercise {
             },
             "attendu" | "expect" | "assert" => match parse_expectation(value, line) {
                 Ok(e) => ex.expectations.push(e),
+                Err(msg) => ex.errors.push(format!("{line}: {msg}")),
+            },
+            "interdit" | "forbid" => match parse_text_rule(TextKind::Forbid, value, line) {
+                Ok(r) => ex.text_rules.push(r),
+                Err(msg) => ex.errors.push(format!("{line}: {msg}")),
+            },
+            "requis" | "require" => match parse_text_rule(TextKind::Require, value, line) {
+                Ok(r) => ex.text_rules.push(r),
                 Err(msg) => ex.errors.push(format!("{line}: {msg}")),
             },
             _ => ex.errors.push(format!("{line}: directive inconnue « {key} »")),
@@ -207,6 +323,16 @@ fn parse_expectation(s: &str, line: usize) -> Result<Expectation, String> {
     Ok(Expectation { subject, op, want, line })
 }
 
+/// Analyse le fragment d'une contrainte de texte. Il tient sur le reste de la
+/// ligne, espaces de bords ôtés ; il ne peut pas être vide.
+fn parse_text_rule(kind: TextKind, s: &str, line: usize) -> Result<TextRule, String> {
+    let needle = s.trim();
+    if needle.is_empty() {
+        return Err("fragment manquant (le mot ou la suite à imposer ou proscrire)".to_string());
+    }
+    Ok(TextRule { kind, needle: needle.to_string(), line })
+}
+
 /// Lit une valeur décimale signée, hexadécimale (`0x`) ou binaire (`0b`),
 /// ainsi qu'un caractère entre apostrophes (`'A'`) — pratique pour les exercices
 /// sur les chaînes.
@@ -230,26 +356,34 @@ fn parse_value(s: &str) -> Option<i64> {
     Some(if neg { -v } else { v })
 }
 
-/// Vérifie toutes les attentes contre l'état final observé.
+/// Vérifie tous les contrôles : les attentes de valeur contre l'état final
+/// observé, les contraintes de texte contre le source.
 ///
 /// * `regs` — registres au dernier instant connu ;
 /// * `exit_code` — code de sortie, `None` si le programme n'a pas quitté
-///   normalement (encore en cours, tué, ou planté).
-pub fn check(ex: &Exercise, regs: &Registers, exit_code: Option<i32>) -> Vec<Check> {
-    ex.expectations
-        .iter()
-        .map(|e| {
-            let got = match e.subject {
-                Subject::Register(name) => regs
-                    .named()
-                    .iter()
-                    .find(|(n, _)| *n == name)
-                    .map(|(_, v)| *v as i64),
-                Subject::ExitCode => exit_code.map(|c| c as i64),
-            };
-            Check { expectation: e.clone(), got }
-        })
-        .collect()
+///   normalement (encore en cours, tué, ou planté) ;
+/// * `source` — le programme, pour les contraintes de texte.
+///
+/// Les valeurs d'abord, les contraintes de texte ensuite : la liste garde
+/// l'ordre où l'élève les lit dans le panneau.
+pub fn check(ex: &Exercise, regs: &Registers, exit_code: Option<i32>, source: &str) -> Vec<Check> {
+    let values = ex.expectations.iter().map(|e| {
+        let got = match e.subject {
+            Subject::Register(name) => regs
+                .named()
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| *v as i64),
+            Subject::ExitCode => exit_code.map(|c| c as i64),
+        };
+        Check { requirement: Requirement::Value(e.clone()), got, text_ok: None }
+    });
+    let texts = ex.text_rules.iter().map(|r| Check {
+        text_ok: Some(r.holds(source)),
+        requirement: Requirement::Text(r.clone()),
+        got: None,
+    });
+    values.chain(texts).collect()
 }
 
 /// Bilan : (réussies, total).
@@ -363,7 +497,7 @@ section .text
     #[test]
     fn check_passes_and_fails_correctly() {
         let ex = parse(";@attendu rax == 120\n;@attendu rbx == 7\n;@attendu exit == 0\n");
-        let checks = check(&ex, &regs_with(120, 99), Some(0));
+        let checks = check(&ex, &regs_with(120, 99), Some(0), "");
         assert!(checks[0].passed(), "RAX = 120 attendu 120");
         assert!(!checks[1].passed(), "RBX = 99 attendu 7");
         assert!(checks[2].passed(), "exit 0");
@@ -375,7 +509,7 @@ section .text
     #[test]
     fn missing_exit_code_fails_rather_than_passes() {
         let ex = parse(";@attendu exit == 0\n");
-        let checks = check(&ex, &regs_with(0, 0), None);
+        let checks = check(&ex, &regs_with(0, 0), None, "");
         assert_eq!(checks[0].got, None);
         assert!(!checks[0].passed(), "une attente non observable ne doit pas passer");
     }
@@ -385,7 +519,7 @@ section .text
     #[test]
     fn comparisons_are_signed() {
         let ex = parse(";@attendu rax >= -1\n;@attendu rax == -1\n");
-        let checks = check(&ex, &regs_with(u64::MAX, 0), None);
+        let checks = check(&ex, &regs_with(u64::MAX, 0), None, "");
         assert!(checks[0].passed(), "-1 >= -1");
         assert!(checks[1].passed(), "0xFFFF… vaut -1 en signé");
     }
@@ -393,8 +527,8 @@ section .text
     #[test]
     fn summary_is_translated_and_reflects_tally() {
         let ex = parse(";@attendu rax == 1\n");
-        let pass = check(&ex, &regs_with(1, 0), None);
-        let fail = check(&ex, &regs_with(2, 0), None);
+        let pass = check(&ex, &regs_with(1, 0), None, "");
+        let fail = check(&ex, &regs_with(2, 0), None, "");
         for lang in [Lang::Fr, Lang::En, Lang::Es] {
             assert!(summary(&pass, lang).contains("1/1"));
             assert!(summary(&pass, lang).contains('✔'), "réussi en {lang:?}");
@@ -408,5 +542,68 @@ section .text
         let ex = parse(";@attendu rax == 120\n;@attendu exit != 3\n");
         assert_eq!(ex.expectations[0].label(), "RAX == 120");
         assert_eq!(ex.expectations[1].label(), "exit != 3");
+    }
+
+    #[test]
+    fn text_directives_parse_in_both_languages() {
+        let ex = parse(";@interdit imul\n;@forbid div\n;@requis shl\n;@require rel\n");
+        assert!(ex.errors.is_empty(), "erreurs : {:?}", ex.errors);
+        assert_eq!(ex.text_rules.len(), 4);
+        assert_eq!(ex.text_rules[0].kind, TextKind::Forbid);
+        assert_eq!(ex.text_rules[2].kind, TextKind::Require);
+        assert_eq!(ex.text_rules[0].label(), "interdit: imul");
+        assert_eq!(ex.text_rules[2].label(), "requis: shl");
+        // Des contraintes de texte SEULES ne font pas un exercice exécutable.
+        assert!(!ex.is_exercise());
+    }
+
+    #[test]
+    fn a_text_directive_without_fragment_is_reported() {
+        let ex = parse(";@interdit\n;@requis   \n");
+        assert!(ex.text_rules.is_empty());
+        assert_eq!(ex.errors.len(), 2, "{:?}", ex.errors);
+        assert!(ex.errors[0].contains("fragment"), "{:?}", ex.errors[0]);
+    }
+
+    /// Une contrainte ne se déclenche ni sur sa propre directive ni sur un
+    /// commentaire qui cite le mot : seul le CODE compte.
+    #[test]
+    fn text_rules_ignore_comments_and_their_own_directive() {
+        let src = "\
+;@interdit imul
+;@attendu rax == 80
+    mov rax, 10      ; on pourrait faire imul, mais non
+    shl rax, 3       ; ×8 par décalage
+";
+        let ex = parse(src);
+        let checks = check(&ex, &regs_with(80, 0), Some(0), src);
+        // rax == 80 passe, et « interdit imul » passe car aucun imul dans le CODE.
+        assert!(checks.iter().all(|c| c.passed()), "checks : {:?}", checks);
+        assert_eq!(tally(&checks), (2, 2));
+    }
+
+    #[test]
+    fn forbidden_word_in_code_fails_the_check() {
+        let src = ";@interdit imul\n    imul rax, rax, 10\n";
+        let ex = parse(";@interdit imul\n");
+        let checks = check(&ex, &regs_with(0, 0), Some(0), src);
+        assert!(!checks[0].passed(), "imul présent dans le code : interdit non respecté");
+        assert_eq!(checks[0].label(), "interdit: imul");
+    }
+
+    #[test]
+    fn required_word_must_appear_in_code() {
+        let rule = parse(";@requis rel\n").text_rules.remove(0);
+        assert!(rule.holds("    lea rcx, [rel valeur]\n"), "« rel » présent");
+        assert!(!rule.holds("    mov rcx, valeur\n"), "« rel » absent");
+    }
+
+    /// Un mot est cherché comme un MOT ENTIER : « div » ne se déclenche pas sur
+    /// « divende », ni « al » sur « rax ».
+    #[test]
+    fn single_word_rules_match_whole_words_only() {
+        let forbid_div = parse(";@interdit div\n").text_rules.remove(0);
+        assert!(forbid_div.holds("    mov rax, dividende\n"), "« div » n'est pas le mot « dividende »");
+        assert!(!forbid_div.holds("    div rbx\n"), "« div » bien présent comme mot");
     }
 }

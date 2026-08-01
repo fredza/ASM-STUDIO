@@ -613,6 +613,7 @@ const L_RELOCATIONS: &str = r#";@titre Relocations
 ;@enonce octet. Vise-la en RIP-relatif, et l'écart RBX deviendra nul.
 ;@attendu rbx == 0
 ;@attendu exit == 0
+;@requis rel
 
 ; nasm ne connaît aucune adresse définitive : il écrit des zéros et joint une
 ; consigne, la RELOCATION. « readelf -r » les montre dans le .o. Ici, deux
@@ -684,6 +685,7 @@ const L_OPTIMISATION: &str = r#";@titre Optimisations
 ;@enonce RBX doit valoir 70.
 ;@attendu rbx == 70
 ;@attendu exit == 0
+;@interdit imul
 
 ; « lea » calcule une adresse — mais rien n'oblige à s'en servir comme d'une
 ; adresse. C'est l'additionneur-multiplieur du processeur, accessible
@@ -903,6 +905,7 @@ const L_PERFORMANCE: &str = r#";@titre Analyse de performances
 ;@enonce décalage. RBX doit valoir 72.
 ;@attendu rbx == 72
 ;@attendu exit == 0
+;@interdit imul
 
 ; Avant de récrire, il faut MESURER. La Timeline compte les instructions
 ; réellement exécutées : c'est la seule donnée qui ne ment pas.

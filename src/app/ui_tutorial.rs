@@ -502,6 +502,70 @@ mod tests {
         }
     }
 
+    /// Une solution qui donne la BONNE valeur par un moyen PROSCRIT doit être
+    /// recalée. C'est ce que ferment les contraintes de texte, là où l'attente
+    /// de valeur seule laissait passer la triche.
+    #[test]
+    fn a_forbidden_form_is_rejected_even_when_the_value_is_right() {
+        use std::path::PathBuf;
+
+        // (leçon, motif remplacé, triche produisant la bonne valeur autrement)
+        let cheats: &[(&str, &str, &str)] = &[
+            // ×10 en une multiplication : RBX vaut 70, mais « imul » est interdit.
+            ("optimisation", "mov rbx, rax            ; TODO", "imul rbx, rax, 10"),
+            ("optimisation", "add rbx, 0              ; TODO", "nop"),
+            // ×8 en multiplication plutôt que par décalage.
+            ("performance", "add rax, 0", "imul rax, rax, 8"),
+            // Adresse absolue : l'écart reste nul, mais « rel » est requis.
+            ("relocations", "lea rcx, [rel _start]   ; TODO", "mov rcx, valeur"),
+        ];
+
+        for lesson in tutorial::lessons_of(tutorial::Level::Advanced)
+            .into_iter()
+            .chain(tutorial::lessons_of(tutorial::Level::Expert))
+        {
+            if !cheats.iter().any(|(id, ..)| *id == lesson.id) {
+                continue;
+            }
+            let mut app = App::new();
+            app.load_lesson(&lesson);
+            let dir = PathBuf::from(format!("build/tuto-cheat/{}", lesson.id));
+            std::fs::create_dir_all(&dir).expect("dossier de travail");
+            app.out_dir = dir.clone();
+            app.src_path = dir.join(format!("{}.asm", lesson.id));
+
+            for (id, pat, cheat) in cheats {
+                if *id != lesson.id {
+                    continue;
+                }
+                let line = app
+                    .source
+                    .lines()
+                    .find(|l| l.contains(pat))
+                    .unwrap_or_else(|| panic!("{} : motif « {pat} » introuvable", lesson.id))
+                    .to_string();
+                let indent = " ".repeat(line.len() - line.trim_start().len());
+                app.source = app.source.replace(&line, &format!("{indent}{cheat}"));
+            }
+
+            let terminated = run_to_completion(&mut app);
+            assert!(terminated, "{} : la triche ne se termine pas", lesson.id);
+
+            // La valeur, elle, est bonne : la triche « marche » — mais une
+            // contrainte de texte doit malgré tout la recaler.
+            let value_ok = app.checks.iter().all(|c| match &c.requirement {
+                crate::exercise::Requirement::Value(_) => c.passed(),
+                crate::exercise::Requirement::Text(_) => true,
+            });
+            assert!(value_ok, "{} : la triche devrait donner la bonne valeur : {:?}", lesson.id, app.checks);
+            assert!(
+                !app.checks.iter().all(|c| c.passed()),
+                "{} : une forme proscrite a été acceptée",
+                lesson.id
+            );
+        }
+    }
+
     /// Assemble, lance, et avance jusqu'à la fin du programme — ou jusqu'à une
     /// borne franche. Rend `true` s'il s'est terminé (sortie, signal ou faute),
     /// `false` s'il tournait encore au bout de la borne, ce qui trahit une
