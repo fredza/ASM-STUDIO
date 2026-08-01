@@ -422,6 +422,8 @@ impl App {
 
                 // Anneau de focus : sans lui, F6 semble ne rien faire. C'est le
                 // seul repère qui dise à l'élève quel panneau reçoit ses touches.
+                // Discret à dessein — un filet d'un pixel, en accent très
+                // atténué : il situe le focus sans encadrer lourdement le panneau.
                 //
                 // Peint DANS la couche du panneau central, après le contenu de
                 // l'arbre : il passe donc au-dessus des panneaux, mais sous les
@@ -432,7 +434,7 @@ impl App {
                     ui.painter().rect_stroke(
                         rect.shrink(1.0),
                         4.0,
-                        egui::Stroke::new(2.0_f32, super::ACCENT),
+                        egui::Stroke::new(1.0_f32, super::ACCENT.gamma_multiply(0.35)),
                         egui::StrokeKind::Middle,
                     );
                 }
