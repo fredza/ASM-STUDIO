@@ -606,4 +606,35 @@ section .text
         assert!(forbid_div.holds("    mov rax, dividende\n"), "« div » n'est pas le mot « dividende »");
         assert!(!forbid_div.holds("    div rbx\n"), "« div » bien présent comme mot");
     }
+
+    /// Tout exercice livré (`examples_seed/ex_*.asm`) doit être un exercice
+    /// VALIDE — titre, énoncé, attentes vérifiables, aucune directive fautive —
+    /// et s'ASSEMBLER : un squelette cassé apprendrait la mauvaise leçon.
+    #[test]
+    fn every_seeded_exercise_is_valid_and_assembles() {
+        use std::path::Path;
+        std::fs::create_dir_all("build/ex-seed").ok();
+        let mut count = 0;
+        for entry in std::fs::read_dir("examples_seed").expect("dossier examples_seed") {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !(name.starts_with("ex_") && name.ends_with(".asm")) {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("lecture");
+            let ex = parse(&src);
+            assert!(ex.is_exercise(), "{name} : aucune attente déclarée");
+            assert!(ex.title.is_some(), "{name} : pas de titre");
+            assert!(ex.statement.is_some(), "{name} : pas d'énoncé");
+            assert!(ex.errors.is_empty(), "{name} : directives fautives {:?}", ex.errors);
+            let out = crate::assemble::assemble_with_includes(
+                &path,
+                Path::new("build/ex-seed"),
+                &[],
+            );
+            assert!(out.is_ok(), "{name} ne s'assemble pas : {:?}", out.err());
+            count += 1;
+        }
+        assert!(count >= 10, "au moins dix exercices livrés attendus, vu {count}");
+    }
 }

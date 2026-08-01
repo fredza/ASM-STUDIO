@@ -84,6 +84,12 @@ pub(super) fn setup_examples() {
         ("ex_somme.asm",        include_str!("../../examples_seed/ex_somme.asm")),
         ("ex_maximum.asm",      include_str!("../../examples_seed/ex_maximum.asm")),
         ("ex_puissance.asm",    include_str!("../../examples_seed/ex_puissance.asm")),
+        ("ex_factorielle.asm",  include_str!("../../examples_seed/ex_factorielle.asm")),
+        ("ex_fibonacci.asm",    include_str!("../../examples_seed/ex_fibonacci.asm")),
+        ("ex_longueur.asm",     include_str!("../../examples_seed/ex_longueur.asm")),
+        ("ex_bits.asm",         include_str!("../../examples_seed/ex_bits.asm")),
+        ("ex_tableau.asm",      include_str!("../../examples_seed/ex_tableau.asm")),
+        ("ex_moyenne.asm",      include_str!("../../examples_seed/ex_moyenne.asm")),
     ];
     for (name, content) in files {
         let path = dir.join(name);
