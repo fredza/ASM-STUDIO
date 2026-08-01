@@ -801,8 +801,7 @@ _start:
     syscall
 
     mov rax, 0          ; read(fds[0], buf, 1)
-    ; TODO : charger fds[0] dans EDI  (« mov edi, [rel fds] »)
-    xor edi, edi
+    mov edi, [rel fds + 4]  ; TODO : fds+4 est l'extrémité d'ÉCRITURE ; lire dessus est refusé. Vise fds[0] (« mov edi, [rel fds] »)
     lea rsi, [rel buf]
     mov rdx, 1
     syscall

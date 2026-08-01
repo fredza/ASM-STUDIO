@@ -438,7 +438,7 @@ mod tests {
                 "db 0x48, 0xc7, 0xc3, 0x00, 0x00, 0x00, 0x00",
                 "db 0x48, 0xc7, 0xc3, 0x2a, 0x00, 0x00, 0x00",
             ),
-            ("syscalls_avances", "xor edi, edi", "mov edi, [rel fds]"),
+            ("syscalls_avances", "; TODO : fds+4 est l'extrémité", "mov edi, [rel fds]"),
             ("shellcode", "; TODO : déposer \"Hi\" sur la pile", "mov rax, 0x6948\n    push rax"),
             ("exploitation", "mov [rbp + 0], rax", "mov [rbp + 8], rax"),
             ("performance", "add rax, 0", "shl rax, 3"),
@@ -459,8 +459,10 @@ mod tests {
 
             assert!(app.has_exercise(), "{} : attentes non armées", lesson.id);
 
-            // Tel quel : au moins une attente doit tomber.
-            run_to_completion(&mut app);
+            // Tel quel : au moins une attente doit tomber. Qu'il se termine ou
+            // non importe peu ici — un programme de départ a le droit d'être
+            // cassé au point de boucler.
+            let _ = run_to_completion(&mut app);
             assert!(
                 !app.checks.is_empty() && !app.checks.iter().all(|c| c.passed()),
                 "{} : le programme de départ passe déjà, il n'y a rien à faire",
@@ -485,7 +487,12 @@ mod tests {
             }
             assert!(applied > 0, "{} : aucune correction connue", lesson.id);
 
-            run_to_completion(&mut app);
+            let terminated = run_to_completion(&mut app);
+            assert!(
+                terminated,
+                "{} : le programme corrigé ne se termine pas dans la borne — boucle sans fin ?",
+                lesson.id
+            );
             assert!(
                 app.checks.iter().all(|c| c.passed()),
                 "{} : la correction dictée par le TODO ne suffit pas : {:?}",
@@ -495,13 +502,28 @@ mod tests {
         }
     }
 
-    /// Assemble, lance, et avance jusqu'à la fin du programme. La borne évite
-    /// qu'une boucle folle bloque la suite des tests.
-    fn run_to_completion(app: &mut App) {
+    /// Assemble, lance, et avance jusqu'à la fin du programme — ou jusqu'à une
+    /// borne franche. Rend `true` s'il s'est terminé (sortie, signal ou faute),
+    /// `false` s'il tournait encore au bout de la borne, ce qui trahit une
+    /// boucle sans fin dans le programme de la leçon.
+    ///
+    /// `can_step` devient faux dès que le programme n'est plus vivant : passé ce
+    /// point, la boucle s'arrête au lieu de dérouler des pas vides.
+    ///
+    /// Réserve : un programme qui se BLOQUE dans un appel système — une lecture
+    /// sur une entrée vide, par exemple — suspend le pas ptrace lui-même, et
+    /// aucune borne côté test ne peut l'interrompre. Les leçons livrées n'en
+    /// contiennent pas.
+    #[must_use]
+    fn run_to_completion(app: &mut App) -> bool {
         app.launch();
-        for _ in 0..400 {
+        for _ in 0..2000 {
+            if !app.can_step() {
+                return true; // plus rien à exécuter : terminé proprement
+            }
             app.step();
         }
+        !app.can_step()
     }
 
     /// Le programme d'une leçon est écrit dans un dossier à part, pour ne pas
