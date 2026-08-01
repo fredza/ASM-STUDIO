@@ -947,4 +947,18 @@ mod tests {
         }
         assert_eq!(app.tutorial_enabled, before);
     }
+
+    /// « Exemples et exercices » amène l'explorateur INTERNE sur le dossier des
+    /// exemples et le rend visible — sans processus externe.
+    #[test]
+    fn opening_examples_points_the_internal_explorer_there() {
+        let mut app = App::new();
+        app.open_examples_dir();
+        assert!(
+            app.explorer_dir.ends_with("examples"),
+            "l'explorateur doit pointer sur examples, vu {:?}",
+            app.explorer_dir
+        );
+        assert!(app.panel_is_open(Panel::Explorer), "l'explorateur doit être visible");
+    }
 }

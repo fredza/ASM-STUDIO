@@ -369,9 +369,9 @@ impl App {
                     if item(
                         ui,
                         tr(
-                            "Dossier des exemples…",
-                            "Examples folder…",
-                            "Carpeta de ejemplos…",
+                            "Exemples et exercices",
+                            "Examples and exercises",
+                            "Ejemplos y ejercicios",
                         ),
                         "",
                     ) {

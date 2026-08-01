@@ -12,26 +12,25 @@ impl App {
         }
     }
 
-    /// Ouvre, dans le gestionnaire de fichiers du système, le dossier où sont
-    /// écrits les exemples et les exercices auto-corrigés (`~/.local/share/…`).
-    /// C'est là que l'élève retrouve les `ex_*.asm` à compléter et enregistre
-    /// son travail ; l'y emmener d'un clic évite de le lui faire chercher.
+    /// Pointe l'explorateur INTERNE de l'IDE sur le dossier où sont écrits les
+    /// exemples et les exercices auto-corrigés (`~/.local/share/…`), et l'amène
+    /// au premier plan. C'est là que l'élève retrouve les `ex_*.asm` à compléter
+    /// et enregistre son travail ; l'y emmener d'un clic évite de le lui faire
+    /// chercher, sans quitter l'IDE.
     pub(super) fn open_examples_dir(&mut self) {
         let dir = data_dir().join("examples");
-        // Il existe déjà (créé au premier lancement), mais on s'en assure : un
-        // xdg-open sur un dossier absent ouvrirait une erreur système.
+        // Créé au premier lancement, mais on s'en assure : un dossier absent
+        // laisserait l'explorateur vide sans explication.
         let _ = std::fs::create_dir_all(&dir);
-        match std::process::Command::new("xdg-open").arg(&dir).spawn() {
-            Ok(_) => self.log(&format!(
-                "{} {}",
-                i18n::tr(self.lang, "Ouverture du dossier :", "Opening folder:"),
-                dir.display()
-            )),
-            Err(e) => self.log(&format!(
-                "{} {e}",
-                i18n::tr(self.lang, "Impossible d'ouvrir le dossier :", "Cannot open folder:")
-            )),
-        }
+        self.explorer_dir = dir.clone();
+        self.explorer_selected = None;
+        self.show_panel(super::dock::Panel::Explorer);
+        self.focus_panel(super::dock::Panel::Explorer);
+        self.log(&format!(
+            "{} {}",
+            i18n::tr(self.lang, "Explorateur :", "Explorer:"),
+            dir.display()
+        ));
     }
 
     pub(super) fn save_source(&mut self) -> bool {
