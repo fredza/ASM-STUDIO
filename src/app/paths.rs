@@ -53,14 +53,16 @@ pub(super) fn data_dir() -> PathBuf {
         .join("asm_studio")
 }
 
-/// Crée `~/.local/share/asm_studio/examples/` avec les programmes de démonstration
-/// au premier lancement. Sentinelle = présence de `hello_world.asm` pour éviter
-/// le faux positif causé par `target/debug/examples/` créé par Cargo.
+/// Peuple `~/.local/share/asm_studio/examples/` avec les programmes de
+/// démonstration et les exercices auto-corrigés.
+///
+/// Chaque fichier ABSENT est écrit, à chaque lancement — et non plus « tout ou
+/// rien au premier lancement ». Ainsi un exemple ou un exercice ajouté dans une
+/// nouvelle version apparaît aussi chez les utilisateurs installés de longue
+/// date, au lieu de rester invisible parce que le dossier existait déjà. Un
+/// fichier présent n'est jamais réécrit : le travail de l'élève est préservé.
 pub(super) fn setup_examples() {
     let dir = data_dir().join("examples");
-    if dir.join("hello_world.asm").exists() {
-        return;
-    }
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
@@ -84,7 +86,10 @@ pub(super) fn setup_examples() {
         ("ex_puissance.asm",    include_str!("../../examples_seed/ex_puissance.asm")),
     ];
     for (name, content) in files {
-        let _ = std::fs::write(dir.join(name), content);
+        let path = dir.join(name);
+        if !path.exists() {
+            let _ = std::fs::write(path, content);
+        }
     }
 }
 

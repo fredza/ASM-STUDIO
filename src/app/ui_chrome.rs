@@ -366,6 +366,17 @@ impl App {
                     if item(ui, tr("Ouvrir…", "Open…", "Abrir…"), "Ctrl+O") {
                         self.open_browser();
                     }
+                    if item(
+                        ui,
+                        tr(
+                            "Dossier des exemples…",
+                            "Examples folder…",
+                            "Carpeta de ejemplos…",
+                        ),
+                        "",
+                    ) {
+                        self.open_examples_dir();
+                    }
                     ui.separator();
                     if item(ui, tr("Enregistrer", "Save", "Guardar"), "Ctrl+S") {
                         self.save_source();

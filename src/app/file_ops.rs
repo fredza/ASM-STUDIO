@@ -2,13 +2,35 @@ use std::path::PathBuf;
 
 use crate::i18n;
 
-use super::{abs_dir_of, asmstd_dir, App};
+use super::{abs_dir_of, asmstd_dir, data_dir, App};
 
 impl App {
     pub(super) fn log(&mut self, s: &str) {
         self.console.push_str(s);
         if !s.ends_with('\n') {
             self.console.push('\n');
+        }
+    }
+
+    /// Ouvre, dans le gestionnaire de fichiers du système, le dossier où sont
+    /// écrits les exemples et les exercices auto-corrigés (`~/.local/share/…`).
+    /// C'est là que l'élève retrouve les `ex_*.asm` à compléter et enregistre
+    /// son travail ; l'y emmener d'un clic évite de le lui faire chercher.
+    pub(super) fn open_examples_dir(&mut self) {
+        let dir = data_dir().join("examples");
+        // Il existe déjà (créé au premier lancement), mais on s'en assure : un
+        // xdg-open sur un dossier absent ouvrirait une erreur système.
+        let _ = std::fs::create_dir_all(&dir);
+        match std::process::Command::new("xdg-open").arg(&dir).spawn() {
+            Ok(_) => self.log(&format!(
+                "{} {}",
+                i18n::tr(self.lang, "Ouverture du dossier :", "Opening folder:"),
+                dir.display()
+            )),
+            Err(e) => self.log(&format!(
+                "{} {e}",
+                i18n::tr(self.lang, "Impossible d'ouvrir le dossier :", "Cannot open folder:")
+            )),
         }
     }
 
