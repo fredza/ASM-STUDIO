@@ -388,30 +388,36 @@ impl App {
         style.tab.tab_body.stroke.width = 0.0;
         // Croix de fermeture rouge : l'action est destructrice, elle doit se
         // distinguer du reste de la barre d'onglets. Plus sombre au repos,
-        // pleinement rouge au survol — pour ne pas crier en permanence.
+        // pleinement rouge au survol — pour ne pas crier en permanence. Sans
+        // fond : seul le fin « × » reste, ce qui l'allège nettement (la TAILLE
+        // du glyphe, elle, est figée par egui_dock et n'est pas réglable).
         style.buttons.close_tab_color = super::FALSE_COL.gamma_multiply(0.75);
         style.buttons.close_tab_active_color = super::FALSE_COL;
-        style.buttons.close_tab_bg_fill = super::FALSE_COL.linear_multiply(0.18);
+        style.buttons.close_tab_bg_fill = egui::Color32::TRANSPARENT;
 
         let mut focused_name = None;
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(0.0))
             .show(ctx, |ui| {
-                // `show_window_close_buttons` est déprécié au profit de
-                // `show_leaf_close_buttons`, qui n'existe pas encore dans
-                // egui_dock 0.18 (palier retenu). On garde l'appel en l'état ;
-                // il sera remplacé quand on montera au-delà.
+                // Une SEULE croix par onglet : la rouge. egui_dock 0.18 ajoute
+                // par défaut, sur la barre d'onglets, une croix « tout fermer »
+                // et un chevron de repli — d'où la double croix. On les coupe
+                // pour retrouver la barre épurée d'avant.
+                //
+                // `show_window_close_buttons` (déprécié, remplaçant absent en
+                // 0.18) reste à false : un panneau détaché garde lui aussi sa
+                // seule croix rouge d'onglet, la fenêtre se refermant quand elle
+                // se vide. La croix « normale » ne subsiste que sur la fenêtre
+                // principale de l'application, fournie par le système.
                 #[allow(deprecated)]
                 egui_dock::DockArea::new(&mut dock)
                     .style(style)
                     .draggable_tabs(true)
                     .show_close_buttons(true)
-                    // Un seul bouton de fermeture. egui_dock en dessine deux sur
-                    // un panneau détaché : celui de la fenêtre et celui de
-                    // l'onglet. On garde celui de l'onglet, qui ferme
-                    // exactement ce que l'utilisateur désigne ; la fenêtre
-                    // disparaît d'elle-même quand elle se vide.
+                    .show_leaf_close_all_buttons(false)
+                    .show_leaf_collapse_buttons(false)
                     .show_window_close_buttons(false)
+                    .show_window_collapse_buttons(false)
                     .show_inside(ui, &mut Viewer { app: self });
 
                 // Anneau de focus : sans lui, F6 semble ne rien faire. C'est le
