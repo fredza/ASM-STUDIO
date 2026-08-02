@@ -13,6 +13,21 @@ use crate::i18n;
 use crate::tutorial::{self, Level, Lesson};
 
 impl App {
+    /// Remet le parcours à zéro : oublie les leçons terminées et rouvre au
+    /// sommaire. La progression effacée est aussitôt persistée.
+    pub(super) fn reset_tutorial(&mut self) {
+        self.tutorial_progress = crate::tutorial::Progress::default();
+        self.tutorial_current = None;
+        self.status = i18n::tr3(
+            self.lang,
+            "Progression du tutoriel réinitialisée.",
+            "Tutorial progress reset.",
+            "Progreso del tutorial reiniciado.",
+        )
+        .to_string();
+        self.save_settings();
+    }
+
     /// Charge une leçon : programme de départ, panneaux, et mise au point.
     pub(super) fn load_lesson(&mut self, lesson: &Lesson) {
         self.tutorial_current = Some(lesson.id.to_string());
@@ -297,6 +312,26 @@ mod tests {
             assert!(app.panel_is_open(p), "{key} doit être ouvert par la leçon");
         }
         assert_eq!(app.tutorial_current.as_deref(), Some("registres"));
+    }
+
+    /// « Réinitialiser la progression » oublie les leçons terminées et rouvre
+    /// le parcours au sommaire.
+    #[test]
+    fn resetting_the_tutorial_forgets_progress_and_returns_to_summary() {
+        let mut app = App::new();
+        app.tutorial_progress.mark_done("registres");
+        app.tutorial_progress.mark_done("boucles");
+        app.tutorial_current = Some("boucles".to_string());
+
+        app.reset_tutorial();
+
+        assert!(!app.tutorial_progress.is_done("registres"), "leçon oubliée");
+        assert_eq!(
+            app.tutorial_progress.tally(tutorial::Level::Beginner).0,
+            0,
+            "aucune leçon débutant ne reste marquée terminée"
+        );
+        assert!(app.tutorial_current.is_none(), "retour au sommaire");
     }
 
     /// Toutes les clés de panneau du catalogue doivent exister : une faute de

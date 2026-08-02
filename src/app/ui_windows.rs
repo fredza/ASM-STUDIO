@@ -537,10 +537,21 @@ impl App {
              lección carga su programa, abre los paneles que explica y lleva sus expectativas. \
              El progreso se conserva entre sesiones.",
         );
+        let t_tuto_reset = self.tr3(
+            "Réinitialiser la progression",
+            "Reset progress",
+            "Reiniciar el progreso",
+        );
+        let t_tuto_reset_tip = self.tr3(
+            "Oublie les leçons terminées et rouvre le parcours au début.",
+            "Forget completed lessons and reopen the path at the start.",
+            "Olvida las lecciones terminadas y reabre el recorrido al inicio.",
+        );
         let t_close = self.tr3("Fermer", "Close", "Cerrar");
 
         let mut open = true;
         let mut changed = false;
+        let mut reset_tutorial = false;
         // Corps borné à une fraction de l'écran : les réglages à venir
         // s'ajouteront sans pousser le bouton Fermer hors de la fenêtre.
         let max_body_h = (ctx.content_rect().height() * 0.66).max(240.0);
@@ -602,6 +613,10 @@ impl App {
                         super::card(ui, |ui| {
                             ui.label(RichText::new(t_tuto_desc).size(12.5));
                         });
+                        ui.add_space(4.0);
+                        if ui.button(t_tuto_reset).on_hover_text(t_tuto_reset_tip).clicked() {
+                            reset_tutorial = true;
+                        }
                         ui.separator();
 
                         section(ui, t_pedagogy_h);
@@ -618,6 +633,9 @@ impl App {
                     }
                 });
             });
+        if reset_tutorial {
+            self.reset_tutorial();
+        }
         if changed {
             self.save_settings();
         }
