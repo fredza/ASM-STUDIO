@@ -310,6 +310,7 @@ pub struct App {
     pub(super) lang: Lang,
     pub(super) show_settings: bool,
     pub(super) show_about: bool,
+    pub(super) show_license: bool,
     pub(super) show_shortcuts: bool,
     pub(super) show_calculator: bool,
     /// Saisie de la calculatrice multi-base (texte brut, parsé selon `calc_base`).
@@ -423,6 +424,7 @@ impl App {
             lang: Lang::Fr,
             show_settings: false,
             show_about: false,
+            show_license: false,
             show_shortcuts: false,
             show_calculator: false,
             calc_input: String::new(),
@@ -685,6 +687,7 @@ impl App {
         );
         [
             self.show_about,
+            self.show_license,
             self.show_shortcuts,
             self.show_settings,
             self.show_calculator,
@@ -751,6 +754,7 @@ impl eframe::App for App {
         // prochain événement (dialogue « collé » à l'écran).
         let dialogs_before = self.open_dialog_count();
         self.about_window(ctx);
+        self.license_window(ctx);
         self.shortcuts_window(ctx);
         self.settings_window(ctx);
         self.microscope_window(ctx);

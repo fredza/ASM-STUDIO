@@ -19,6 +19,13 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(4.0);
 }
 
+/// Retire le balisage gras `**…**` d'une ligne Markdown, pour un affichage
+/// propre dans la fenêtre de licence (on ne conserve pas le gras inline, mais
+/// le texte reste lisible sans les astérisques parasites).
+fn strip_bold(s: &str) -> String {
+    s.replace("**", "")
+}
+
 impl App {
     // ---------- Boîtes de dialogue ----------
 
@@ -415,8 +422,17 @@ impl App {
                         ui.label(RichText::new("Frédéric Z.").strong());
                         ui.end_row();
                         ui.label(tr("Licence", "License", "Licencia"));
-                        ui.hyperlink_to(tr("MIT (explication)", "MIT (explanation)", "MIT (explicación)"), "https://opensource.org/license/mit")
-                            .on_hover_text(tr("Ouvrir le texte officiel de la licence MIT", "Open the official MIT license text", "Abrir el texto oficial de la licencia MIT"));
+                        if ui
+                            .link(RichText::new("ASSL v1.0").strong())
+                            .on_hover_text(tr(
+                                "ASM Studio Source Available License v1.0 — cliquer pour lire le texte complet.",
+                                "ASM Studio Source Available License v1.0 — click to read the full text.",
+                                "ASM Studio Source Available License v1.0 — clic para leer el texto completo.",
+                            ))
+                            .clicked()
+                        {
+                            self.show_license = true;
+                        }
                         ui.end_row();
                     });
                 ui.separator();
@@ -429,6 +445,78 @@ impl App {
             });
         if !open {
             self.show_about = false;
+        }
+    }
+
+    /// Texte intégral de la licence, embarqué depuis `LICENSE.md` à la racine du
+    /// projet : le fichier reste l'unique source de vérité, la fenêtre ne peut
+    /// pas se désynchroniser de lui.
+    pub(super) fn license_window(&mut self, ctx: &egui::Context) {
+        if !self.show_license {
+            return;
+        }
+        const LICENSE: &str = include_str!("../../LICENSE.md");
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let hdr = self.c_header();
+        let mnem = self.c_mnemonic();
+
+        let mut open = true;
+        egui::Window::new(tr("Licence", "License", "Licencia"))
+            .collapsible(false)
+            .resizable(true)
+            .default_width(560.0)
+            .default_height(520.0)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("license_scroll")
+                    .auto_shrink([false, false])
+                    .max_height(ctx.content_rect().height() * 0.66)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        // Rendu Markdown léger : ce fichier n'utilise que titres,
+                        // séparateurs, citations et listes — pas besoin d'un moteur
+                        // complet, juste de retirer le balisage pour un texte propre.
+                        for raw in LICENSE.lines() {
+                            let line = raw.trim_end();
+                            if line.is_empty() {
+                                ui.add_space(4.0);
+                            } else if line == "---" {
+                                ui.separator();
+                            } else if let Some(t) = line.strip_prefix("# ") {
+                                ui.add_space(2.0);
+                                ui.heading(RichText::new(strip_bold(t)).color(mnem));
+                            } else if let Some(t) = line.strip_prefix("### ") {
+                                ui.add_space(2.0);
+                                ui.label(RichText::new(strip_bold(t)).strong().color(hdr));
+                            } else if let Some(t) = line.strip_prefix("## ") {
+                                ui.add_space(3.0);
+                                ui.label(RichText::new(strip_bold(t)).strong().size(15.0).color(hdr));
+                            } else if let Some(t) = line.strip_prefix("> ") {
+                                ui.label(RichText::new(strip_bold(t)).italics().weak());
+                            } else if let Some(t) = line.strip_prefix("- ") {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.add_space(8.0);
+                                    ui.label(RichText::new("•").color(hdr));
+                                    ui.label(strip_bold(t));
+                                });
+                            } else {
+                                ui.label(strip_bold(line));
+                            }
+                        }
+                    });
+                ui.separator();
+                ui.vertical_centered(|ui| {
+                    if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
+                        self.show_license = false;
+                    }
+                });
+            });
+        if !open {
+            self.show_license = false;
         }
     }
 
@@ -1048,6 +1136,31 @@ impl App {
 mod settings_tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// La licence affichée doit être celle du fichier `LICENSE.md` embarqué, et
+    /// surtout plus MIT : c'est le contrat de cette fenêtre.
+    #[test]
+    fn license_window_shows_the_embedded_license_not_mit() {
+        const LICENSE: &str = include_str!("../../LICENSE.md");
+        assert!(LICENSE.contains("Source Available License"), "licence attendue = ASSL");
+        assert!(!LICENSE.to_uppercase().contains("MIT LICENSE"), "le MIT ne doit plus être la licence");
+
+        let mut app = App::new();
+        app.show_license = true;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.license_window(ctx));
+        assert!(app.show_license, "la fenêtre reste ouverte tant qu'on ne la ferme pas");
+    }
+
+    /// Fermée, elle ne peint rien.
+    #[test]
+    fn closed_license_window_paints_nothing() {
+        let mut app = App::new();
+        app.show_license = false;
+        let ctx = egui::Context::default();
+        let out = ctx.run(Default::default(), |ctx| app.license_window(ctx));
+        assert!(out.shapes.is_empty() || !app.show_license);
+    }
 
     /// La fenêtre de réglages doit se rendre, et toutes ses options rester
     /// atteignables — y compris sur un petit écran, où le corps défile et le
