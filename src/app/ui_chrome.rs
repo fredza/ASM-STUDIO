@@ -612,6 +612,75 @@ impl App {
         });
     }
 
+    // ---------- Bandeau d'accueil ----------
+
+    /// Bandeau d'accueil du mode apprentissage : un mot de bienvenue et deux
+    /// portes d'entrée — le tutoriel, ou un exemple. Ne s'affiche qu'en mode
+    /// apprentissage, et disparaît définitivement une fois écarté (persisté).
+    pub(super) fn welcome_banner(&mut self, ctx: &egui::Context) {
+        if self.mode != super::UiMode::Learning || self.welcome_dismissed {
+            return;
+        }
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let hdr = self.c_header();
+        let (mut open_ex, mut start_tuto, mut dismiss) = (false, false, false);
+
+        egui::TopBottomPanel::top("welcome")
+            .frame(
+                egui::Frame::new()
+                    .fill(ACCENT.linear_multiply(0.12))
+                    .inner_margin(egui::Margin::symmetric(10, 7)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(tr(
+                            "👋 Bienvenue ! Nouveau en assembleur ? Suis le parcours guidé, ou ouvre un exemple pour explorer.",
+                            "👋 Welcome! New to assembly? Follow the guided path, or open an example to explore.",
+                            "👋 ¡Bienvenido! ¿Nuevo en ensamblador? Sigue el recorrido guiado, o abre un ejemplo para explorar.",
+                        ))
+                        .color(hdr),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button(tr("Écarter", "Dismiss", "Descartar")).clicked() {
+                            dismiss = true;
+                        }
+                        if ui.button(tr("Ouvrir un exemple", "Open an example", "Abrir un ejemplo")).clicked() {
+                            open_ex = true;
+                        }
+                        if ui
+                            .add(egui::Button::new(
+                                RichText::new(tr(
+                                    "▶ Commencer le tutoriel",
+                                    "▶ Start the tutorial",
+                                    "▶ Empezar el tutorial",
+                                ))
+                                .color(egui::Color32::WHITE),
+                            ).fill(ACCENT))
+                            .clicked()
+                        {
+                            start_tuto = true;
+                        }
+                    });
+                });
+            });
+
+        if open_ex {
+            self.open_examples_dir();
+        }
+        if start_tuto {
+            self.tutorial_enabled = true;
+            self.sync_tutorial_panel();
+            self.focus_panel(super::dock::Panel::Tutorial);
+            self.save_settings();
+        }
+        if dismiss {
+            self.welcome_dismissed = true;
+            self.save_settings();
+        }
+    }
+
     // ---------- Barre d'état ----------
 
     pub(super) fn status_bar(&mut self, ctx: &egui::Context) {
@@ -1019,5 +1088,32 @@ mod font_tests {
                 ui.label("→ ● ✘");
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod welcome_tests {
+    use super::*;
+
+    /// Le bandeau d'accueil se dessine en mode apprentissage tant qu'il n'est
+    /// pas écarté, et nulle part ailleurs — le tout sans paniquer en headless.
+    #[test]
+    fn welcome_banner_shows_only_in_learning_until_dismissed() {
+        let ctx = egui::Context::default();
+        let render = |app: &mut App| {
+            let _ = ctx.run(Default::default(), |ctx| app.welcome_banner(ctx));
+        };
+
+        let mut app = App::new();
+        assert_eq!(app.mode, crate::app::UiMode::Learning, "défaut : apprentissage");
+        assert!(!app.welcome_dismissed, "affiché par défaut pour un nouveau venu");
+        render(&mut app); // apprentissage + non écarté : le bandeau se dessine
+
+        app.welcome_dismissed = true;
+        render(&mut app); // écarté : plus rien
+
+        app.welcome_dismissed = false;
+        app.set_ui_mode(crate::app::UiMode::Full);
+        render(&mut app); // mode complet : pas de bandeau
     }
 }

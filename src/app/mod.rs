@@ -326,6 +326,8 @@ pub struct App {
     pub(super) tutorial_current: Option<String>,
     /// Mode d'affichage : apprentissage (épuré) ou complet.
     pub(super) mode: UiMode,
+    /// Bandeau d'accueil (mode apprentissage) écarté une fois pour toutes.
+    pub(super) welcome_dismissed: bool,
     /// Palette de commandes (Ctrl+Maj+P) : ouverte, requête, sélection.
     pub(super) palette_open: bool,
     pub(super) palette_query: String,
@@ -426,6 +428,7 @@ impl App {
             // débogueur nu. Les utilisateurs déjà installés gardent leur choix,
             // que le fichier de réglages restitue par-dessus ce défaut.
             tutorial_enabled: true,
+            welcome_dismissed: false,
             tutorial_progress: crate::tutorial::Progress::default(),
             tutorial_current: None,
             scroll_to_sel: None,
@@ -491,6 +494,7 @@ impl App {
                 "pedagogy_anim" => self.pedagogy_anim = v == "true",
                 "pedagogy_memview" => self.pedagogy_memview = v == "true",
                 "pedagogy_predict" => self.pedagogy_predict = v == "true",
+                "welcome_dismissed" => self.welcome_dismissed = v == "true",
                 "dock" => saved_dock = Some(v.to_string()),
                 _ => {}
             }
@@ -524,7 +528,7 @@ impl App {
             "theme={theme}\nlang={}\nmode={}\ntooltips={}\nasmstd={}\nanimate={}\n\
              pedagogy_anim={}\npedagogy_memview={}\npedagogy_predict={}\n\
              tutorial={}\ntutorial_done={}\ntutorial_current={}\n\
-             dock={}\n",
+             welcome_dismissed={}\ndock={}\n",
             self.lang.key(),
             self.mode.key(),
             self.show_tooltips,
@@ -536,6 +540,7 @@ impl App {
             self.tutorial_enabled,
             self.tutorial_progress.to_string(),
             self.tutorial_current.clone().unwrap_or_default(),
+            self.welcome_dismissed,
             self.dock_layout_string(),
         );
         let _ = std::fs::write(&path, content);
@@ -685,6 +690,7 @@ impl eframe::App for App {
 
         self.menu_bar(ctx);
         self.toolbar(ctx);
+        self.welcome_banner(ctx);
         self.status_bar(ctx);
 
         // Toute la zone centrale est un arbre de panneaux ancrables : chaque
