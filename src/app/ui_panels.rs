@@ -466,19 +466,23 @@ impl App {
                             let t = RichText::new(format!("0x{val:016X}")).monospace();
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
-                                    // Bordure clignotante autour du chip modifié.
+                                    // Bordure clignotante autour du chip modifié ;
+                                    // au repos, un liseré discret comme les cartes de
+                                    // flags, pour que registres et flags forment une
+                                    // même famille visuelle.
                                     let stroke = if changed && blink > 0.0 {
                                         egui::Stroke::new(1.0 + 1.4 * blink, lerp_color(CHANGED, FLASH_BRIGHT, blink))
                                     } else if changed {
                                         egui::Stroke::new(1.0_f32, changed_color(flash))
                                     } else {
-                                        egui::Stroke::NONE
+                                        egui::Stroke::new(1.0_f32, hdr.linear_multiply(0.22))
                                     };
                                     if editable {
                                         let chip = egui::Button::new(t)
                                             .fill(bg)
                                             .stroke(stroke)
-                                            .corner_radius(egui::CornerRadius::same(4));
+                                            .corner_radius(egui::CornerRadius::same(7))
+                                            .min_size(egui::vec2(0.0, 22.0));
                                         let resp = ui.add(chip).on_hover_text(tr("Cliquer pour modifier", "Click to edit", "Clic para editar"));
                                         if resp.hovered() {
                                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -492,8 +496,8 @@ impl App {
                                         egui::Frame::new()
                                             .fill(bg)
                                             .stroke(stroke)
-                                            .corner_radius(egui::CornerRadius::same(4))
-                                            .inner_margin(egui::Margin::symmetric(8, 3))
+                                            .corner_radius(egui::CornerRadius::same(7))
+                                            .inner_margin(egui::Margin::symmetric(8, 4))
                                             .show(ui, |ui| {
                                                 ui.label(t);
                                             });
@@ -857,6 +861,7 @@ impl App {
         let slide = self.blink_progress(ui).map(|p| (1.0 - p) * 26.0).unwrap_or(0.0);
         let pushed = self.prev_snap().is_some_and(|p| rsp < p.regs.rsp);
         let addr_c = self.c_addr();
+        let hdr = self.c_header();
         egui::ScrollArea::vertical()
             .id_salt("stack_scroll")
             .auto_shrink([false, false])
@@ -885,61 +890,75 @@ impl App {
                 };
                 // Le sommet de pile glisse pendant l'animation (effet empilement).
                 let dx = if ped && is_top && pushed { slide } else { 0.0 };
+                // Chaque case est une carte : coin arrondi, liseré teinté par le
+                // rôle (sommet / cadre / corps) — même famille visuelle que les
+                // registres et les flags.
+                let stroke_col = if changed {
+                    changed_color(flash)
+                } else if addr == rsp || addr == rbp {
+                    bar_col
+                } else {
+                    hdr.linear_multiply(0.18)
+                };
                 ui.horizontal(|ui| {
                     ui.add_space(dx);
-                    // Barre verticale colorée (repère visuel du rôle de la case).
-                    let (bar, _) = ui.allocate_exact_size(egui::vec2(4.0, 17.0), egui::Sense::hover());
-                    ui.painter().rect_filled(bar.shrink2(egui::vec2(0.5, 1.0)), 2.0, bar_col);
                     egui::Frame::new()
                         .fill(fill)
-                        .corner_radius(egui::CornerRadius::same(3))
-                        .inner_margin(egui::Margin::symmetric(4, 1))
+                        .stroke(egui::Stroke::new(1.0_f32, stroke_col.linear_multiply(0.6)))
+                        .corner_radius(egui::CornerRadius::same(7))
+                        .inner_margin(egui::Margin::symmetric(8, 4))
                         .show(ui, |ui| {
-                            ui.label(RichText::new(format!("0x{addr:012X}")).monospace().small().color(addr_c));
-                            let mut vt = RichText::new(format!("0x{val:016X}")).monospace();
-                            if changed {
-                                vt = vt.color(if blink > 0.0 {
-                                    lerp_color(CHANGED, FLASH_BRIGHT, blink)
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                // Barre de rôle, à gauche dans la carte.
+                                let (bar, _) = ui.allocate_exact_size(egui::vec2(4.0, 18.0), egui::Sense::hover());
+                                ui.painter().rect_filled(bar, 2.0, bar_col);
+                                ui.add_space(3.0);
+                                ui.label(RichText::new(format!("0x{addr:012X}")).monospace().small().color(addr_c));
+                                let mut vt = RichText::new(format!("0x{val:016X}")).monospace();
+                                if changed {
+                                    vt = vt.color(if blink > 0.0 {
+                                        lerp_color(CHANGED, FLASH_BRIGHT, blink)
+                                    } else {
+                                        changed_color(flash)
+                                    });
+                                }
+                                ui.label(vt);
+                                let marker = if addr == rsp && addr == rbp {
+                                    "◀ RSP,RBP"
+                                } else if addr == rsp {
+                                    "◀ RSP"
+                                } else if addr == rbp {
+                                    "◀ RBP"
                                 } else {
-                                    changed_color(flash)
-                                });
-                            }
-                            ui.label(vt);
-                            let marker = if addr == rsp && addr == rbp {
-                                "◀ RSP,RBP"
-                            } else if addr == rsp {
-                                "◀ RSP"
-                            } else if addr == rbp {
-                                "◀ RBP"
-                            } else {
-                                ""
-                            };
-                            if !marker.is_empty() {
-                                ui.label(
-                                    RichText::new(marker)
-                                        .monospace()
-                                        .small()
-                                        .strong()
-                                        .color(if addr == rsp { PUSH_COL } else { ACTION }),
-                                );
-                            }
-                            // Rôle de la case dans le cadre d'appel : c'est ce qui
-                            // transforme une colonne d'adresses en structure lisible.
-                            if let Some(kind) = crate::abi::classify_slot(addr, rbp) {
-                                let (txt, col) = match kind {
-                                    crate::abi::SlotKind::ReturnAddress => {
-                                        (kind.label(lang), FALSE_COL)
-                                    }
-                                    crate::abi::SlotKind::SavedFramePointer => {
-                                        (kind.label(lang), ACTION)
-                                    }
-                                    _ => (kind.label(lang), self.c_bytes()),
+                                    ""
                                 };
-                                ui.label(RichText::new(txt).small().italics().color(col));
-                            }
+                                // Marqueurs de rôle alignés à droite de la carte.
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    // Rôle de la case dans le cadre d'appel : ce qui
+                                    // transforme une colonne d'adresses en structure.
+                                    if let Some(kind) = crate::abi::classify_slot(addr, rbp) {
+                                        let (txt, col) = match kind {
+                                            crate::abi::SlotKind::ReturnAddress => (kind.label(lang), FALSE_COL),
+                                            crate::abi::SlotKind::SavedFramePointer => (kind.label(lang), ACTION),
+                                            _ => (kind.label(lang), self.c_bytes()),
+                                        };
+                                        ui.label(RichText::new(txt).small().italics().color(col));
+                                    }
+                                    if !marker.is_empty() {
+                                        ui.label(
+                                            RichText::new(marker)
+                                                .monospace()
+                                                .small()
+                                                .strong()
+                                                .color(if addr == rsp { PUSH_COL } else { ACTION }),
+                                        );
+                                    }
+                                });
+                            });
                         });
                 });
-                ui.add_space(1.0);
+                ui.add_space(3.0);
             }
         });
     }
