@@ -372,26 +372,27 @@ impl App {
                     ui.label(tr("IDE pédagogique NASM x86-64", "Educational NASM x86-64 IDE", "IDE educativo NASM x86-64"));
                 });
                 ui.add_space(6.0);
-                // Bandeau alpha
+                // Bandeau bêta : plus serein que l'alpha, mais on rappelle que
+                // c'est une préversion.
                 egui::Frame::default()
-                    .fill(egui::Color32::from_rgb(180, 60, 20))
+                    .fill(ACTION.linear_multiply(0.9))
                     .corner_radius(egui::CornerRadius::same(6))
                     .inner_margin(egui::Margin::symmetric(12, 6))
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             ui.label(
-                                RichText::new(tr("⚠  VERSION ALPHA", "⚠  ALPHA VERSION", "⚠  VERSIÓN ALFA"))
+                                RichText::new(tr("🔷  VERSION BÊTA 1", "🔷  BETA 1 VERSION", "🔷  VERSIÓN BETA 1"))
                                     .strong()
                                     .color(egui::Color32::WHITE),
                             );
                             ui.label(
                                 RichText::new(tr(
-                                    "Logiciel en cours de développement — à des fins de test uniquement.\nNe pas utiliser en production.",
-                                    "Software under development — for testing purposes only.\nNot suitable for production use.",
-                                    "Software en desarrollo — solo para pruebas.\nNo apto para uso en producción.",
+                                    "Préversion en cours de finition — fonctionnelle, mais des détails peuvent encore changer.\nVos retours sont les bienvenus.",
+                                    "Pre-release under polishing — functional, but details may still change.\nFeedback is welcome.",
+                                    "Preversión en pulido — funcional, pero algunos detalles pueden cambiar.\nSus comentarios son bienvenidos.",
                                 ))
                                 .small()
-                                .color(egui::Color32::from_rgb(255, 210, 200)),
+                                .color(egui::Color32::from_rgb(255, 236, 214)),
                             );
                         });
                     });

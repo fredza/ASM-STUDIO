@@ -273,6 +273,10 @@ pub struct App {
     /// Registre retenu au clavier dans le panneau REGISTERS (index dans
     /// `Registers::named`), surligné et éditable par Entrée.
     pub(super) reg_sel: usize,
+    /// Nombre de colonnes de registres réellement affichées au dernier rendu
+    /// (adapté à la largeur du panneau). ↑/↓ sautent d'autant de registres pour
+    /// suivre ce que l'œil voit dans la grille.
+    pub(super) reg_cols: usize,
     /// Registre en cours d'édition (laboratoire mémoire) et son tampon de saisie.
     pub(super) edit_reg: Option<&'static str>,
     pub(super) edit_buf: String,
@@ -397,6 +401,7 @@ impl App {
             mem_input: String::new(),
             mem_poke: String::new(),
             reg_sel: 0,
+            reg_cols: 2,
             edit_reg: None,
             edit_buf: String::new(),
             edit_focus: false,

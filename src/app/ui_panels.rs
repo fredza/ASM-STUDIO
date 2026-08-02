@@ -303,12 +303,14 @@ impl App {
         if n == 0 {
             return;
         }
-        // Deux registres par ligne : ↑/↓ sautent une ligne entière, ce qui suit
-        // ce que l'œil voit plutôt que l'ordre de déclaration.
+        // ↑/↓ sautent une ligne entière (autant de registres qu'il y a de
+        // colonnes affichées), ce qui suit ce que l'œil voit plutôt que l'ordre
+        // de déclaration.
+        let step = self.reg_cols.max(1);
         self.reg_sel = if down {
-            (self.reg_sel + 2).min(n - 1)
+            (self.reg_sel + step).min(n - 1)
         } else {
-            self.reg_sel.saturating_sub(2)
+            self.reg_sel.saturating_sub(step)
         };
         self.scroll_to_sel = Some(super::dock::Panel::Registers);
     }
@@ -365,13 +367,17 @@ impl App {
         let mut stop_edit = false;
 
         let hdr = self.c_header();
+        // Nombre de colonnes selon la largeur : jusqu'à trois registres par ligne
+        // quand le panneau est large (on remplit l'espace au lieu de le laisser
+        // vide à droite), moins s'il est étroit pour qu'une valeur 64 bits ne
+        // déborde jamais. Chaque registre occupe deux cellules : le nom, la valeur.
+        let cols = ((ui.available_width() / 205.0).floor() as usize).clamp(1, 3);
+        self.reg_cols = cols;
         egui::ScrollArea::vertical()
             .id_salt("regs_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                // Deux registres par ligne (grille à 4 colonnes) : tout tient sans
-                // ascenseur et la largeur du panneau est mieux exploitée.
-                egui::Grid::new("regs_grid").num_columns(4).spacing([20.0, 6.0]).show(ui, |ui| {
+                egui::Grid::new("regs_grid").num_columns(cols * 2).spacing([22.0, 8.0]).show(ui, |ui| {
                     for (i, (name, val, pval)) in rows.iter().enumerate() {
                         let (name, val, pval) = (*name, *val, *pval);
                         // Registre retenu au clavier : surligné, pour que les
@@ -528,7 +534,7 @@ impl App {
                                 }
                             });
                         }
-                        if i % 2 == 1 {
+                        if (i + 1) % cols == 0 {
                             ui.end_row();
                         }
                     }
@@ -548,47 +554,88 @@ impl App {
     }
 
     pub(super) fn flags_ui(&self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let (Some(snap), Some(prev)) = (self.snap(), self.prev_snap()) else {
-            ui.weak("—");
+            ui.weak(tr("Aucun programme lancé.", "No program running.", "Ningún programa en ejecución."));
             return;
         };
         let flash = self.flash_progress(ui);
         let flags = Flags::from_eflags(snap.regs.eflags);
         let prevf = Flags::from_eflags(prev.regs.eflags);
-        // Disposition horizontale compacte (grille 3×2) : tient sans ascenseur
-        // dans le panneau étroit. Chaque cellule = « NOM ● valeur ».
-        const PER_ROW: usize = 3;
-        egui::Grid::new("flags_grid").num_columns(PER_ROW).spacing([16.0, 6.0]).show(ui, |ui| {
-            for (i, ((name, val), (_, pval))) in
-                flags.named().iter().zip(prevf.named()).enumerate()
-            {
-                let changed = *val != pval;
-                let dot = if changed {
-                    changed_color(flash)
-                } else if *val {
-                    FLAG_ON
-                } else {
-                    FLAG_OFF
-                };
-                ui.horizontal(|ui| {
-                    let mut nm = RichText::new(*name).monospace().strong();
-                    if changed {
-                        nm = nm.color(changed_color(flash));
-                    }
-                    ui.label(nm);
-                    ui.label(RichText::new("●").color(dot).size(10.0));
-                    ui.label(
-                        RichText::new(if *val { "1" } else { "0" })
-                            .monospace()
-                            .strong()
-                            .color(if *val { FLAG_ON } else { FLAG_OFF }),
-                    );
-                });
-                if (i + 1) % PER_ROW == 0 {
-                    ui.end_row();
+
+        // Nom complet de chaque drapeau : le sigle seul ne dit rien à un débutant.
+        let full = |name: &str| match name {
+            "ZF" => tr("Zéro", "Zero", "Cero"),
+            "CF" => tr("Retenue", "Carry", "Acarreo"),
+            "OF" => tr("Débordement", "Overflow", "Desbordamiento"),
+            "SF" => tr("Signe", "Sign", "Signo"),
+            "PF" => tr("Parité", "Parity", "Paridad"),
+            "AF" => tr("Retenue aux.", "Aux. carry", "Acarreo aux."),
+            _ => "",
+        };
+
+        let items: Vec<(&'static str, bool, bool)> = flags
+            .named()
+            .iter()
+            .zip(prevf.named())
+            .map(|((n, v), (_, p))| (*n, *v, p))
+            .collect();
+
+        // Des cartes qui occupent la largeur au lieu de six sigles perdus dans un
+        // coin : jusqu'à trois par ligne quand la place le permet, deux sinon.
+        let cols = ((ui.available_width() / 150.0).floor() as usize).clamp(1, 3);
+        ui.add_space(4.0);
+        for chunk in items.chunks(cols) {
+            ui.columns(cols, |c| {
+                for (j, (name, val, pval)) in chunk.iter().enumerate() {
+                    let changed = *val != *pval;
+                    // Vert quand actif, gris quand inactif, orange quand il vient
+                    // de basculer — l'œil repère le drapeau qui a changé.
+                    let (fill, stroke_col, accent) = if changed {
+                        let cc = changed_color(flash);
+                        (cc.linear_multiply(0.20), cc, cc)
+                    } else if *val {
+                        (FLAG_ON.linear_multiply(0.16), FLAG_ON.linear_multiply(0.55), FLAG_ON)
+                    } else {
+                        (c[j].visuals().faint_bg_color, FLAG_OFF.linear_multiply(0.30), FLAG_OFF)
+                    };
+                    egui::Frame::new()
+                        .fill(fill)
+                        .stroke(egui::Stroke::new(1.0_f32, stroke_col))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .show(&mut c[j], |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        RichText::new(*name)
+                                            .monospace()
+                                            .strong()
+                                            .size(16.0)
+                                            .color(accent),
+                                    );
+                                    ui.label(RichText::new(full(name)).small().weak());
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            RichText::new(if *val { "1" } else { "0" })
+                                                .monospace()
+                                                .strong()
+                                                .size(22.0)
+                                                .color(accent),
+                                        );
+                                    },
+                                );
+                            });
+                        });
                 }
-            }
-        });
+            });
+            ui.add_space(8.0);
+        }
     }
 
     // ---------- Explorateur de fichiers (panneau de gauche) ----------
