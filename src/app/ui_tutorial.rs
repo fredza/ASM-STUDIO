@@ -13,11 +13,17 @@ use crate::i18n;
 use crate::tutorial::{self, Level, Lesson};
 
 impl App {
-    /// Remet le parcours à zéro : oublie les leçons terminées et rouvre au
-    /// sommaire. La progression effacée est aussitôt persistée.
+    /// Remet le parcours à zéro, comme au tout premier lancement : oublie les
+    /// leçons terminées, rouvre le sommaire, rallume le panneau Tutoriel et fait
+    /// réapparaître le bandeau d'accueil. Le tout est aussitôt persisté.
     pub(super) fn reset_tutorial(&mut self) {
         self.tutorial_progress = crate::tutorial::Progress::default();
         self.tutorial_current = None;
+        // Repartir de zéro, c'est retrouver l'expérience du nouveau venu.
+        self.welcome_dismissed = false;
+        self.tutorial_enabled = true;
+        self.sync_tutorial_panel();
+        self.focus_panel(super::dock::Panel::Tutorial);
         self.status = i18n::tr3(
             self.lang,
             "Progression du tutoriel réinitialisée.",
@@ -314,14 +320,18 @@ mod tests {
         assert_eq!(app.tutorial_current.as_deref(), Some("registres"));
     }
 
-    /// « Réinitialiser la progression » oublie les leçons terminées et rouvre
-    /// le parcours au sommaire.
+    /// « Réinitialiser » fait repartir de zéro comme au premier lancement :
+    /// progression oubliée, sommaire rouvert, panneau Tutoriel et bandeau
+    /// d'accueil de retour.
     #[test]
-    fn resetting_the_tutorial_forgets_progress_and_returns_to_summary() {
+    fn resetting_the_tutorial_restores_the_newcomer_state() {
         let mut app = App::new();
         app.tutorial_progress.mark_done("registres");
         app.tutorial_progress.mark_done("boucles");
         app.tutorial_current = Some("boucles".to_string());
+        app.welcome_dismissed = true;
+        app.tutorial_enabled = false;
+        app.sync_tutorial_panel();
 
         app.reset_tutorial();
 
@@ -332,6 +342,9 @@ mod tests {
             "aucune leçon débutant ne reste marquée terminée"
         );
         assert!(app.tutorial_current.is_none(), "retour au sommaire");
+        assert!(!app.welcome_dismissed, "le bandeau d'accueil réapparaît");
+        assert!(app.tutorial_enabled, "le tutoriel est rallumé");
+        assert!(app.panel_is_open(Panel::Tutorial), "et son panneau est rouvert");
     }
 
     /// Toutes les clés de panneau du catalogue doivent exister : une faute de
