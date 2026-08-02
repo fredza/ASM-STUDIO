@@ -660,6 +660,48 @@ impl App {
     pub(super) fn c_sel_row(&self) -> Color32 {
         if self.dark { SEL_ROW } else { Color32::from_rgb(0xD5, 0xE2, 0xF4) }
     }
+
+    /// Nombre de boîtes de dialogue (fenêtres flottantes) actuellement ouvertes.
+    /// Sert à repérer, dans `update`, l'image où l'une vient de se fermer : en
+    /// rendu à la demande — c'est le cas ici, on ne repeint que sur événement —
+    /// l'image qui EFFACE la fenêtre fermée n'est pas toujours présentée d'elle-
+    /// même (frame callback Wayland, animations coupées…). Un repaint explicite
+    /// à cet instant garantit que le dialogue disparaît sans attendre le prochain
+    /// mouvement de souris.
+    fn open_dialog_count(&self) -> usize {
+        use crate::updater::UpdateState;
+        let updater_shown = matches!(
+            self.updater.state,
+            UpdateState::Checking
+                | UpdateState::Available(_)
+                | UpdateState::Downloading(_)
+                | UpdateState::Done
+                | UpdateState::Error(_)
+        );
+        [
+            self.show_about,
+            self.show_shortcuts,
+            self.show_settings,
+            self.show_calculator,
+            self.palette_open,
+            self.pedagogy_predict,
+            self.microscope.is_some(),
+            self.diagnosis.is_some(),
+            updater_shown,
+        ]
+        .into_iter()
+        .filter(|&open| open)
+        .count()
+    }
+
+    /// À appeler après avoir rendu toutes les boîtes de dialogue, avec le nombre
+    /// qui était ouvert AVANT. Si l'une s'est refermée pendant l'image, force un
+    /// rendu : voir [`open_dialog_count`](Self::open_dialog_count) pour le motif.
+    fn repaint_on_dialog_close(&self, ctx: &egui::Context, opened_before: usize) {
+        if self.open_dialog_count() < opened_before {
+            ctx.request_repaint();
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -697,6 +739,12 @@ impl eframe::App for App {
         // panneau est un onglet que l'on déplace, empile ou détache en fenêtre.
         self.dock_ui(ctx);
 
+        // Une boîte fermée par son bouton (« Fermer », « Valider »…) bascule son
+        // état APRÈS avoir été peinte cette image. On mémorise combien étaient
+        // ouvertes avant, pour forcer un rendu si l'une s'est refermée : sinon,
+        // en rendu à la demande, l'ancienne image resterait affichée jusqu'au
+        // prochain événement (dialogue « collé » à l'écran).
+        let dialogs_before = self.open_dialog_count();
         self.about_window(ctx);
         self.shortcuts_window(ctx);
         self.settings_window(ctx);
@@ -706,6 +754,7 @@ impl eframe::App for App {
         self.predict_window(ctx);
         self.diagnosis_window(ctx);
         self.update_window(ctx);
+        self.repaint_on_dialog_close(ctx, dialogs_before);
         self.updater.poll();
     }
 }
@@ -746,6 +795,59 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le compteur reflète bien chaque boîte de dialogue, une par une.
+    #[test]
+    fn open_dialog_count_tracks_each_window() {
+        let mut app = App::new();
+        assert_eq!(app.open_dialog_count(), 0, "aucune boîte au départ");
+        app.show_settings = true;
+        assert_eq!(app.open_dialog_count(), 1);
+        app.microscope = Some(0x1000);
+        assert_eq!(app.open_dialog_count(), 2);
+        app.show_settings = false;
+        app.microscope = None;
+        assert_eq!(app.open_dialog_count(), 0);
+    }
+
+    /// Fermer une boîte pendant l'image doit forcer un rendu : sinon, en mode
+    /// rendu à la demande, l'ancienne image resterait « collée » à l'écran
+    /// jusqu'au prochain événement. C'est le cœur du correctif.
+    #[test]
+    fn closing_a_dialog_requests_a_repaint() {
+        use std::time::Duration;
+        let app = App::new(); // plus aucune boîte ouverte (0)
+        let opened_before = 1; // ... alors qu'une l'était en début d'image
+
+        let ctx = egui::Context::default();
+        let out = ctx.run(Default::default(), |ctx| {
+            app.repaint_on_dialog_close(ctx, opened_before);
+        });
+        let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        assert_eq!(delay, Duration::ZERO, "la fermeture doit replanifier un rendu");
+    }
+
+    /// À l'inverse, sans fermeture, on ne réveille pas l'application pour rien :
+    /// le mode rendu à la demande doit rester économe.
+    #[test]
+    fn a_stable_frame_does_not_force_a_repaint() {
+        use std::time::Duration;
+        let mut app = App::new();
+        app.show_settings = true; // une boîte ouverte, et elle le reste
+        let opened_before = app.open_dialog_count();
+
+        let ctx = egui::Context::default();
+        // La première image d'un contexte neuf demande toujours un rendu de plus
+        // (stabilisation polices/layout) : on stabilise avant de mesurer.
+        for _ in 0..4 {
+            let _ = ctx.run(Default::default(), |_| {});
+        }
+        let out = ctx.run(Default::default(), |ctx| {
+            app.repaint_on_dialog_close(ctx, opened_before);
+        });
+        let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        assert!(delay > Duration::from_secs(1), "aucune fermeture ⇒ pas de repaint forcé");
+    }
 
     /// Vérifie que la logique timeline (head-follow + clamp min/max) est correcte,
     /// indépendamment du rendu egui.
