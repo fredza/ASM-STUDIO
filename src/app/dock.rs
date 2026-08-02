@@ -882,8 +882,11 @@ mod tests {
     #[test]
     fn the_tutorial_switch_drives_its_panel() {
         let mut app = App::new();
-        assert!(!app.tutorial_enabled, "désactivé par défaut");
-        assert!(!app.panel_is_open(Panel::Tutorial), "et son panneau est absent");
+        // Départ d'un état connu : ce test porte sur l'interrupteur, pas sur le
+        // défaut (qui est « activé » pour accueillir les nouveaux venus).
+        app.tutorial_enabled = false;
+        app.sync_tutorial_panel();
+        assert!(!app.panel_is_open(Panel::Tutorial), "fermé quand désactivé");
 
         app.tutorial_enabled = true;
         app.sync_tutorial_panel();

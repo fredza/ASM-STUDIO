@@ -421,7 +421,11 @@ impl App {
             calc_input: String::new(),
             calc_base: 10,
             icons: None,
-            tutorial_enabled: false,
+            // Activé par défaut : un nouveau venu démarre en mode apprentissage
+            // et voit d'emblée le parcours guidé, au lieu d'un écran de
+            // débogueur nu. Les utilisateurs déjà installés gardent leur choix,
+            // que le fichier de réglages restitue par-dessus ce défaut.
+            tutorial_enabled: true,
             tutorial_progress: crate::tutorial::Progress::default(),
             tutorial_current: None,
             scroll_to_sel: None,

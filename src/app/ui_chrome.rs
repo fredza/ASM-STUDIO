@@ -569,34 +569,36 @@ impl App {
                 let (ic_run, ic_debug, ic_build) = (ic(|i| &i.run), ic(|i| &i.debug), ic(|i| &i.assembler));
                 let (ic_stop, ic_restart) = (ic(|i| &i.stop), ic(|i| &i.restart));
 
+                // Libellés dans la langue de l'élève : « Run » figé en anglais
+                // détonnait dans une interface par ailleurs traduite.
                 // Run : accent quand inactif, grisé quand un programme tourne.
                 if self
-                    .tip(accent_button(ui, ic_run.as_ref(), "Run", !running), tr("Lancer (F5)", "Run (F5)", "Ejecutar (F5)"))
+                    .tip(accent_button(ui, ic_run.as_ref(), tr("Lancer", "Run", "Ejecutar"), !running), tr("Lancer (F5)", "Run (F5)", "Ejecutar (F5)"))
                     .clicked()
                 {
                     self.launch();
                 }
                 // Next : exécute l'instruction suivante (accent quand disponible).
                 if self
-                    .tip(accent_button(ui, ic_debug.as_ref(), "Next", can_step), tr("Instruction suivante (F10)", "Next instruction (F10)", "Instrucción siguiente (F10)"))
+                    .tip(accent_button(ui, ic_debug.as_ref(), tr("Suivant", "Next", "Siguiente"), can_step), tr("Instruction suivante (F10)", "Next instruction (F10)", "Instrucción siguiente (F10)"))
                     .clicked()
                 {
                     self.step();
                 }
                 // Stop.
-                if self.tip(bordered_button(ui, ic_stop.as_ref(), "Stop", running), tr("Arrêter (Échap)", "Stop (Esc)", "Detener (Esc)")).clicked() {
+                if self.tip(bordered_button(ui, ic_stop.as_ref(), tr("Arrêter", "Stop", "Detener"), running), tr("Arrêter (Échap)", "Stop (Esc)", "Detener (Esc)")).clicked() {
                     self.stop();
                 }
                 // Restart = relancer depuis le début.
                 if self
-                    .tip(icon_button(ui, ic_restart.as_ref(), "Restart"), tr("Relancer (F5)", "Restart (F5)", "Reiniciar (F5)"))
+                    .tip(icon_button(ui, ic_restart.as_ref(), tr("Relancer", "Restart", "Reiniciar")), tr("Relancer (F5)", "Restart (F5)", "Reiniciar (F5)"))
                     .clicked()
                 {
                     self.launch();
                 }
                 ui.separator();
                 if self
-                    .tip(icon_button(ui, ic_build.as_ref(), "Build"), tr("Assembler + Lier (Ctrl+B)", "Assemble + Link (Ctrl+B)", "Ensamblar + Enlazar (Ctrl+B)"))
+                    .tip(icon_button(ui, ic_build.as_ref(), tr("Assembler", "Build", "Ensamblar")), tr("Assembler + Lier (Ctrl+B)", "Assemble + Link (Ctrl+B)", "Ensamblar + Enlazar (Ctrl+B)"))
                     .clicked()
                 {
                     self.build();
