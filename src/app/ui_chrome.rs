@@ -294,9 +294,11 @@ impl App {
         } else {
             egui::Visuals::light()
         };
-        v.window_corner_radius = CornerRadius::same(8);
-        v.menu_corner_radius = CornerRadius::same(6);
-        v.selection.bg_fill = ACCENT.linear_multiply(0.45);
+        // Angles plus ronds et sélection plus douce : l'interface respire, le
+        // bleu d'accent ne claque plus autant sous le texte sélectionné.
+        v.window_corner_radius = CornerRadius::same(10);
+        v.menu_corner_radius = CornerRadius::same(8);
+        v.selection.bg_fill = ACCENT.linear_multiply(0.38);
         v.hyperlink_color = ACCENT;
         for w in [
             &mut v.widgets.inactive,
@@ -305,7 +307,7 @@ impl App {
             &mut v.widgets.open,
             &mut v.widgets.noninteractive,
         ] {
-            w.corner_radius = CornerRadius::same(5);
+            w.corner_radius = CornerRadius::same(7);
         }
         if dark {
             v.panel_fill = Color32::from_rgb(0x1E, 0x1E, 0x22);
