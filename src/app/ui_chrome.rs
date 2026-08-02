@@ -5,7 +5,7 @@ use crate::debugger::RunState;
 
 use super::{
     App, ACCENT, FLAG_ON, FLAG_OFF, FALSE_COL, CHANGED,
-    accent_button, bordered_button, icon_button, icon_btn_widget,
+    accent_button, bordered_button, icon_button,
 };
 
 impl App {
@@ -567,8 +567,7 @@ impl App {
                 // Handles clonés (Arc bon marché) => pas d'emprunt de self dans la barre.
                 let ic = |f: fn(&super::Icons) -> &egui::TextureHandle| self.icons.as_ref().map(|i| f(i).clone());
                 let (ic_run, ic_debug, ic_build) = (ic(|i| &i.run), ic(|i| &i.debug), ic(|i| &i.assembler));
-                let (ic_pause, ic_stop) = (ic(|i| &i.pause), ic(|i| &i.stop));
-                let (ic_restart, ic_attach) = (ic(|i| &i.restart), ic(|i| &i.attach));
+                let (ic_stop, ic_restart) = (ic(|i| &i.stop), ic(|i| &i.restart));
 
                 // Run : accent quand inactif, grisé quand un programme tourne.
                 if self
@@ -577,8 +576,6 @@ impl App {
                 {
                     self.launch();
                 }
-                // Pause : non implémenté (step-by-step uniquement), toujours grisé.
-                ui.add_enabled(false, icon_btn_widget(ic_pause.as_ref(), "Pause"));
                 // Next : exécute l'instruction suivante (accent quand disponible).
                 if self
                     .tip(accent_button(ui, ic_debug.as_ref(), "Next", can_step), tr("Instruction suivante (F10)", "Next instruction (F10)", "Instrucción siguiente (F10)"))
@@ -604,8 +601,9 @@ impl App {
                 {
                     self.build();
                 }
-                // Attach : non implémenté.
-                ui.add_enabled(false, icon_btn_widget(ic_attach.as_ref(), "Attach"));
+                // « Pause » et « Attach » n'existaient qu'en boutons grisés en
+                // permanence — des affordances mortes, déroutantes pour un
+                // débutant. Retirées : la barre ne montre que ce qui agit.
                 // (Réglages : accessible via le menu Aide — pas de doublon ici.)
             });
             ui.add_space(3.0);
@@ -668,10 +666,15 @@ impl App {
                         ui.colored_label(FLAG_OFF, format!("○ {}", tr("Prêt", "Ready", "Listo")));
                     }
                 }
-                ui.separator();
-                ui.label(RichText::new("Arch : x86_64").color(self.c_header()));
-                ui.separator();
-                ui.label(RichText::new("Mode : 64-bit").color(self.c_header()));
+                // « Arch : x86_64 » et « Mode : 64-bit » ne disent rien à un
+                // débutant : du bruit en mode apprentissage. On les réserve au
+                // mode complet, où ce repère technique a sa place.
+                if self.mode == super::UiMode::Full {
+                    ui.separator();
+                    ui.label(RichText::new("Arch : x86_64").color(self.c_header()));
+                    ui.separator();
+                    ui.label(RichText::new("Mode : 64-bit").color(self.c_header()));
+                }
                 if let Some(s) = self.snap() {
                     ui.separator();
                     ui.label(format!("{} : 0x{:X}", tr("Arrêté à", "Stopped at", "Detenido en"), s.regs.rip));

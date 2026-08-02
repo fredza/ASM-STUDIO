@@ -196,9 +196,7 @@ pub(super) struct Icons {
     pub(super) heap: egui::TextureHandle,
     // Icônes complémentaires (même thème, générées) — boutons et panneaux.
     pub(super) stop: egui::TextureHandle,
-    pub(super) pause: egui::TextureHandle,
     pub(super) restart: egui::TextureHandle,
-    pub(super) attach: egui::TextureHandle,
     pub(super) memory: egui::TextureHandle,
     pub(super) console: egui::TextureHandle,
 }
@@ -217,9 +215,7 @@ impl Icons {
             stack: ic!("stack"),
             heap: ic!("heap"),
             stop: ic!("stop"),
-            pause: ic!("pause"),
             restart: ic!("restart"),
-            attach: ic!("attach"),
             memory: ic!("memory"),
             console: ic!("console"),
         }

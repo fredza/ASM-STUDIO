@@ -157,15 +157,6 @@ pub(super) fn bordered_button(
     ui.add_enabled(enabled, btn)
 }
 
-/// Construit un widget bouton (icône + libellé) sans l'ajouter — pour
-/// `ui.add_enabled(...)`. La source d'image est `'static` (TextureId).
-pub(super) fn icon_btn_widget(icon: Option<&egui::TextureHandle>, label: &'static str) -> egui::Button<'static> {
-    match btn_icon(icon) {
-        Some(img) => egui::Button::image_and_text(img, label),
-        None => egui::Button::new(label),
-    }
-}
-
 /// Source d'image dimensionnée pour un bouton (16px), à partir d'une icône.
 pub(super) fn btn_icon(icon: Option<&egui::TextureHandle>) -> Option<egui::load::SizedTexture> {
     icon.map(|t| egui::load::SizedTexture::new(t.id(), egui::vec2(16.0, 16.0)))
