@@ -315,6 +315,9 @@ pub struct App {
     pub(super) show_calculator: bool,
     /// Saisie de la calculatrice multi-base (texte brut, parsé selon `calc_base`).
     pub(super) calc_input: String,
+    /// Second opérande de la calculatrice, et opération choisie.
+    pub(super) calc_input_b: String,
+    pub(super) calc_op: parse::CalcOp,
     /// Base d'entrée de la calculatrice : 2, 8, 10 ou 16.
     pub(super) calc_base: u32,
     /// Icônes (chargées au premier frame, quand le contexte egui existe).
@@ -428,7 +431,11 @@ impl App {
             show_shortcuts: false,
             show_calculator: false,
             calc_input: String::new(),
-            calc_base: 10,
+            calc_input_b: String::new(),
+            calc_op: parse::CalcOp::And,
+            // Hexadécimal par défaut : c'est la base dans laquelle on lit un
+            // registre, une adresse ou un masque.
+            calc_base: 16,
             icons: None,
             // Activé par défaut : un nouveau venu démarre en mode apprentissage
             // et voit d'emblée le parcours guidé, au lieu d'un écran de

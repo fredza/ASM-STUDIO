@@ -6,9 +6,8 @@ use crate::i18n;
 use crate::syscall;
 
 use super::{
-    App, ACTION, CHANGED, FALSE_COL, PUSH_COL, POP_COL,
+    App, ACCENT, ACTION, CHANGED, FALSE_COL, PUSH_COL, POP_COL,
     micro_stack, micro_static_flags,
-    calc_parse, calc_format,
 };
 
 /// En-tête d'une section de réglages : même rythme vertical pour toutes,
@@ -24,6 +23,11 @@ fn section(ui: &mut egui::Ui, title: &str) {
 /// le texte reste lisible sans les astérisques parasites).
 fn strip_bold(s: &str) -> String {
     s.replace("**", "")
+}
+
+/// Libellé « bit » pour l'infobulle de la grille de bits.
+fn tr_bit(lang: crate::i18n::Lang) -> &'static str {
+    i18n::tr3(lang, "bit", "bit", "bit")
 }
 
 impl App {
@@ -800,6 +804,87 @@ impl App {
 
     // ---------- Calculatrice multi-base ----------
 
+    /// Affiche une valeur bit à bit, groupée par octets, avec les bits
+    /// cliquables. Renvoie la valeur éventuellement modifiée.
+    ///
+    /// C'est la vue qui manque partout ailleurs : on lit `0x2A` sans voir que
+    /// c'est `0010 1010`, et on manipule des masques sans voir ce qu'ils
+    /// éteignent. Ici, cliquer un bit le bascule et toutes les bases suivent.
+    fn bit_grid(&self, ui: &mut egui::Ui, value: i64, editable: bool) -> Option<i64> {
+        let hdr = self.c_header();
+        let width = super::calc_width_bytes(value);
+        let bytes = super::calc_bytes_of(value, width);
+        let mut changed: Option<i64> = None;
+
+        egui::ScrollArea::horizontal()
+            .id_salt("calc_bits")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (bi, byte) in bytes.iter().enumerate() {
+                        // Rang du bit de poids fort de cet octet.
+                        let high = (width - 1 - bi) * 8 + 7;
+                        ui.vertical(|ui| {
+                            // Ligne des bits.
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 1.0;
+                                for (k, on) in super::calc_bits_of(*byte).iter().enumerate() {
+                                    let rank = high - k;
+                                    let col = if *on { ACTION } else { self.c_bytes() };
+                                    let txt = RichText::new(if *on { "1" } else { "0" })
+                                        .monospace()
+                                        .size(13.0)
+                                        .color(col);
+                                    let btn = egui::Button::new(txt)
+                                        .min_size(egui::vec2(15.0, 19.0))
+                                        .fill(if *on {
+                                            ACTION.linear_multiply(0.16)
+                                        } else {
+                                            egui::Color32::TRANSPARENT
+                                        })
+                                        .corner_radius(egui::CornerRadius::same(2));
+                                    let r = ui.add_enabled(editable, btn);
+                                    if editable {
+                                        let r = r.on_hover_text(format!(
+                                            "{} {rank}",
+                                            tr_bit(self.lang)
+                                        ));
+                                        if r.clicked() {
+                                            changed = Some(super::calc_toggle_bit(value, rank as u32));
+                                        }
+                                    }
+                                }
+                            });
+                            // Rangs des extrémités de l'octet, et sa valeur hexa.
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 1.0;
+                                ui.label(
+                                    RichText::new(format!("{high}"))
+                                        .monospace()
+                                        .size(8.5)
+                                        .color(hdr),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            RichText::new(format!("{:02X}", byte))
+                                                .monospace()
+                                                .size(9.5)
+                                                .color(self.c_mnemonic()),
+                                        );
+                                    },
+                                );
+                            });
+                        });
+                        if bi + 1 < bytes.len() {
+                            ui.add_space(5.0);
+                        }
+                    }
+                });
+            });
+        changed
+    }
+
     pub(super) fn calculator_window(&mut self, ctx: &egui::Context) {
         if !self.show_calculator {
             return;
@@ -811,69 +896,185 @@ impl App {
         let mut open = true;
         egui::Window::new(tr("Calculatrice", "Calculator", "Calculadora"))
             .collapsible(false)
-            .resizable(false)
-            .default_width(360.0)
+            .resizable(true)
+            .default_width(520.0)
+            .min_width(400.0)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
-                // Sélecteur de base d'entrée.
+                // Sélecteur de base d'entrée. Hexa en tête : c'est la base dans
+                // laquelle on lit un registre, une adresse ou un masque.
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(tr("Base d'entrée :", "Input base:", "Base de entrada:")).color(hdr));
-                    ui.radio_value(&mut self.calc_base, 10, "Dec");
+                    ui.label(RichText::new(tr("Base :", "Base:", "Base:")).color(hdr));
                     ui.radio_value(&mut self.calc_base, 16, "Hex");
                     ui.radio_value(&mut self.calc_base, 2, "Bin");
+                    ui.radio_value(&mut self.calc_base, 10, "Dec");
                     ui.radio_value(&mut self.calc_base, 8, "Oct");
                 });
-                ui.add_space(4.0);
+                ui.add_space(6.0);
 
-                // Champ de saisie.
-                let hint = match self.calc_base {
-                    16 => "deadbeef",
-                    2  => "10110100",
-                    8  => "377",
-                    _  => "42",
-                };
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.calc_input)
-                        .desired_width(ui.available_width())
-                        .font(egui::TextStyle::Monospace)
-                        .hint_text(hint),
-                );
-                // Filtre les caractères invalides pour la base courante.
-                // En base 10, le signe '-' est autorisé en première position.
                 let base = self.calc_base;
-                if base == 10 {
-                    let neg = self.calc_input.starts_with('-');
-                    self.calc_input.retain(|c| c.is_ascii_digit());
-                    if neg {
-                        self.calc_input.insert(0, '-');
+                let hint = match base {
+                    16 => "deadbeef",
+                    2 => "10110100",
+                    8 => "377",
+                    _ => "42",
+                };
+                // Filtre partagé par les deux opérandes.
+                let sanitize = |s: &mut String| {
+                    if base == 10 {
+                        let neg = s.starts_with('-');
+                        s.retain(|c| c.is_ascii_digit());
+                        if neg {
+                            s.insert(0, '-');
+                        }
+                    } else {
+                        s.retain(|c| c.is_digit(base));
                     }
-                } else {
-                    self.calc_input.retain(|c| c.is_digit(base));
+                };
+
+                // ---- Opérande A ----
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("A").monospace().strong().color(hdr));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.calc_input)
+                            .desired_width(ui.available_width())
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text(hint),
+                    );
+                });
+                sanitize(&mut self.calc_input);
+                let a = super::calc_parse(&self.calc_input, base);
+                if let Some(v) = a
+                    && let Some(nv) = self.bit_grid(ui, v, true)
+                {
+                    self.calc_input = super::calc_format(nv, base)
+                        .trim_start_matches("0x")
+                        .trim_start_matches("0b")
+                        .trim_start_matches("0o")
+                        .to_string();
                 }
 
                 ui.add_space(6.0);
+
+                // ---- Opération ----
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    for op in super::CalcOp::ALL {
+                        let sel = self.calc_op == op;
+                        let txt = RichText::new(op.symbol())
+                            .monospace()
+                            .size(12.0)
+                            .color(if sel {
+                                egui::Color32::WHITE
+                            } else if op.is_bitwise() {
+                                mnem
+                            } else {
+                                hdr
+                            });
+                        let mut b = egui::Button::new(txt)
+                            .min_size(egui::vec2(38.0, 22.0))
+                            .corner_radius(egui::CornerRadius::same(4));
+                        if sel {
+                            b = b.fill(ACCENT);
+                        }
+                        if ui
+                            .add(b)
+                            .on_hover_text(format!("{} « {} »", tr("instruction", "instruction", "instrucción"), op.mnemonic()))
+                            .clicked()
+                        {
+                            self.calc_op = op;
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+
+                // ---- Opérande B ----
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("B").monospace().strong().color(hdr));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.calc_input_b)
+                            .desired_width(ui.available_width())
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text(hint),
+                    );
+                });
+                sanitize(&mut self.calc_input_b);
+                let b_val = super::calc_parse(&self.calc_input_b, base);
+                if let Some(v) = b_val
+                    && let Some(nv) = self.bit_grid(ui, v, true)
+                {
+                    self.calc_input_b = super::calc_format(nv, base)
+                        .trim_start_matches("0x")
+                        .trim_start_matches("0b")
+                        .trim_start_matches("0o")
+                        .to_string();
+                }
+
+                ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
 
-                let parsed = calc_parse(&self.calc_input, self.calc_base);
+                // ---- Résultat ----
+                // Sans second opérande, on affiche simplement A converti : la
+                // calculatrice reste utile pour une simple conversion de base.
+                let result = match (a, b_val) {
+                    (Some(x), Some(y)) => self.calc_op.apply(x, y),
+                    (Some(x), None) => Some(x),
+                    _ => None,
+                };
 
-                // Grille de résultats.
-                egui::Grid::new("calc_grid")
-                    .num_columns(2)
-                    .spacing([16.0, 6.0])
-                    .show(ui, |ui| {
-                        for (label, base) in [("Dec", 10), ("Hex", 16), ("Oct", 8), ("Bin", 2)] {
-                            ui.label(RichText::new(label).strong().color(hdr));
-                            let txt = match parsed {
-                                Some(v) => calc_format(v, base),
-                                None => "—".to_string(),
-                            };
-                            ui.label(RichText::new(txt).monospace().color(mnem));
-                            ui.end_row();
-                        }
-                    });
+                ui.label(
+                    RichText::new(tr("Résultat", "Result", "Resultado"))
+                        .small()
+                        .strong()
+                        .color(hdr),
+                );
+                ui.add_space(3.0);
+                match result {
+                    Some(v) => {
+                        self.bit_grid(ui, v, false);
+                        ui.add_space(6.0);
+                        egui::Grid::new("calc_grid")
+                            .num_columns(2)
+                            .spacing([16.0, 4.0])
+                            .show(ui, |ui| {
+                                for (label, b) in [("Hex", 16), ("Bin", 2), ("Dec", 10), ("Oct", 8)] {
+                                    ui.label(RichText::new(label).strong().color(hdr));
+                                    ui.label(
+                                        RichText::new(super::calc_format(v, b))
+                                            .monospace()
+                                            .color(mnem),
+                                    );
+                                    ui.end_row();
+                                }
+                                // Un caractère imprimable : pratique pour les
+                                // exercices sur les chaînes.
+                                let u = v as u64;
+                                if (0x20..0x7F).contains(&u) {
+                                    ui.label(RichText::new(tr("Caractère", "Character", "Carácter")).strong().color(hdr));
+                                    ui.label(
+                                        RichText::new(format!("'{}'", u as u8 as char))
+                                            .monospace()
+                                            .color(mnem),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new(tr(
+                                "— (division par zéro, ou saisie vide)",
+                                "— (division by zero, or empty input)",
+                                "— (división por cero, o entrada vacía)",
+                            ))
+                            .weak(),
+                        );
+                    }
+                }
 
                 ui.add_space(6.0);
                 ui.separator();
@@ -1219,5 +1420,74 @@ mod settings_tests {
         let ctx = egui::Context::default();
         let _ = ctx.run(Default::default(), |ctx| app.settings_window(ctx));
         assert!(app.show_settings);
+    }
+}
+
+#[cfg(test)]
+mod calculator_tests {
+    use super::*;
+
+    /// L'hexadécimal est la base par défaut : c'est celle dans laquelle on lit
+    /// un registre, une adresse ou un masque.
+    #[test]
+    fn hexadecimal_is_the_default_base() {
+        let app = App::new();
+        assert_eq!(app.calc_base, 16);
+    }
+
+    /// La calculatrice se rend dans tous ses états, y compris les cas qui
+    /// pourraient faire paniquer : saisie vide, division par zéro, valeur
+    /// occupant les 64 bits.
+    #[test]
+    fn calculator_renders_in_every_state() {
+        let mut app = App::new();
+        app.show_calculator = true;
+        let ctx = egui::Context::default();
+
+        let cases: [(&str, &str, super::super::CalcOp); 5] = [
+            ("", "", super::super::CalcOp::And),
+            ("2a", "0f", super::super::CalcOp::And),
+            ("10", "0", super::super::CalcOp::Div),
+            ("ffffffffffffffff", "1", super::super::CalcOp::Shr),
+            ("1", "40", super::super::CalcOp::Shl),
+        ];
+        for (a, b, op) in cases {
+            app.calc_input = a.to_string();
+            app.calc_input_b = b.to_string();
+            app.calc_op = op;
+            let _ = ctx.run(Default::default(), |ctx| app.calculator_window(ctx));
+            assert!(app.show_calculator, "la fenêtre reste ouverte ({a} {b:?})");
+        }
+
+        // Et dans les quatre bases.
+        for base in [16, 2, 10, 8] {
+            app.calc_base = base;
+            app.calc_input = "101".to_string();
+            let _ = ctx.run(Default::default(), |ctx| app.calculator_window(ctx));
+        }
+    }
+
+    /// Le masquage d'un octet est le cas d'usage type : 0x2A AND 0x0F = 0x0A.
+    /// On vérifie le calcul que l'interface affiche, sans passer par elle.
+    #[test]
+    fn masking_a_byte_gives_the_expected_result() {
+        let a = super::super::calc_parse("2a", 16).unwrap();
+        let b = super::super::calc_parse("0f", 16).unwrap();
+        let r = super::super::CalcOp::And.apply(a, b).unwrap();
+        assert_eq!(r, 0x0A);
+        assert_eq!(super::super::calc_format(r, 16), "0xA");
+        assert_eq!(super::super::calc_format(r, 2), "0b1010");
+        // Un octet suffit à le représenter : la grille montrera 8 bits.
+        assert_eq!(super::super::calc_width_bytes(r), 1);
+    }
+
+    /// Fermée, la calculatrice ne peint rien.
+    #[test]
+    fn closed_calculator_paints_nothing() {
+        let mut app = App::new();
+        app.show_calculator = false;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.calculator_window(ctx));
+        assert!(!app.show_calculator);
     }
 }
