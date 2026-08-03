@@ -16,7 +16,34 @@ impl App {
         self.exercise.is_exercise()
     }
 
+    /// Panneau EXERCICES : le parcours guidé ET la vérification du fichier
+    /// courant, au même endroit.
+    ///
+    /// Les deux étaient séparés, alors qu'ils décrivent la même chose : une
+    /// leçon charge un programme dont les attentes sont vérifiées ici. Ouvrir
+    /// les deux panneaux affichait deux fois le même énoncé, et consommait deux
+    /// places dans la disposition.
     pub(super) fn exercise_ui(&mut self, ui: &mut egui::Ui) {
+        // Leçon ouverte : elle affiche son contenu ET ses attentes en bas.
+        if self.tutorial_enabled {
+            let current = self
+                .tutorial_current
+                .clone()
+                .and_then(|id| crate::tutorial::find(&id));
+            if let Some(lesson) = current {
+                self.lesson_ui(ui, &lesson);
+                return;
+            }
+            self.tutorial_toc_ui(ui);
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+        }
+        self.checks_ui(ui);
+    }
+
+    /// Attentes du fichier courant et leur verdict.
+    pub(super) fn checks_ui(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let hdr = self.c_header();
@@ -286,6 +313,65 @@ _start:
         assert!(!app.checks[0].passed(), "RBX = 7 ≠ 120");
         assert_eq!(app.checks[0].got, Some(7), "la valeur obtenue est montrée");
         assert!(app.status.contains("0/1"), "statut = {}", app.status);
+    }
+
+
+    /// La fusion : un seul panneau porte le parcours ET la vérification.
+    /// Il n'existe plus de panneau Tutoriel séparé.
+    #[test]
+    fn one_panel_hosts_both_the_path_and_the_checks() {
+        use crate::app::dock::Panel;
+
+        // Aucun panneau ne s'appelle « tutorial ».
+        assert!(
+            Panel::from_key("tutorial").is_none(),
+            "le panneau Tutoriel a fusionné dans Exercices"
+        );
+        assert!(Panel::from_key("exercise").is_some());
+        for lang in [crate::i18n::Lang::Fr, crate::i18n::Lang::En, crate::i18n::Lang::Es] {
+            let t = Panel::Exercise.title(lang);
+            assert!(!t.is_empty(), "titre manquant en {lang:?}");
+        }
+        // Au pluriel, comme demandé.
+        assert_eq!(Panel::Exercise.title(crate::i18n::Lang::Fr), "Exercices");
+
+        let mut app = App::new();
+        let ctx = egui::Context::default();
+
+        // Tutoriel actif, aucune leçon ouverte : sommaire + attentes.
+        app.tutorial_enabled = true;
+        app.tutorial_current = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        });
+
+        // Leçon ouverte : son contenu ET ses attentes, au même endroit.
+        let lesson = crate::tutorial::find("registres").expect("leçon présente");
+        app.load_lesson(&lesson);
+        assert!(app.has_exercise(), "la leçon arme ses attentes");
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        });
+
+        // Tutoriel coupé : le panneau reste, réduit à la vérification.
+        app.tutorial_enabled = false;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        });
+        assert!(
+            app.panel_is_open(Panel::Exercise),
+            "couper le tutoriel ne ferme pas le panneau : il sert aussi aux fichiers ordinaires"
+        );
+    }
+
+    /// Le panneau fusionné figure dans les dispositions par défaut, comme
+    /// n'importe quel autre — l'exception SETTING_DRIVEN a disparu avec lui.
+    #[test]
+    fn the_merged_panel_is_an_ordinary_one() {
+        use crate::app::dock::Panel;
+        let app = App::new();
+        assert!(app.panel_is_open(Panel::Exercise), "présent dès le départ");
+        assert_eq!(Panel::ALL.len(), 14, "quatorze panneaux, plus quinze");
     }
 
     /// Un fichier ordinaire ne déclenche ni panneau ni vérification.

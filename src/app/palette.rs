@@ -268,10 +268,6 @@ impl App {
             Command::ResetLayout => self.reset_dock_layout(),
             Command::ShowAllPanels => {
                 for p in Panel::ALL {
-                    // Le tutoriel s'ouvre par son réglage, pas par ici.
-                    if crate::app::dock::SETTING_DRIVEN.contains(&p) {
-                        continue;
-                    }
                     if !self.panel_is_open(p) {
                         self.show_panel(p);
                     }
@@ -284,7 +280,6 @@ impl App {
             }
             Command::ToggleTutorial => {
                 self.tutorial_enabled = !self.tutorial_enabled;
-                self.sync_tutorial_panel();
                 self.save_settings();
             }
             Command::Calculator => self.show_calculator = true,

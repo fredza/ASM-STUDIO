@@ -32,12 +32,11 @@ pub(crate) enum Panel {
     CallStack,
     Syscalls,
     Exercise,
-    Tutorial,
 }
 
 impl Panel {
     /// Tous les panneaux, dans l'ordre du menu Affichage.
-    pub(crate) const ALL: [Panel; 15] = [
+    pub(crate) const ALL: [Panel; 14] = [
         Panel::Editor,
         Panel::Disasm,
         Panel::MemMap,
@@ -52,7 +51,6 @@ impl Panel {
         Panel::CallStack,
         Panel::Syscalls,
         Panel::Exercise,
-        Panel::Tutorial,
     ];
 
     /// Titre affiché sur l'onglet.
@@ -72,8 +70,7 @@ impl Panel {
             Panel::Console => "Console",
             Panel::CallStack => t("Pile d'appels", "Call stack", "Pila de llamadas"),
             Panel::Syscalls => t("Appels système", "Syscalls", "Llamadas al sistema"),
-            Panel::Exercise => t("Exercice", "Exercise", "Ejercicio"),
-            Panel::Tutorial => t("Tutoriel", "Tutorial", "Tutorial"),
+            Panel::Exercise => t("Exercices", "Exercises", "Ejercicios"),
         }
         .to_string()
     }
@@ -95,7 +92,6 @@ impl Panel {
             Panel::CallStack => "callstack",
             Panel::Syscalls => "syscalls",
             Panel::Exercise => "exercise",
-            Panel::Tutorial => "tutorial",
         }
     }
 
@@ -146,11 +142,6 @@ pub(crate) fn default_layout() -> DockState<Panel> {
     let _ = center;
     state
 }
-
-/// Panneaux dont la présence est commandée par un RÉGLAGE, pas par la
-/// disposition : ils n'apparaissent dans aucun agencement par défaut, et
-/// `sync_tutorial_panel` les aligne sur leur interrupteur à chaque frame.
-pub(crate) const SETTING_DRIVEN: [Panel; 1] = [Panel::Tutorial];
 
 /// Panneaux réservés au mode complet : ils supposent des notions qui viennent
 /// plus tard (code machine, adressage, conventions d'appel, appels système).
@@ -233,25 +224,12 @@ impl TabViewer for Viewer<'_> {
             Panel::CallStack => app.callstack_ui(ui),
             Panel::Syscalls => app.syscalls_ui(ui),
             Panel::Exercise => app.exercise_ui(ui),
-            Panel::Tutorial => app.tutorial_ui(ui),
         }
     }
 
     /// Tout panneau peut être fermé : on le rouvre depuis le menu Affichage.
     fn closeable(&mut self, _tab: &mut Panel) -> bool {
         true
-    }
-
-    /// Fermer un panneau commandé par un réglage doit AUSSI couper ce réglage.
-    ///
-    /// Sans cela, `sync_tutorial_panel` le rouvrait au frame suivant et la
-    /// croix semblait sans effet : l'utilisateur cliquait dans le vide.
-    fn on_close(&mut self, tab: &mut Panel) -> egui_dock::tab_viewer::OnCloseResponse {
-        if *tab == Panel::Tutorial {
-            self.app.tutorial_enabled = false;
-            self.app.save_settings();
-        }
-        egui_dock::tab_viewer::OnCloseResponse::Close
     }
 
     /// Tout panneau peut être détaché en fenêtre flottante.
@@ -378,10 +356,6 @@ impl App {
     /// Le `DockState` est sorti de `self` le temps du rendu : `TabViewer` a
     /// besoin de `&mut App`, et l'état ne peut pas être emprunté deux fois.
     pub(super) fn dock_ui(&mut self, ctx: &egui::Context) {
-        // Le tutoriel est le seul panneau commandé par un réglage : on aligne
-        // l'arbre sur l'interrupteur avant de dessiner, pour qu'activer le
-        // parcours le fasse apparaître sans autre geste.
-        self.sync_tutorial_panel();
         let Some(mut dock) = self.dock.take() else { return };
         let mut style = egui_dock::Style::from_egui(&ctx.style());
         style.tab_bar.fill_tab_bar = true;
@@ -444,15 +418,6 @@ impl App {
         self.dock = Some(dock);
     }
 
-    /// Aligne la présence du panneau Tutoriel sur le réglage `tutorial_enabled`.
-    pub(super) fn sync_tutorial_panel(&mut self) {
-        let open = self.panel_is_open(Panel::Tutorial);
-        if self.tutorial_enabled && !open {
-            self.show_panel(Panel::Tutorial);
-        } else if !self.tutorial_enabled && open {
-            self.hide_panel(Panel::Tutorial);
-        }
-    }
 
     /// Sérialise la disposition : une ligne par onglet, `surface:clé`.
     ///
@@ -462,10 +427,6 @@ impl App {
     pub(super) fn dock_layout_string(&self) -> String {
         let Some(dock) = self.dock.as_ref() else { return String::new() };
         dock.iter_all_tabs()
-            // Un panneau commandé par un réglage n'est PAS sérialisé : son
-            // interrupteur est la seule source de vérité. L'enregistrer aussi
-            // ici créerait deux états à réconcilier au chargement.
-            .filter(|(_, t)| !SETTING_DRIVEN.contains(t))
             .map(|((surface, _), t)| {
                 let kind = if surface == SurfaceIndex::main() { "d" } else { "w" };
                 format!("{kind}:{}", t.key())
@@ -563,18 +524,11 @@ mod tests {
         let state = default_layout();
         let present: Vec<Panel> = state.iter_all_tabs().map(|(_, t)| *t).collect();
         for p in Panel::ALL {
-            if SETTING_DRIVEN.contains(&p) {
-                assert!(
-                    !present.contains(&p),
-                    "{p:?} est commandé par un réglage : il ne doit PAS figurer dans la disposition"
-                );
-                continue;
-            }
             assert!(present.contains(&p), "{p:?} absent de la disposition par défaut");
         }
         assert_eq!(
             present.len(),
-            Panel::ALL.len() - SETTING_DRIVEN.len(),
+            Panel::ALL.len(),
             "panneau dupliqué ou manquant : {present:?}"
         );
     }
@@ -596,9 +550,6 @@ mod tests {
         let mut app = App::new();
         app.set_ui_mode(super::super::UiMode::Full);
         for p in Panel::ALL {
-            if SETTING_DRIVEN.contains(&p) {
-                continue; // ouvert par son réglage, pas par la disposition
-            }
             assert!(app.panel_is_open(p), "{p:?} devrait être ouvert au départ");
             app.hide_panel(p);
             assert!(!app.panel_is_open(p), "{p:?} devrait être fermé");
@@ -680,9 +631,6 @@ mod tests {
         assert!(!app.panel_is_open(Panel::Editor));
         app.reset_dock_layout();
         for p in Panel::ALL {
-            if SETTING_DRIVEN.contains(&p) {
-                continue;
-            }
             assert!(app.panel_is_open(p), "{p:?} manquant après réinitialisation");
         }
     }
@@ -732,11 +680,7 @@ mod tests {
         let mut app = App::new();
         app.set_ui_mode(super::super::UiMode::Full);
         let total = app.focus_order().len();
-        assert_eq!(
-            total,
-            Panel::ALL.len() - SETTING_DRIVEN.len(),
-            "l'ordre doit couvrir tous les panneaux affichés"
-        );
+        assert_eq!(total, Panel::ALL.len(), "l'ordre doit couvrir tous les panneaux");
 
         let mut seen = Vec::new();
         for _ in 0..total {
@@ -746,9 +690,6 @@ mod tests {
             }
         }
         for p in Panel::ALL {
-            if SETTING_DRIVEN.contains(&p) {
-                continue;
-            }
             assert!(seen.contains(&p), "{p:?} jamais atteint par F6");
         }
     }
@@ -775,7 +716,7 @@ mod tests {
         let order = app.focus_order();
         assert!(!order.contains(&Panel::Console), "console fermée mais parcourue");
         assert!(!order.contains(&Panel::Flags), "flags fermé mais parcouru");
-        assert_eq!(order.len(), Panel::ALL.len() - SETTING_DRIVEN.len() - 2);
+        assert_eq!(order.len(), Panel::ALL.len() - 2);
     }
 
     /// Sans aucun panneau, la navigation ne doit pas paniquer ni boucler.
@@ -877,81 +818,8 @@ mod tests {
         assert_eq!(UiMode::from_key("n_importe_quoi"), UiMode::Learning);
     }
 
-    /// L'interrupteur du tutoriel doit faire apparaître et disparaître son
-    /// panneau, sans que l'utilisateur ait à toucher la disposition.
-    #[test]
-    fn the_tutorial_switch_drives_its_panel() {
-        let mut app = App::new();
-        // Départ d'un état connu : ce test porte sur l'interrupteur, pas sur le
-        // défaut (qui est « activé » pour accueillir les nouveaux venus).
-        app.tutorial_enabled = false;
-        app.sync_tutorial_panel();
-        assert!(!app.panel_is_open(Panel::Tutorial), "fermé quand désactivé");
 
-        app.tutorial_enabled = true;
-        app.sync_tutorial_panel();
-        assert!(app.panel_is_open(Panel::Tutorial), "activer doit l'ouvrir");
 
-        app.tutorial_enabled = false;
-        app.sync_tutorial_panel();
-        assert!(!app.panel_is_open(Panel::Tutorial), "désactiver doit le fermer");
-
-        // Idempotent : appelé à chaque frame, il ne doit rien empiler.
-        app.tutorial_enabled = true;
-        for _ in 0..5 {
-            app.sync_tutorial_panel();
-        }
-        let n = app
-            .dock
-            .as_ref()
-            .map(|d| d.iter_all_tabs().filter(|(_, t)| **t == Panel::Tutorial).count())
-            .unwrap_or(0);
-        assert_eq!(n, 1, "un seul onglet Tutoriel, quel que soit le nombre d'appels");
-    }
-
-    /// Fermer l'onglet Tutoriel doit COUPER son réglage, sinon
-    /// `sync_tutorial_panel` le rouvre au frame suivant et la croix ne sert à
-    /// rien — c'était le cas.
-    #[test]
-    fn closing_the_tutorial_tab_turns_off_its_setting() {
-        let mut app = App::new();
-        app.tutorial_enabled = true;
-        app.sync_tutorial_panel();
-        assert!(app.panel_is_open(Panel::Tutorial));
-
-        // Ce que fait egui_dock quand on clique la croix.
-        {
-            let mut viewer = Viewer { app: &mut app };
-            let mut tab = Panel::Tutorial;
-            assert_eq!(
-                viewer.on_close(&mut tab),
-                egui_dock::tab_viewer::OnCloseResponse::Close,
-                "la fermeture doit être acceptée"
-            );
-        }
-        app.hide_panel(Panel::Tutorial);
-
-        assert!(!app.tutorial_enabled, "le réglage doit être coupé");
-        app.sync_tutorial_panel();
-        assert!(
-            !app.panel_is_open(Panel::Tutorial),
-            "et le panneau ne doit PAS revenir au frame suivant"
-        );
-    }
-
-    /// Fermer un panneau ordinaire ne touche à aucun réglage.
-    #[test]
-    fn closing_an_ordinary_panel_changes_no_setting() {
-        let mut app = App::new();
-        app.tutorial_enabled = true;
-        let before = app.tutorial_enabled;
-        {
-            let mut viewer = Viewer { app: &mut app };
-            let mut tab = Panel::Console;
-            assert_eq!(viewer.on_close(&mut tab), egui_dock::tab_viewer::OnCloseResponse::Close);
-        }
-        assert_eq!(app.tutorial_enabled, before);
-    }
 
     /// « Exemples et exercices » amène l'explorateur INTERNE sur le dossier des
     /// exemples et le rend visible — sans processus externe.

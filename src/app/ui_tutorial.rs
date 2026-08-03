@@ -22,8 +22,7 @@ impl App {
         // Repartir de zéro, c'est retrouver l'expérience du nouveau venu.
         self.welcome_dismissed = false;
         self.tutorial_enabled = true;
-        self.sync_tutorial_panel();
-        self.focus_panel(super::dock::Panel::Tutorial);
+        self.focus_panel(super::dock::Panel::Exercise);
         self.status = i18n::tr3(
             self.lang,
             "Progression du tutoriel réinitialisée.",
@@ -67,23 +66,13 @@ impl App {
         self.save_settings();
     }
 
-    pub(super) fn tutorial_ui(&mut self, ui: &mut egui::Ui) {
+    /// Sommaire du parcours. L'aiguillage vers une leçon ouverte se fait dans
+    /// `exercise_ui`, qui héberge désormais les deux.
+    pub(super) fn tutorial_toc_ui(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let hdr = self.c_header();
 
-        // Leçon ouverte : on affiche son contenu, avec un retour au sommaire.
-        let current = self
-            .tutorial_current
-            .clone()
-            .and_then(|id| tutorial::find(&id));
-
-        if let Some(lesson) = current {
-            self.lesson_ui(ui, &lesson);
-            return;
-        }
-
-        // --- Sommaire ---
         ui.add_space(2.0);
         ui.label(
             RichText::new(tr(
@@ -99,6 +88,9 @@ impl App {
         let mut to_load: Option<Lesson> = None;
         egui::ScrollArea::vertical()
             .id_salt("tutorial_toc")
+            // Le sommaire partage le panneau avec les attentes : il ne doit pas
+            // occuper toute la hauteur.
+            .max_height(260.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for level in Level::ALL {
@@ -164,7 +156,7 @@ impl App {
     }
 
     /// Contenu d'une leçon ouverte.
-    fn lesson_ui(&mut self, ui: &mut egui::Ui, lesson: &Lesson) {
+    pub(super) fn lesson_ui(&mut self, ui: &mut egui::Ui, lesson: &Lesson) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let hdr = self.c_header();
@@ -259,6 +251,15 @@ impl App {
                 }
             });
 
+        // Les attentes de la leçon, juste sous ses étapes : l'élève voit d'un
+        // seul coup d'œil ce qu'on lui demande et où il en est.
+        if lesson.has_starter() {
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+            self.checks_ui(ui);
+        }
+
         ui.separator();
         ui.horizontal(|ui| {
             let label = if done {
@@ -331,7 +332,6 @@ mod tests {
         app.tutorial_current = Some("boucles".to_string());
         app.welcome_dismissed = true;
         app.tutorial_enabled = false;
-        app.sync_tutorial_panel();
 
         app.reset_tutorial();
 
@@ -344,7 +344,7 @@ mod tests {
         assert!(app.tutorial_current.is_none(), "retour au sommaire");
         assert!(!app.welcome_dismissed, "le bandeau d'accueil réapparaît");
         assert!(app.tutorial_enabled, "le tutoriel est rallumé");
-        assert!(app.panel_is_open(Panel::Tutorial), "et son panneau est rouvert");
+        assert!(app.panel_is_open(Panel::Exercise), "et le panneau Exercices est ouvert");
     }
 
     /// Toutes les clés de panneau du catalogue doivent exister : une faute de
@@ -374,32 +374,34 @@ mod tests {
         assert_eq!(next.id, "registres", "l'ordre du parcours est respecté");
     }
 
-    /// Le panneau se rend dans les deux états — sommaire et leçon ouverte.
+    /// Le panneau Exercices se rend dans tous ses états — sommaire, leçon
+    /// ouverte, leçon annoncée, identifiant périmé, et tutoriel désactivé.
     #[test]
     fn tutorial_panel_renders_in_both_states() {
         let mut app = App::new();
+        app.tutorial_enabled = true;
         let ctx = egui::Context::default();
 
         app.tutorial_current = None;
         let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.tutorial_ui(ui));
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
         });
 
         app.tutorial_current = Some("pile".into());
         let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.tutorial_ui(ui));
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
         });
 
         // Une leçon annoncée mais non rédigée doit se rendre sans paniquer.
         app.tutorial_current = Some("shellcode".into());
         let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.tutorial_ui(ui));
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
         });
 
         // Un identifiant disparu retombe sur le sommaire au lieu de planter.
         app.tutorial_current = Some("lecon_inexistante".into());
         let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.tutorial_ui(ui));
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
         });
     }
 
@@ -410,8 +412,7 @@ mod tests {
         use std::path::PathBuf;
         let mut app = App::new();
         app.tutorial_enabled = true;
-        app.sync_tutorial_panel();
-        assert!(app.panel_is_open(Panel::Tutorial));
+        assert!(app.panel_is_open(Panel::Exercise));
 
         let lesson = tutorial::find("premier_programme").expect("leçon présente");
         app.load_lesson(&lesson);
