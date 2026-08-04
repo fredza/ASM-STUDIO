@@ -166,7 +166,24 @@ impl App {
         let rip = self.view_rip();
         let scroll_here = self.take_scroll_request(super::dock::Panel::Disasm);
         let mut clicked: Option<u64> = None;
-        egui::ScrollArea::vertical().id_salt("disasm_scroll").show(ui, |ui| {
+        // Défilement sur les DEUX axes, comme CALL STACK et SYSCALLS : une
+        // instruction à opérandes mémoire (« mov qword [rbp - 0x18], rax »)
+        // dépasse une colonne étroite, et la tronquer n'apprend rien.
+        // `auto_shrink` désactivé : sans cela la zone se rétrécit sur son
+        // contenu et le panneau laisse un large vide à sa droite.
+        egui::ScrollArea::both()
+            .id_salt("disasm_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+            // Le surlignage d'une ligne déborde de 2 px en haut pour se souder à
+            // la ligne suivante. Sans cette marge, celui de la PREMIÈRE ligne
+            // dépassait au-dessus de la zone : il s'y faisait rogner à plat,
+            // dessinant un liseré collé sous la barre d'onglets.
+            ui.add_space(2.0);
+            // Largeur de la ligne : tout le panneau, ou le contenu s'il est plus
+            // large (défilement horizontal). Le surlignage et la zone cliquable
+            // couvrent alors la ligne entière, et non le seul texte.
+            let full = ui.max_rect();
             for insn in &self.disasm {
                 let is_current = Some(insn.address) == rip;
                 let is_selected = Some(insn.address) == self.selected;
@@ -182,9 +199,16 @@ impl App {
                     ui.label(RichText::new(format!("0x{:08X}", insn.address)).monospace().color(self.c_addr()));
                     ui.label(RichText::new(format!("{:<20}", insn.bytes_hex())).monospace().color(self.c_bytes()));
                     ui.label(RichText::new(format!("{:<7}", insn.mnemonic)).monospace().color(self.c_mnemonic()));
-                    ui.label(RichText::new(&insn.operands).monospace());
+                    ui.add(egui::Label::new(RichText::new(&insn.operands).monospace()).extend());
                 });
-                let row = inner.response.interact(egui::Sense::click());
+                let mut rect = inner.response.rect;
+                rect.min.x = full.left();
+                rect.max.x = rect.max.x.max(full.right());
+                let row = ui.interact(
+                    rect,
+                    ui.id().with(("disasm_row", insn.address)),
+                    egui::Sense::click(),
+                );
                 if row.clicked() {
                     clicked = Some(insn.address);
                 }
@@ -202,7 +226,7 @@ impl App {
                     None
                 };
                 if let Some(color) = fill {
-                    let rect = row.rect.expand2(egui::vec2(0.0, 2.0));
+                    let rect = rect.expand2(egui::vec2(0.0, 2.0));
                     ui.painter().set(bg, egui::Shape::rect_filled(rect, 3.0, color));
                 }
             }
@@ -528,6 +552,69 @@ mod tests {
         assert_eq!(app.selected, Some(0x10));
         app.move_disasm_selection(false);
         assert_eq!(app.selected, Some(0x10), "borne haute respectée");
+    }
+
+    /// Peint le désassemblage dans un panneau de taille connue et renvoie
+    /// (zone du panneau, rectangle du surlignage de la ligne sélectionnée).
+    fn disasm_row_highlight(app: &mut App) -> (egui::Rect, egui::Rect) {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0))),
+            ..Default::default()
+        };
+        let sel = app.c_sel_row();
+        let mut avail = egui::Rect::ZERO;
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                avail = ui.max_rect();
+                app.disasm_ui(ui);
+            });
+        });
+        // Repéré par sa COULEUR, et non par sa position : un surlignage mal
+        // placé doit être trouvé puis jugé, pas passer pour absent.
+        let row = out
+            .shapes
+            .iter()
+            .find_map(|cs| match &cs.shape {
+                egui::Shape::Rect(r) if r.fill == sel => Some(r.rect),
+                _ => None,
+            })
+            .expect("la ligne sélectionnée doit être surlignée");
+        (avail, row)
+    }
+
+    /// Le panneau occupait naguère la largeur de son texte (≈ 330 px sur 884) :
+    /// le surlignage et la zone cliquable s'arrêtaient au dernier caractère,
+    /// laissant un grand vide à droite. Une ligne doit couvrir tout le panneau.
+    #[test]
+    fn disasm_rows_span_the_full_panel_width() {
+        let mut app = App::new();
+        app.disasm = vec![insn(0x10), insn(0x20), insn(0x30)];
+        app.selected = Some(0x20);
+        let (avail, row) = disasm_row_highlight(&mut app);
+        assert!(
+            (row.left() - avail.left()).abs() < 1.0 && (row.right() - avail.right()).abs() < 1.0,
+            "ligne large de {} sur {} disponibles ({row:?} dans {avail:?})",
+            row.width(),
+            avail.width()
+        );
+    }
+
+    /// Le surlignage déborde de 2 px vers le haut pour se souder à la ligne
+    /// suivante. Sur la PREMIÈRE ligne ce débord sortait de la zone et s'y
+    /// faisait rogner à plat : un liseré parasite sous la barre d'onglets.
+    #[test]
+    fn first_disasm_row_does_not_bleed_above_the_panel() {
+        let mut app = App::new();
+        app.disasm = vec![insn(0x10), insn(0x20), insn(0x30)];
+        app.selected = Some(0x10);
+        let (avail, row) = disasm_row_highlight(&mut app);
+        assert!(
+            row.top() >= avail.top() - 0.01,
+            "le surlignage remonte à {} au-dessus du bord {}",
+            row.top(),
+            avail.top()
+        );
     }
 
     #[test]
