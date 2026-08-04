@@ -209,17 +209,20 @@ impl TabViewer for Viewer<'_> {
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Panel) {
         let app = &mut *self.app;
+        // Disasm, Flags, Registers et Timeline sont réservés aux licences
+        // ASM Studio (voir `crate::license`) : sans licence valide, le contenu
+        // réel cède la place à `locked_panel_ui` (src/app/ui_windows.rs).
         match tab {
             Panel::Editor => app.editor_tab_ui(ui),
-            Panel::Disasm => app.disasm_ui(ui),
+            Panel::Disasm => if app.is_licensed() { app.disasm_ui(ui) } else { app.locked_panel_ui(ui) },
             Panel::MemMap => app.memory_map_ui(ui),
             Panel::Explorer => app.explorer_ui(ui),
             Panel::Instruction => app.instruction_ui(ui),
-            Panel::Flags => app.flags_ui(ui),
-            Panel::Registers => app.registers_ui(ui),
+            Panel::Flags => if app.is_licensed() { app.flags_ui(ui) } else { app.locked_panel_ui(ui) },
+            Panel::Registers => if app.is_licensed() { app.registers_ui(ui) } else { app.locked_panel_ui(ui) },
             Panel::Stack => app.stack_ui(ui),
             Panel::Memory => app.memory_ui(ui),
-            Panel::Timeline => app.timeline_col_ui(ui),
+            Panel::Timeline => if app.is_licensed() { app.timeline_col_ui(ui) } else { app.locked_panel_ui(ui) },
             Panel::Console => app.console_ui(ui),
             Panel::CallStack => app.callstack_ui(ui),
             Panel::Syscalls => app.syscalls_ui(ui),
@@ -865,5 +868,28 @@ mod tests {
             app.explorer_dir
         );
         assert!(app.panel_is_open(Panel::Explorer), "l'explorateur doit être visible");
+    }
+
+    /// Sans licence, Disasm/Flags/Registers/Timeline doivent afficher le
+    /// message verrouillé au lieu de leur contenu réel — sans jamais paniquer.
+    #[test]
+    fn locked_panels_render_without_panicking_when_unlicensed() {
+        let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
+        assert!(!app.is_licensed());
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
+    }
+
+    /// Avec une licence valide, les mêmes panneaux se rendent aussi sans
+    /// paniquer (contenu réel cette fois, plus le message verrouillé).
+    #[test]
+    fn locked_panels_render_without_panicking_when_licensed() {
+        let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
+        app.license = crate::license::valid_for_tests();
+        assert!(app.is_licensed());
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
     }
 }

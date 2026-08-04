@@ -1331,6 +1331,101 @@ impl App {
             self.updater.state = UpdateState::UpToDate;
         }
     }
+
+    // ---------- Licence obligatoire (désassemblage, registres/flags, timeline) ----------
+
+    /// Licence valide en vigueur ? Pilote le verrouillage des panneaux avancés
+    /// (voir `dock.rs`).
+    pub(super) fn is_licensed(&self) -> bool {
+        matches!(self.license, crate::license::LicenseState::Valid(_))
+    }
+
+    /// Contenu affiché à la place d'un panneau verrouillé.
+    pub(super) fn locked_panel_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        ui.vertical_centered(|ui| {
+            ui.add_space(24.0);
+            ui.label(RichText::new("🔒").size(28.0));
+            ui.add_space(4.0);
+            ui.label(tr(
+                "Fonctionnalité réservée aux licences ASM Studio.",
+                "Feature reserved to ASM Studio license holders.",
+                "Función reservada a los titulares de licencia de ASM Studio.",
+            ));
+            ui.add_space(8.0);
+            if ui.button(tr("Activer une licence…", "Activate a license…", "Activar una licencia…")).clicked() {
+                self.show_license_gate = true;
+            }
+        });
+    }
+
+    /// Fenêtre de saisie de la licence (coller le bloc reçu par e-mail).
+    ///
+    /// Distincte de `license_window` : celle-ci affiche seulement le texte
+    /// légal de `LICENSE.md`, sans rapport avec le mécanisme de licence.
+    pub(super) fn license_gate_window(&mut self, ctx: &egui::Context) {
+        if !self.show_license_gate {
+            return;
+        }
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+
+        let mut open = true;
+        egui::Window::new(tr("Licence ASM Studio", "ASM Studio license", "Licencia de ASM Studio"))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(480.0)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .show(ctx, |ui| {
+                if let crate::license::LicenseState::Valid(p) = &self.license {
+                    ui.label(format!(
+                        "{} {}",
+                        tr("Licence active :", "Active license:", "Licencia activa:"),
+                        p.name
+                    ));
+                    ui.add_space(6.0);
+                }
+                ui.label(tr(
+                    "Collez ci-dessous le bloc de licence reçu par e-mail :",
+                    "Paste the license block you received by e-mail below:",
+                    "Pegue abajo el bloque de licencia recibido por correo:",
+                ));
+                ui.add_space(6.0);
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.license_input)
+                        .desired_rows(6)
+                        .desired_width(f32::INFINITY)
+                        .font(egui::TextStyle::Monospace),
+                );
+                if let Some(err) = &self.license_error {
+                    ui.add_space(6.0);
+                    ui.colored_label(egui::Color32::from_rgb(220, 80, 60), err);
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Valider", "Validate", "Validar")).clicked() {
+                        match crate::license::verify(&self.license_input) {
+                            Ok(payload) => {
+                                let _ = crate::license::save(&self.license_input);
+                                self.license = crate::license::LicenseState::Valid(payload);
+                                self.license_error = None;
+                                self.show_license_gate = false;
+                            }
+                            Err(reason) => self.license_error = Some(reason),
+                        }
+                    }
+                    if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
+                        self.show_license_gate = false;
+                    }
+                });
+            });
+        if !open {
+            self.show_license_gate = false;
+        }
+    }
 }
 
 #[cfg(test)]

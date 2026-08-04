@@ -27,7 +27,9 @@ mod predict;
 mod ui_exercise;
 mod ui_tutorial;
 mod widgets;
-mod paths;
+// `pub(crate)` : `license_path()` doit être atteignable depuis `crate::license`,
+// hors de l'arbre de `app`.
+pub(crate) mod paths;
 mod parse;
 
 // Remontés dans `app` pour que les modules d'UI gardent leurs
@@ -373,6 +375,13 @@ pub struct App {
     pub(super) pending_open: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
     /// Dialogue « Enregistrer sous » natif en cours sur un thread de fond.
     pub(super) pending_saveas: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
+    /// Licence en vigueur (désassemblage, registres/flags, timeline).
+    pub(super) license: crate::license::LicenseState,
+    /// Fenêtre de saisie de licence — distincte de `show_license`, qui n'affiche
+    /// que le texte légal de `LICENSE.md`.
+    pub(super) show_license_gate: bool,
+    pub(super) license_input: String,
+    pub(super) license_error: Option<String>,
 }
 
 impl App {
@@ -465,8 +474,26 @@ impl App {
             updater: Updater::new(),
             pending_open: None,
             pending_saveas: None,
+            license: crate::license::LicenseState::Missing,
+            show_license_gate: false,
+            license_input: String::new(),
+            license_error: None,
         };
         app.load_settings();
+        app.license = crate::license::load();
+        // `load()` renvoie toujours `Missing` en `cfg!(test)` (comme les réglages,
+        // volontairement indépendant de toute licence installée sur la machine de
+        // dev) : ouvrir la fenêtre automatiquement dans ce cas casserait les tests
+        // qui supposent `App::new()` sans boîte de dialogue ouverte.
+        if !cfg!(test) {
+            app.show_license_gate = !matches!(app.license, crate::license::LicenseState::Valid(_));
+        }
+        // Une licence stockée mais devenue invalide (ex. mise à jour vers une
+        // version différente) doit expliquer pourquoi, pas seulement rouvrir
+        // une fenêtre de saisie vide.
+        if let crate::license::LicenseState::Invalid(reason) = &app.license {
+            app.license_error = Some(reason.clone());
+        }
         app
     }
 
@@ -698,6 +725,7 @@ impl App {
             self.show_shortcuts,
             self.show_settings,
             self.show_calculator,
+            self.show_license_gate,
             self.palette_open,
             self.pedagogy_predict,
             self.microscope.is_some(),
@@ -770,6 +798,7 @@ impl eframe::App for App {
         self.predict_window(ctx);
         self.diagnosis_window(ctx);
         self.update_window(ctx);
+        self.license_gate_window(ctx);
         self.repaint_on_dialog_close(ctx, dialogs_before);
         self.updater.poll();
     }

@@ -106,6 +106,15 @@ pub(super) fn settings_path() -> Option<PathBuf> {
     Some(base.join("asm_studio").join("settings.conf"))
 }
 
+/// Chemin de la licence collée par l'utilisateur, à côté de `settings.conf`.
+/// `pub(crate)` : lu depuis `crate::license`, hors du module `app`.
+pub(crate) fn license_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("asm_studio").join("license.txt"))
+}
+
 /// Répertoire contenant `asmstd.inc` dans les données utilisateur.
 pub(super) fn asmstd_dir() -> Option<PathBuf> {
     let dir = data_dir().join("examples");

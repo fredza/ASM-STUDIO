@@ -459,6 +459,10 @@ impl App {
                         self.show_shortcuts = true;
                     }
                     ui.separator();
+                    if item(ui, tr("Activer une licence…", "Activate a license…", "Activar una licencia…"), "") {
+                        self.show_license_gate = true;
+                    }
+                    ui.separator();
                     if item(ui, tr("À propos", "About", "Acerca de"), "") {
                         self.show_about = true;
                     }
@@ -997,6 +1001,9 @@ mod keyboard_tests {
     fn arrow_then_render_consumes_the_scroll_request() {
         use crate::app::dock::Panel;
         let mut app = running_app("scroll3");
+        // Le panneau Registres est réservé aux licences : sans elle, il ne
+        // rend jamais la liste, donc jamais la consommation testée ici.
+        app.license = crate::license::valid_for_tests();
         let ctx = egui::Context::default();
         frame(&mut app, &ctx, Default::default());
         app.focus_panel(Panel::Registers);

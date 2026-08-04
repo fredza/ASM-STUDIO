@@ -9,6 +9,7 @@ mod encoding;
 mod exercise;
 mod explain;
 mod i18n;
+mod license;
 mod srcmap;
 mod syntax;
 mod syscall;
