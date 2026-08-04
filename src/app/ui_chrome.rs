@@ -101,8 +101,12 @@ impl App {
         if step {
             self.step();
         }
+        // F1 bascule, comme toutes les touches qui montrent quelque chose : le
+        // deuxième appui referme. Ouvrir sans pouvoir refermer par la même
+        // touche oblige à viser la croix à la souris — exactement ce que les
+        // raccourcis servent à éviter.
         if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
-            self.show_shortcuts = true;
+            self.show_shortcuts = !self.show_shortcuts;
         }
         // Affichage : Ctrl+1..5 bascule un panneau de la disposition.
         use super::dock::Panel;
@@ -820,6 +824,25 @@ mod keyboard_tests {
         }
     }
 
+    /// Même chose avec des modificateurs (Ctrl, Maj).
+    fn key_mod(k: egui::Key, modifiers: egui::Modifiers) -> egui::RawInput {
+        egui::RawInput {
+            modifiers,
+            events: vec![egui::Event::Key {
+                key: k,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn ctrl(k: egui::Key) -> egui::RawInput {
+        key_mod(k, egui::Modifiers::CTRL)
+    }
+
     /// `tag` distingue les artefacts : sans cela, les tests exécutés en
     /// parallèle assemblent dans le même dossier et s'écrasent l'un l'autre.
     fn running_app(tag: &str) -> App {
@@ -1013,6 +1036,145 @@ mod keyboard_tests {
         app.show_shortcuts = false;
         frame(&mut app, &ctx, key(egui::Key::F1));
         assert!(app.show_shortcuts, "F1 doit ouvrir la fenêtre des raccourcis");
+    }
+
+    /// Toute touche qui MONTRE quelque chose doit le cacher au second appui.
+    /// F1 ne faisait qu'ouvrir : la fenêtre ne se refermait qu'à la souris.
+    #[test]
+    fn keys_that_show_something_close_it_on_the_second_press() {
+        let mut app = App::new();
+        app.set_ui_mode(crate::app::UiMode::Full);
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+
+        // --- F1 : fenêtre d'aide ---
+        assert!(!app.show_shortcuts, "fermée au départ");
+        frame(&mut app, &ctx, key(egui::Key::F1));
+        assert!(app.show_shortcuts, "1er appui : ouvre");
+        frame(&mut app, &ctx, key(egui::Key::F1));
+        assert!(!app.show_shortcuts, "2e appui : referme");
+        frame(&mut app, &ctx, key(egui::Key::F1));
+        assert!(app.show_shortcuts, "3e appui : rouvre");
+
+        // --- Ctrl+1..4 : panneaux ; Ctrl+5 : fenêtre Prédiction ---
+        for (k, panel) in [
+            (egui::Key::Num1, Panel::Explorer),
+            (egui::Key::Num2, Panel::Instruction),
+            (egui::Key::Num3, Panel::Registers),
+            (egui::Key::Num4, Panel::Memory),
+        ] {
+            let before = app.panel_is_open(panel);
+            frame(&mut app, &ctx, ctrl(k));
+            assert_eq!(app.panel_is_open(panel), !before, "{panel:?} doit basculer");
+            frame(&mut app, &ctx, ctrl(k));
+            assert_eq!(app.panel_is_open(panel), before, "{panel:?} doit revenir");
+        }
+        let before = app.pedagogy_predict;
+        frame(&mut app, &ctx, ctrl(egui::Key::Num5));
+        assert_eq!(app.pedagogy_predict, !before, "Ctrl+5 doit basculer Prédiction");
+        frame(&mut app, &ctx, ctrl(egui::Key::Num5));
+        assert_eq!(app.pedagogy_predict, before, "et revenir");
+    }
+
+    /// Revue de TOUS les raccourcis annoncés par la fenêtre d'aide : chacun est
+    /// envoyé comme une vraie touche, et jugé sur son effet observable.
+    ///
+    /// Ctrl+O reste dehors : il ouvre le sélecteur de fichiers du système, qui
+    /// s'afficherait pour de bon pendant la suite de tests. Son câblage se lit
+    /// directement dans `handle_shortcuts`.
+    #[test]
+    fn every_documented_shortcut_has_its_effect() {
+        let mut app = running_app("audit");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+        let shift_f5 = key_mod(egui::Key::F5, egui::Modifiers::SHIFT);
+
+        // --- Exécution ---
+        let n = |a: &App| a.dbg.as_ref().map(|d| d.history.len()).unwrap_or(0);
+        let before = n(&app);
+        frame(&mut app, &ctx, key(egui::Key::F10));
+        assert_eq!(n(&app) - before, 1, "F10 : un pas");
+        let before = n(&app);
+        frame(&mut app, &ctx, key(egui::Key::F8));
+        assert_eq!(n(&app) - before, 1, "F8 : un pas (alias de F10)");
+
+        // --- Timeline : Home / ← / → / End ---
+        // Aucun des panneaux qui confisquent les flèches ne doit avoir le focus.
+        app.focus_panel(Panel::Console);
+        frame(&mut app, &ctx, Default::default());
+        // Sans plusieurs étapes, Home et End tomberaient toutes deux sur 0 et
+        // les quatre assertions passeraient sans rien éprouver.
+        assert!(n(&app) >= 3, "il faut une timeline à parcourir, {} étape(s)", n(&app));
+        app.set_view(1);
+        frame(&mut app, &ctx, key(egui::Key::Home));
+        assert_eq!(app.view_index, 0, "Home : début de la timeline");
+        frame(&mut app, &ctx, key(egui::Key::ArrowRight));
+        assert_eq!(app.view_index, 1, "→ : étape suivante");
+        frame(&mut app, &ctx, key(egui::Key::ArrowLeft));
+        assert_eq!(app.view_index, 0, "← : étape précédente");
+        frame(&mut app, &ctx, key(egui::Key::End));
+        assert_eq!(app.view_index, n(&app) - 1, "End : fin de la timeline");
+
+        // --- Navigation entre panneaux ---
+        app.focus_panel(Panel::Editor);
+        frame(&mut app, &ctx, Default::default());
+        frame(&mut app, &ctx, key(egui::Key::F6));
+        let after_f6 = app.focused_panel();
+        assert_ne!(after_f6, Some(Panel::Editor), "F6 : panneau suivant");
+        frame(&mut app, &ctx, key_mod(egui::Key::F6, egui::Modifiers::SHIFT));
+        assert_eq!(app.focused_panel(), Some(Panel::Editor), "Maj+F6 : précédent");
+        frame(&mut app, &ctx, key(egui::Key::F6));
+        frame(&mut app, &ctx, key(egui::Key::F6));
+        assert_ne!(app.focused_panel(), Some(Panel::Editor), "on s'est éloigné");
+        frame(&mut app, &ctx, ctrl(egui::Key::F6));
+        assert_eq!(app.focused_panel(), Some(Panel::Editor), "Ctrl+F6 : retour à l'éditeur");
+
+        // Ctrl+Tab : onglet suivant DANS le nœud focalisé (Éditeur/Désas./Vue).
+        let before = app.focused_panel();
+        frame(&mut app, &ctx, ctrl(egui::Key::Tab));
+        assert_ne!(app.focused_panel(), before, "Ctrl+Tab : onglet suivant");
+
+        // Ctrl+W ferme le panneau focalisé.
+        app.focus_panel(Panel::Console);
+        frame(&mut app, &ctx, Default::default());
+        assert!(app.panel_is_open(Panel::Console));
+        frame(&mut app, &ctx, ctrl(egui::Key::W));
+        assert!(!app.panel_is_open(Panel::Console), "Ctrl+W : ferme le panneau focalisé");
+
+        // --- Palette ---
+        assert!(!app.palette_open);
+        frame(&mut app, &ctx, key_mod(egui::Key::P, egui::Modifiers::CTRL | egui::Modifiers::SHIFT));
+        assert!(app.palette_open, "Ctrl+Maj+P : ouvre la palette");
+        app.palette_open = false;
+
+        // --- Fichier ---
+        app.dirty = true;
+        frame(&mut app, &ctx, ctrl(egui::Key::S));
+        assert!(!app.dirty, "Ctrl+S : enregistre");
+        frame(&mut app, &ctx, ctrl(egui::Key::N));
+        assert!(app.source.contains("sys_exit"), "Ctrl+N : nouveau fichier");
+        assert!(app.dbg.is_none(), "Ctrl+N : remet le débogueur à zéro");
+
+        // --- Assembler et lancer ---
+        app.source = "section .text\n global _start\n_start:\n mov rax,60\n xor rdi,rdi\n syscall\n".to_string();
+        app.src_path = PathBuf::from("build/kbnav-audit.asm");
+        app.save_source();
+        // Remis à zéro : sinon un binaire hérité ferait passer l'assertion même
+        // si Ctrl+B n'était plus câblé.
+        app.binary = None;
+        frame(&mut app, &ctx, ctrl(egui::Key::B));
+        assert!(app.binary.is_some(), "Ctrl+B : assemble et lie ({})", app.status);
+        app.dbg = None;
+        frame(&mut app, &ctx, key(egui::Key::F5));
+        assert!(app.dbg.is_some(), "F5 : lance ({})", app.status);
+
+        // --- Arrêt : Maj+F5 puis Échap ---
+        frame(&mut app, &ctx, shift_f5);
+        assert!(app.dbg.is_none(), "Maj+F5 : arrête");
+        frame(&mut app, &ctx, key(egui::Key::F5));
+        assert!(app.dbg.is_some(), "relancé pour éprouver Échap");
+        frame(&mut app, &ctx, key(egui::Key::Escape));
+        assert!(app.dbg.is_none(), "Échap : arrête");
     }
 
     /// Échap doit arrêter le programme une seule fois, sans effet de bord.

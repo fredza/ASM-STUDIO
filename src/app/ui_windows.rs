@@ -753,7 +753,7 @@ impl App {
             .open(&mut open)
             .show(ctx, |ui| {
                 let rows = [
-                    ("F1", tr("Aide / raccourcis", "Help / shortcuts", "Ayuda / atajos")),
+                    ("F1", tr("Afficher/masquer cette aide", "Show/hide this help", "Mostrar/ocultar esta ayuda")),
                     ("F5", tr("Lancer / Restart", "Run / Restart", "Ejecutar / Reiniciar")),
                     ("F10 / F8", tr("Instruction suivante (Next)", "Next instruction (Next)", "Instrucción siguiente (Siguiente)")),
                     ("Échap / Maj+F5", tr("Stop", "Stop", "Detener")),
