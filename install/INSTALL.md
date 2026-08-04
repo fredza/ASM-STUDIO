@@ -173,4 +173,7 @@ asm-studio
 
 ## Licence
 
-MIT — voir [`LICENSE`](LICENSE).
+ASM Studio Personal Free License (ASFL) v1.0 — voir [`LICENSE.md`](../LICENSE.md).
+
+Usage gratuit et sans limite de durée, redistribution de la version officielle
+non modifiée autorisée, vente interdite sans accord écrit de l'auteur.

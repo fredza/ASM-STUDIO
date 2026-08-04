@@ -2,7 +2,8 @@
 name = "asm_studio"
 version = "0.4.0-beta.1"
 edition = "2024"
-license = "MIT"
+# Licence propre au projet, hors nomenclature SPDX : le fichier fait foi.
+license-file = "LICENSE.md"
 description = "IDE pédagogique pour apprendre l'assembleur NASM x86-64 (registres, flags, pile, mémoire, mode explication)"
 authors = ["Frederic Z"]
 

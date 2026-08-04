@@ -427,11 +427,11 @@ impl App {
                         ui.end_row();
                         ui.label(tr("Licence", "License", "Licencia"));
                         if ui
-                            .link(RichText::new("ASSL v1.0").strong())
+                            .link(RichText::new("ASFL v1.0").strong())
                             .on_hover_text(tr(
-                                "ASM Studio Source Available License v1.0 — cliquer pour lire le texte complet.",
-                                "ASM Studio Source Available License v1.0 — click to read the full text.",
-                                "ASM Studio Source Available License v1.0 — clic para leer el texto completo.",
+                                "ASM Studio Personal Free License v1.0 — cliquer pour lire le texte complet.",
+                                "ASM Studio Personal Free License v1.0 — click to read the full text.",
+                                "ASM Studio Personal Free License v1.0 — clic para leer el texto completo.",
                             ))
                             .clicked()
                         {
@@ -1343,7 +1343,7 @@ mod settings_tests {
     #[test]
     fn license_window_shows_the_embedded_license_not_mit() {
         const LICENSE: &str = include_str!("../../LICENSE.md");
-        assert!(LICENSE.contains("Source Available License"), "licence attendue = ASSL");
+        assert!(LICENSE.contains("Personal Free License"), "licence attendue = ASFL");
         assert!(!LICENSE.to_uppercase().contains("MIT LICENSE"), "le MIT ne doit plus être la licence");
 
         let mut app = App::new();

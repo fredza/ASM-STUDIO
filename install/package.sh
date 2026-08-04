@@ -61,8 +61,9 @@ ok "install.sh, uninstall.sh"
 
 install -m 644 install/INSTALL.md   "${STAGE}/INSTALL.md"
 install -m 644 DEPENDENCIES.md      "${STAGE}/DEPENDENCIES.md"
-[ -f LICENSE ] && install -m 644 LICENSE "${STAGE}/LICENSE"
-[ -f README.md ] && install -m 644 README.md "${STAGE}/README.md"
+# En `set -e`, un `[ -f x ] && cmd` faux interrompt le script : d'où le if/fi.
+if [ -f LICENSE.md ]; then install -m 644 LICENSE.md "${STAGE}/LICENSE.md"; fi
+if [ -f README.md ];  then install -m 644 README.md  "${STAGE}/README.md";  fi
 ok "documentation"
 
 install -m 644 assets/asm-studio.desktop "${STAGE}/assets/"

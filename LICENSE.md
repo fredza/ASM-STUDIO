@@ -1,4 +1,4 @@
-# ASM Studio Source Available License (ASSL) v1.0
+# ASM Studio Personal Free License (ASFL) v1.0
 
 > **Français / English**
 
