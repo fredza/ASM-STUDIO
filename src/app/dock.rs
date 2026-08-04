@@ -462,7 +462,15 @@ impl App {
                 self.hide_panel(p);
             }
         }
+        // Un panneau avancé peut être ouvert ponctuellement depuis le menu
+        // Affichage même en mode Apprentissage (voir `view_menu`), mais il ne
+        // doit pas ressusciter tout seul au lancement suivant : sinon la
+        // première image que voit l'élève est celle du mode complet.
+        let skip_advanced = self.mode != super::UiMode::Full;
         for p in wanted_windowed {
+            if skip_advanced && ADVANCED.contains(&p) {
+                continue;
+            }
             if let Some(dock) = self.dock.as_mut() {
                 dock.add_window(vec![p]);
             }
@@ -602,6 +610,30 @@ mod tests {
         assert!(!restored.panel_is_open(Panel::Console), "console doit rester fermée");
         assert!(!restored.panel_is_open(Panel::MemMap), "vue mémoire doit rester fermée");
         assert!(restored.panel_is_open(Panel::Timeline), "timeline doit être restaurée");
+        assert!(restored.panel_is_open(Panel::Editor), "éditeur toujours là");
+    }
+
+    /// Un panneau avancé détaché (ex. Désassemblage, ouvert une fois depuis
+    /// le menu en mode Apprentissage) ne doit pas ressusciter en fenêtre
+    /// flottante au lancement suivant : sinon l'élève retrouve le mode
+    /// complet sans l'avoir demandé. Signalé après qu'un `w:disasm` oublié
+    /// dans `settings.conf` rouvrait la fenêtre à chaque démarrage.
+    #[test]
+    fn advanced_floating_panel_does_not_survive_a_restart_in_learning_mode() {
+        let mut app = App::new();
+        assert_eq!(app.mode, super::super::UiMode::Learning);
+        if let Some(d) = app.dock.as_mut() {
+            d.add_window(vec![Panel::Disasm]);
+        }
+        let saved = app.dock_layout_string();
+        assert!(saved.contains("w:disasm"), "le désassemblage détaché : {saved}");
+
+        let mut restored = App::new();
+        restored.apply_dock_layout(&saved);
+        assert!(
+            !restored.panel_is_open(Panel::Disasm),
+            "le désassemblage ne doit pas se rouvrir seul en mode apprentissage"
+        );
         assert!(restored.panel_is_open(Panel::Editor), "éditeur toujours là");
     }
 
