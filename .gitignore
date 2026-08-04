@@ -1,0 +1,4 @@
+/target
+/asm_studio
+*.o
+*.swp
