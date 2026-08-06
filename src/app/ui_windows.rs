@@ -448,14 +448,25 @@ impl App {
                                     ),
                                     None => String::new(),
                                 };
-                                ui.colored_label(
-                                    FLAG_ON,
-                                    format!(
-                                        "✔ {} — {}{suffix}",
-                                        tr("Activée", "Activated", "Activada"),
-                                        p.name
-                                    ),
+                                let label = format!(
+                                    "✔ {} — {}{suffix}",
+                                    tr("Activée", "Activated", "Activada"),
+                                    p.name
                                 );
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(FLAG_ON, label);
+                                    if ui
+                                        .link(tr("Désactiver…", "Deactivate…", "Desactivar…"))
+                                        .on_hover_text(tr(
+                                            "Supprime la licence installée sur cette machine.",
+                                            "Removes the license installed on this machine.",
+                                            "Elimina la licencia instalada en esta máquina.",
+                                        ))
+                                        .clicked()
+                                    {
+                                        self.confirm_license_reset = true;
+                                    }
+                                });
                             }
                             crate::license::LicenseState::Invalid(_) | crate::license::LicenseState::Missing
                                 if crate::trial::is_active() =>
@@ -520,6 +531,139 @@ impl App {
             });
         if !open {
             self.show_about = false;
+        }
+    }
+
+    /// Confirmation avant de supprimer la licence installée (lien
+    /// « Désactiver… » de la fenêtre « À propos »).
+    ///
+    /// Confirmation obligatoire parce que le geste est irréversible sans le
+    /// bloc de licence d'origine : celui-ci n'est ni régénérable depuis
+    /// l'appli, ni récupérable une fois `license.txt` supprimé — il faut le
+    /// redemander à l'auteur. La fenêtre annonce donc aussi ce qui se passe
+    /// juste après, qui dépend du délai d'essai.
+    pub(super) fn license_reset_confirm_window(&mut self, ctx: &egui::Context) {
+        if !self.confirm_license_reset {
+            return;
+        }
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        // Ce que devient l'appli une fois la licence retirée : l'essai prend le
+        // relais s'il court encore, sinon les panneaux se reverrouillent tout
+        // de suite. Le dire évite la mauvaise surprise juste après le clic.
+        let aftermath = if crate::trial::is_active() {
+            let days = crate::trial::days_left();
+            match lang {
+                crate::i18n::Lang::Fr => format!(
+                    "Le délai avant inscription prend le relais : encore {days} jour(s)."
+                ),
+                crate::i18n::Lang::En => {
+                    format!("The registration period takes over: {days} day(s) left.")
+                }
+                crate::i18n::Lang::Es => {
+                    format!("El periodo de registro toma el relevo: quedan {days} día(s).")
+                }
+            }
+        } else {
+            tr(
+                "Le désassemblage, les registres/flags et la timeline se reverrouillent immédiatement.",
+                "Disassembly, registers/flags and the timeline lock again immediately.",
+                "El desensamblado, los registros/flags y la línea de tiempo se bloquean de inmediato.",
+            )
+            .to_string()
+        };
+
+        let mut open = true;
+        egui::Window::new(tr(
+            "Désactiver la licence ?",
+            "Deactivate the license?",
+            "¿Desactivar la licencia?",
+        ))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.add_space(4.0);
+            ui.label(tr(
+                "La licence installée sur cette machine va être supprimée.",
+                "The license installed on this machine will be removed.",
+                "Se eliminará la licencia instalada en esta máquina.",
+            ));
+            ui.add_space(6.0);
+            ui.colored_label(
+                FALSE_COL,
+                tr(
+                    "⚠ Irréversible : il faudra recoller le bloc de licence pour la réactiver.",
+                    "⚠ Irreversible: you will need the license block again to re-activate it.",
+                    "⚠ Irreversible: necesitará el bloque de licencia para reactivarla.",
+                ),
+            );
+            ui.add_space(6.0);
+            ui.label(RichText::new(aftermath).small().weak());
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let spacing = 8.0;
+                let btn_w = (ui.available_width() - spacing) / 2.0;
+                if ui
+                    .add_sized(
+                        [btn_w, 28.0],
+                        egui::Button::new(
+                            RichText::new(tr("Désactiver", "Deactivate", "Desactivar")).strong(),
+                        )
+                        .fill(FALSE_COL),
+                    )
+                    .clicked()
+                {
+                    self.reset_license();
+                }
+                if ui
+                    .add_sized(
+                        [btn_w, 28.0],
+                        egui::Button::new(tr("Annuler", "Cancel", "Cancelar")),
+                    )
+                    .clicked()
+                {
+                    self.confirm_license_reset = false;
+                }
+            });
+            ui.add_space(4.0);
+        });
+        if !open {
+            self.confirm_license_reset = false;
+        }
+    }
+
+    /// Supprime la licence du disque et remet l'état en mémoire à zéro.
+    ///
+    /// `license_error` est vidé au passage : un message hérité d'une licence
+    /// devenue invalide n'a plus d'objet une fois le fichier parti, et
+    /// resterait sinon affiché sous la boîte de collage à la réouverture.
+    /// Un échec d'écriture (droits, disque plein) est rapporté là plutôt
+    /// qu'ignoré : sans ça, la licence revient au prochain démarrage sans que
+    /// rien n'ait signalé pourquoi.
+    fn reset_license(&mut self) {
+        self.confirm_license_reset = false;
+        match crate::license::remove() {
+            Ok(()) => {
+                self.license = crate::license::LicenseState::Missing;
+                self.license_error = None;
+            }
+            Err(e) => {
+                self.license_error = Some(format!(
+                    "{} : {e}",
+                    self.tr3(
+                        "suppression de la licence impossible",
+                        "could not remove the license",
+                        "no se pudo eliminar la licencia",
+                    )
+                ));
+                self.show_license_gate = true;
+            }
         }
     }
 
@@ -1750,6 +1894,86 @@ mod settings_tests {
             app.license = license;
             let ctx = egui::Context::default();
             let _ = ctx.run(Default::default(), |ctx| app.about_window(ctx));
+        }
+    }
+
+    /// La confirmation de désactivation doit se rendre dans les deux cas
+    /// qu'elle distingue : essai encore actif (l'essai prend le relais) et
+    /// essai écoulé (reverrouillage immédiat). Les deux branches construisent
+    /// un texte différent, les deux doivent être peintes sans paniquer.
+    #[test]
+    fn license_reset_confirm_window_renders_in_both_trial_states() {
+        let mut app = App::new();
+        app.license = crate::license::valid_for_tests();
+        app.confirm_license_reset = true;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.license_reset_confirm_window(ctx));
+        assert!(
+            app.confirm_license_reset,
+            "reste ouverte tant qu'aucun bouton n'est cliqué"
+        );
+    }
+
+    /// Le cœur de l'action : après confirmation, plus de licence en mémoire,
+    /// plus de message d'erreur résiduel, et la confirmation se referme.
+    /// (`license::remove` ne touche pas au disque en test, voir son garde
+    /// `cfg!(test)` — c'est bien l'effet sur l'état de l'appli qu'on vérifie.)
+    #[test]
+    fn confirming_the_reset_clears_the_license_and_closes_the_dialog() {
+        let mut app = App::new();
+        app.license = crate::license::valid_for_tests();
+        app.license_error = Some("erreur héritée".to_string());
+        app.confirm_license_reset = true;
+        assert!(app.is_licensed());
+
+        app.reset_license();
+
+        assert!(!app.is_licensed(), "la licence doit avoir disparu");
+        assert!(app.license_error.is_none(), "le message hérité doit être vidé");
+        assert!(!app.confirm_license_reset, "la confirmation doit se refermer");
+    }
+
+    /// Annuler ne doit rien désactiver : c'est la garantie qu'apporte la
+    /// confirmation. On simule le geste (fermeture sans passer par
+    /// `reset_license`) et on vérifie que la licence est intacte.
+    #[test]
+    fn cancelling_the_reset_keeps_the_license() {
+        let mut app = App::new();
+        app.license = crate::license::valid_for_tests();
+        app.confirm_license_reset = true;
+
+        app.confirm_license_reset = false; // « Annuler » / croix de fermeture
+
+        assert!(app.is_licensed(), "annuler ne doit jamais désactiver");
+    }
+
+    /// Fermée, elle ne peint rien — et surtout, ne supprime rien : le fichier
+    /// ne part qu'au clic sur « Désactiver ».
+    #[test]
+    fn closed_license_reset_confirm_window_paints_nothing() {
+        let mut app = App::new();
+        app.confirm_license_reset = false;
+        let ctx = egui::Context::default();
+        let out = ctx.run(Default::default(), |ctx| app.license_reset_confirm_window(ctx));
+        assert!(out.shapes.is_empty());
+    }
+
+    /// Le lien « Désactiver… » n'existe que pour une licence réellement
+    /// active : sans licence, il n'y a rien à désactiver, et la fenêtre « À
+    /// propos » propose « Activer… » à la place. Ce test verrouille le fait
+    /// que le simple rendu n'arme jamais la confirmation tout seul.
+    #[test]
+    fn about_window_never_arms_the_reset_confirmation_on_its_own() {
+        for license in [crate::license::LicenseState::Missing, crate::license::valid_for_tests()] {
+            let mut app = App::new();
+            app.show_about = true;
+            app.license = license;
+            let ctx = egui::Context::default();
+            let _ = ctx.run(Default::default(), |ctx| app.about_window(ctx));
+            assert!(
+                !app.confirm_license_reset,
+                "la confirmation ne doit s'ouvrir que sur clic explicite"
+            );
         }
     }
 

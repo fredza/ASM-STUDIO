@@ -420,6 +420,11 @@ pub struct App {
     /// `show_license_gate` : celui-ci est la carte d'accroche, dont le seul
     /// bouton d'action ouvre la vraie boîte de collage.
     pub(super) show_license_nag: bool,
+    /// Demande de confirmation avant de désactiver la licence installée
+    /// (bouton « Désactiver… » de la fenêtre « À propos »). La suppression du
+    /// fichier n'a lieu qu'une fois cette confirmation acceptée : c'est une
+    /// action irréversible sans le bloc de licence d'origine sous la main.
+    pub(super) confirm_license_reset: bool,
     /// `true` quand `show_license_nag` a été ouverte pour bloquer une
     /// fermeture de fenêtre (voir `check_close_request`), plutôt que par le
     /// rappel périodique : change le bouton secondaire en « Quitter quand
@@ -541,6 +546,7 @@ impl App {
             license_input: String::new(),
             license_error: None,
             show_license_nag: false,
+            confirm_license_reset: false,
             exit_pending: false,
             quit_confirmed: false,
             nag_next_at: None,
@@ -792,6 +798,7 @@ impl App {
             self.show_calculator,
             self.show_license_gate,
             self.show_license_nag,
+            self.confirm_license_reset,
             self.palette_open,
             self.pedagogy_predict,
             self.microscope.is_some(),
@@ -868,6 +875,7 @@ impl eframe::App for App {
         self.check_close_request(ctx);
         self.license_nag_window(ctx);
         self.license_gate_window(ctx);
+        self.license_reset_confirm_window(ctx);
         self.repaint_on_dialog_close(ctx, dialogs_before);
         self.updater.poll();
     }

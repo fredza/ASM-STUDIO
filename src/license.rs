@@ -45,7 +45,7 @@ use crate::app::paths::license_path;
 /// répercuté ici) fait échouer *toutes* les licences avec « signature
 /// invalide », sans autre indice — c'est le seul point de couplage entre
 /// les deux dépôts, il se vérifie en comparant les deux tableaux.
-const PUBLIC_KEY: [u8; 32] = [0x0B, 0xBD, 0x39, 0x4F, 0xA8, 0x52, 0x55, 0x03, 0x59, 0x98, 0x88, 0x90, 0x3B, 0x7C, 0xB1, 0x8B, 0x91, 0x06, 0xF5, 0xBB, 0x3E, 0x18, 0x8B, 0xAE, 0xB8, 0x62, 0x46, 0xF4, 0x53, 0x6E, 0x06, 0x60];
+const PUBLIC_KEY: [u8; 32] = [0x6C, 0x2B, 0x5E, 0x9D, 0xD0, 0x82, 0x9F, 0x0D, 0x80, 0x44, 0xC4, 0x96, 0xC6, 0x07, 0x3B, 0x4C, 0xBA, 0x22, 0x96, 0x71, 0xB8, 0xD8, 0xD4, 0xFE, 0xBA, 0x4C, 0xDF, 0x77, 0x72, 0x49, 0x78, 0xF5];
 
 /// Clés publiques dont la clé privée est publiquement connue, donc à ne
 /// jamais embarquer dans un binaire : celle de la seed tout à zéro (valeur
@@ -240,6 +240,31 @@ pub(crate) fn save(raw: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(path, raw.trim())
+}
+
+/// Supprime la licence stockée sur disque — l'appli retombe alors sur
+/// `LicenseState::Missing` au prochain `load()`, donc sur le délai d'essai
+/// s'il court encore, sur le verrouillage sinon.
+///
+/// Ne touche pas aux marqueurs de `crate::trial` : les remettre à zéro d'un
+/// clic offrirait depuis l'interface exactement le contournement que leurs
+/// trois copies redondantes cherchent à rendre délibéré. Désactiver une
+/// licence ne rend donc pas un délai d'essai déjà écoulé.
+///
+/// Une licence déjà absente n'est pas une erreur (`NotFound` ignoré) : le
+/// résultat visé — plus de licence sur disque — est atteint dans les deux cas.
+pub(crate) fn remove() -> std::io::Result<()> {
+    // Même garde que `load` : un test qui exerce le bouton « Désactiver »
+    // effacerait sinon la licence installée sur la machine de développement.
+    if cfg!(test) {
+        return Ok(());
+    }
+    let path = license_path()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "pas de HOME"))?;
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 /// Licence valide de complaisance, pour les tests d'autres modules qui ont
