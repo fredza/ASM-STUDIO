@@ -6,7 +6,7 @@ use crate::i18n;
 use crate::syscall;
 
 use super::{
-    App, ACCENT, ACTION, CHANGED, FALSE_COL, PUSH_COL, POP_COL,
+    App, ACCENT, ACTION, CHANGED, FALSE_COL, FLAG_ON, PUSH_COL, POP_COL,
     micro_stack, micro_static_flags,
 };
 
@@ -417,13 +417,84 @@ impl App {
                         ui.label(RichText::new(env!("CARGO_PKG_VERSION")).monospace().strong());
                         ui.end_row();
                         ui.label("Build");
-                        ui.label(RichText::new(env!("GIT_HASH")).monospace().strong());
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(env!("GIT_HASH")).monospace().strong());
+                            if ui
+                                .small_button("📋")
+                                .on_hover_text(tr(
+                                    "Copier version+build (à communiquer pour la licence)",
+                                    "Copy version+build (needed when requesting a license)",
+                                    "Copiar versión+build (necesario para solicitar una licencia)",
+                                ))
+                                .clicked()
+                            {
+                                ctx.copy_text(crate::license::version_build_tag());
+                            }
+                        });
                         ui.end_row();
                         ui.label("Date");
                         ui.label(RichText::new(env!("BUILD_DATE")).monospace());
                         ui.end_row();
                         ui.label(tr("Auteur", "Author", "Autor"));
                         ui.label(RichText::new("Frédéric Z.").strong());
+                        ui.end_row();
+                        ui.label(tr("Activation", "Activation", "Activación"));
+                        match &self.license {
+                            crate::license::LicenseState::Valid(p) => {
+                                let suffix = match &p.expires_at {
+                                    Some(date) => format!(
+                                        " ({} {date})",
+                                        tr("valable jusqu'au", "valid until", "válida hasta")
+                                    ),
+                                    None => String::new(),
+                                };
+                                ui.colored_label(
+                                    FLAG_ON,
+                                    format!(
+                                        "✔ {} — {}{suffix}",
+                                        tr("Activée", "Activated", "Activada"),
+                                        p.name
+                                    ),
+                                );
+                            }
+                            crate::license::LicenseState::Invalid(_) | crate::license::LicenseState::Missing
+                                if crate::trial::is_active() =>
+                            {
+                                ui.horizontal(|ui| {
+                                    let days = crate::trial::days_left();
+                                    let remaining = match lang {
+                                        crate::i18n::Lang::Fr => format!("encore {days} jour(s)"),
+                                        crate::i18n::Lang::En => format!("{days} day(s) left"),
+                                        crate::i18n::Lang::Es => format!("quedan {days} día(s)"),
+                                    };
+                                    ui.colored_label(
+                                        ACCENT,
+                                        format!(
+                                            "🕐 {} — {remaining}",
+                                            tr("Avant inscription gratuite", "Before free registration", "Antes del registro gratuito")
+                                        ),
+                                    );
+                                    if ui.link(tr("Activer…", "Activate…", "Activar…")).clicked() {
+                                        self.show_license_gate = true;
+                                    }
+                                });
+                            }
+                            crate::license::LicenseState::Invalid(_) | crate::license::LicenseState::Missing => {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        FALSE_COL,
+                                        tr(
+                                            "✘ Délai d'inscription dépassé",
+                                            "✘ Registration period over",
+                                            "✘ Periodo de registro terminado",
+                                        ),
+                                    );
+                                    if ui.link(tr("Activer…", "Activate…", "Activar…")).clicked() {
+                                        self.show_license_gate = true;
+                                    }
+                                });
+                            }
+                        }
                         ui.end_row();
                         ui.label(tr("Licence", "License", "Licencia"));
                         if ui
@@ -761,6 +832,11 @@ impl App {
                     ("Ctrl+S", tr("Enregistrer", "Save", "Guardar")),
                     ("Ctrl+O", tr("Ouvrir", "Open", "Abrir")),
                     ("Ctrl+N", tr("Nouveau", "New", "Nuevo")),
+                    ("Ctrl+F", tr("Rechercher dans l'éditeur", "Find in editor", "Buscar en el editor")),
+                    ("Ctrl+H", tr("Rechercher / remplacer dans l'éditeur", "Find / replace in editor", "Buscar / reemplazar en el editor")),
+                    ("F3 / Maj+F3", tr("Correspondance suivante / précédente", "Next / previous match", "Coincidencia siguiente / anterior")),
+                    ("Ctrl+Maj+[", tr("Replier le label sous le curseur", "Fold the label under the cursor", "Plegar la etiqueta bajo el cursor")),
+                    ("Ctrl+Maj+]", tr("Tout déplier", "Unfold all", "Desplegar todo")),
                     ("← / →", tr("Timeline : précédent / suivant", "Timeline: previous / next", "Línea de tiempo: anterior / siguiente")),
                     ("Home / End", tr("Timeline : début / fin", "Timeline: start / end", "Línea de tiempo: inicio / fin")),
                     ("Ctrl+1", tr("Afficher/masquer l'explorateur", "Show/hide the explorer", "Mostrar/ocultar el explorador")),
@@ -1334,10 +1410,18 @@ impl App {
 
     // ---------- Licence obligatoire (désassemblage, registres/flags, timeline) ----------
 
-    /// Licence valide en vigueur ? Pilote le verrouillage des panneaux avancés
-    /// (voir `dock.rs`).
+    /// Licence valide en vigueur ? (statut affiché dans « À propos », par
+    /// exemple) — distinct de [`Self::is_unlocked`], qui inclut aussi la
+    /// période avant inscription et pilote réellement le verrouillage des
+    /// panneaux.
     pub(super) fn is_licensed(&self) -> bool {
         matches!(self.license, crate::license::LicenseState::Valid(_))
+    }
+
+    /// Licence valide OU période avant inscription gratuite encore en cours :
+    /// pilote le verrouillage des panneaux avancés (voir `dock.rs`).
+    pub(super) fn is_unlocked(&self) -> bool {
+        self.is_licensed() || crate::trial::is_active()
     }
 
     /// Contenu affiché à la place d'un panneau verrouillé.
@@ -1349,15 +1433,146 @@ impl App {
             ui.label(RichText::new("🔒").size(28.0));
             ui.add_space(4.0);
             ui.label(tr(
-                "Fonctionnalité réservée aux licences ASM Studio.",
-                "Feature reserved to ASM Studio license holders.",
-                "Función reservada a los titulares de licencia de ASM Studio.",
+                "Délai avant inscription gratuite dépassé — activez une licence pour continuer.",
+                "Free registration period over — activate a license to continue.",
+                "Periodo de registro gratuito terminado — active una licencia para continuar.",
             ));
             ui.add_space(8.0);
             if ui.button(tr("Activer une licence…", "Activate a license…", "Activar una licencia…")).clicked() {
                 self.show_license_gate = true;
             }
         });
+    }
+
+    /// Carte de rappel affichée à intervalle irrégulier tant qu'aucune licence
+    /// n'est active (voir `check_license_nag`). Volontairement distincte de
+    /// [`Self::license_gate_window`] : ici pas de champ de saisie, juste une
+    /// accroche et un seul geste possible — activer, ou remettre à plus tard.
+    pub(super) fn license_nag_window(&mut self, ctx: &egui::Context) {
+        if !self.show_license_nag {
+            return;
+        }
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+
+        let trial_active = crate::trial::is_active();
+        egui::Window::new("")
+            .id(egui::Id::new("license_nag"))
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .stroke(egui::Stroke::new(1.0_f32, ACCENT.linear_multiply(0.6))),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(340.0);
+                ui.add_space(4.0);
+                ui.vertical_centered(|ui| {
+                    // Médaillon en dégradé léger — la seule touche de couleur
+                    // franche de la carte, pour attirer l'œil sans agresser.
+                    egui::Frame::default()
+                        .fill(ACCENT.linear_multiply(0.18))
+                        .corner_radius(egui::CornerRadius::same(28))
+                        .inner_margin(egui::Margin::same(14))
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("✨").size(28.0));
+                        });
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(tr(
+                            "ASM Studio vous plaît ?",
+                            "Enjoying ASM Studio?",
+                            "¿Le gusta ASM Studio?",
+                        ))
+                        .heading()
+                        .strong()
+                        .color(ACCENT),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(tr(
+                            "Une licence gratuite débloque durablement le désassemblage, \
+                             les registres/flags et la timeline.",
+                            "A free license permanently unlocks disassembly, \
+                             registers/flags and the timeline.",
+                            "Una licencia gratuita desbloquea de forma permanente el \
+                             desensamblado, los registros/flags y la línea de tiempo.",
+                        ))
+                        .color(egui::Color32::from_gray(190)),
+                    );
+
+                    if trial_active {
+                        ui.add_space(8.0);
+                        let days = crate::trial::days_left();
+                        let remaining = match lang {
+                            crate::i18n::Lang::Fr => format!("Encore {days} jour(s) avant l'inscription"),
+                            crate::i18n::Lang::En => format!("{days} day(s) left before registration"),
+                            crate::i18n::Lang::Es => format!("Quedan {days} día(s) antes del registro"),
+                        };
+                        ui.label(RichText::new(format!("🕐 {remaining}")).small().color(ACTION));
+                    }
+
+                    // Ouverte parce qu'on essaie de fermer l'appli : on le dit,
+                    // pour que le bouton « Quitter quand même » plus bas ne
+                    // sorte pas de nulle part.
+                    if self.exit_pending {
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(tr(
+                                "Vous êtes sur le point de quitter ASM Studio.",
+                                "You're about to quit ASM Studio.",
+                                "Está a punto de salir de ASM Studio.",
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                    }
+
+                    ui.add_space(14.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.horizontal(|ui| {
+                        let spacing = 8.0;
+                        let btn_w = (ui.available_width() - spacing) / 2.0;
+                        if ui
+                            .add_sized(
+                                [btn_w, 28.0],
+                                egui::Button::new(RichText::new(tr("Activer une licence", "Activate a license", "Activar una licencia")).strong())
+                                    .fill(ACCENT),
+                            )
+                            .clicked()
+                        {
+                            self.show_license_nag = false;
+                            self.exit_pending = false;
+                            self.show_license_gate = true;
+                        }
+                        let secondary = if self.exit_pending {
+                            tr("Quitter quand même", "Quit anyway", "Salir de todos modos")
+                        } else {
+                            tr("Plus tard", "Later", "Más tarde")
+                        };
+                        if ui.add_sized([btn_w, 28.0], egui::Button::new(secondary)).clicked() {
+                            self.show_license_nag = false;
+                            if self.exit_pending {
+                                self.exit_pending = false;
+                                self.quit_confirmed = true;
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                // Sans ça, en rendu à la demande, rien ne redéclenche
+                                // la frame qui doit noter puis appliquer la fermeture
+                                // (voir le commentaire de `check_close_request`).
+                                ctx.request_repaint();
+                            }
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+            });
     }
 
     /// Fenêtre de saisie de la licence (coller le bloc reçu par e-mail).
@@ -1388,6 +1603,26 @@ impl App {
                     ));
                     ui.add_space(6.0);
                 }
+                ui.horizontal(|ui| {
+                    ui.label(tr(
+                        "Votre version :",
+                        "Your version:",
+                        "Su versión:",
+                    ));
+                    ui.label(RichText::new(crate::license::version_build_tag()).monospace().strong());
+                    if ui
+                        .small_button("📋")
+                        .on_hover_text(tr(
+                            "Copier version+build (à transmettre pour obtenir la licence)",
+                            "Copy version+build (send this to get your license)",
+                            "Copiar versión+build (envíelo para obtener la licencia)",
+                        ))
+                        .clicked()
+                    {
+                        ctx.copy_text(crate::license::version_build_tag());
+                    }
+                });
+                ui.add_space(6.0);
                 ui.label(tr(
                     "Collez ci-dessous le bloc de licence reçu par e-mail :",
                     "Paste the license block you received by e-mail below:",
@@ -1406,7 +1641,13 @@ impl App {
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button(tr("Valider", "Validate", "Validar")).clicked() {
+                    // Déjà activée : rien à revalider, on désactive le bouton plutôt
+                    // que de risquer un remplacement accidentel par un collage erroné.
+                    let already_licensed = self.is_licensed();
+                    if ui
+                        .add_enabled(!already_licensed, egui::Button::new(tr("Valider", "Validate", "Validar")))
+                        .clicked()
+                    {
                         match crate::license::verify(&self.license_input) {
                             Ok(payload) => {
                                 let _ = crate::license::save(&self.license_input);
@@ -1433,6 +1674,57 @@ mod settings_tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// La boîte de collage doit se rendre sans paniquer, y compris quand une
+    /// licence est déjà active (le bouton « Valider » y est alors désactivé,
+    /// mais la fenêtre reste consultable/fermable).
+    #[test]
+    fn license_gate_window_renders_licensed_and_unlicensed() {
+        for license in [crate::license::LicenseState::Missing, crate::license::valid_for_tests()] {
+            let mut app = App::new();
+            app.show_license_gate = true;
+            app.license = license;
+            let ctx = egui::Context::default();
+            let _ = ctx.run(Default::default(), |ctx| app.license_gate_window(ctx));
+            assert!(app.show_license_gate);
+        }
+    }
+
+    /// La carte de rappel doit se rendre sans paniquer et proposer les deux
+    /// gestes attendus : activer (ouvre la vraie boîte de collage) ou remettre
+    /// à plus tard (referme juste la carte).
+    #[test]
+    fn license_nag_window_renders_and_buttons_toggle_the_right_flags() {
+        let mut app = App::new();
+        app.show_license_nag = true;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.license_nag_window(ctx));
+        assert!(app.show_license_nag, "reste ouverte tant qu'aucun bouton n'est cliqué");
+        assert!(!app.show_license_gate, "ne doit pas ouvrir la boîte de collage toute seule");
+    }
+
+    /// Ouverte parce qu'une fermeture a été bloquée (`exit_pending`), elle doit
+    /// se rendre sans paniquer aussi — c'est là qu'apparaît « Quitter quand
+    /// même » à la place de « Plus tard ».
+    #[test]
+    fn license_nag_window_renders_in_exit_pending_mode() {
+        let mut app = App::new();
+        app.show_license_nag = true;
+        app.exit_pending = true;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.license_nag_window(ctx));
+        assert!(app.show_license_nag, "reste ouverte tant qu'aucun bouton n'est cliqué");
+    }
+
+    /// Fermée, elle ne peint rien.
+    #[test]
+    fn closed_license_nag_window_paints_nothing() {
+        let mut app = App::new();
+        app.show_license_nag = false;
+        let ctx = egui::Context::default();
+        let out = ctx.run(Default::default(), |ctx| app.license_nag_window(ctx));
+        assert!(out.shapes.is_empty());
+    }
+
     /// La licence affichée doit être celle du fichier `LICENSE.md` embarqué, et
     /// surtout plus MIT : c'est le contrat de cette fenêtre.
     #[test]
@@ -1446,6 +1738,19 @@ mod settings_tests {
         let ctx = egui::Context::default();
         let _ = ctx.run(Default::default(), |ctx| app.license_window(ctx));
         assert!(app.show_license, "la fenêtre reste ouverte tant qu'on ne la ferme pas");
+    }
+
+    /// La fenêtre « À propos » doit se rendre sans paniquer, qu'une licence
+    /// soit active ou non — c'est là qu'apparaît le statut d'activation.
+    #[test]
+    fn about_window_renders_without_panicking_licensed_and_unlicensed() {
+        for license in [crate::license::LicenseState::Missing, crate::license::valid_for_tests()] {
+            let mut app = App::new();
+            app.show_about = true;
+            app.license = license;
+            let ctx = egui::Context::default();
+            let _ = ctx.run(Default::default(), |ctx| app.about_window(ctx));
+        }
     }
 
     /// Fermée, elle ne peint rien.

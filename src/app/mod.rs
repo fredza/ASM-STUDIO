@@ -57,13 +57,25 @@ pub(super) fn editor_id() -> egui::Id {
 /// dès qu'on avait cliqué une fois dans « aller @ » (egui garde ce focus
 /// indéfiniment) ; « un champ de saisie a-t-il le focus ? » avait le même
 /// défaut, à peine atténué. Seule l'appartenance au panneau focalisé tranche.
-pub(super) fn text_inputs() -> [(egui::Id, dock::Panel); 4] {
+pub(super) fn text_inputs() -> [(egui::Id, dock::Panel); 6] {
     [
         (editor_id(), dock::Panel::Editor),
         (egui::Id::new("kb_mem_goto"), dock::Panel::Memory),
         (egui::Id::new("kb_mem_poke"), dock::Panel::Memory),
         (egui::Id::new("kb_reg_edit"), dock::Panel::Registers),
+        (find_query_id(), dock::Panel::Editor),
+        (find_replace_id(), dock::Panel::Editor),
     ]
+}
+
+/// Id stable du champ de recherche de l'éditeur (Ctrl+F).
+pub(super) fn find_query_id() -> egui::Id {
+    egui::Id::new("kb_find_query")
+}
+
+/// Id stable du champ de remplacement de l'éditeur (Ctrl+H).
+pub(super) fn find_replace_id() -> egui::Id {
+    egui::Id::new("kb_find_replace")
 }
 
 impl App {
@@ -291,6 +303,28 @@ pub struct App {
     /// Position du curseur dans l'éditeur (1-based), pour la barre d'état.
     pub(super) editor_ln: usize,
     pub(super) editor_col: usize,
+    /// Position du curseur dans l'éditeur (octets dans `source`), telle que
+    /// laissée par le rendu précédent — utilisée pour l'appariement de
+    /// parenthèses de la frame courante (un cran de retard imperceptible).
+    pub(super) editor_cursor_byte: usize,
+    /// Barre de recherche/remplacement (Ctrl+F / Ctrl+H) de l'éditeur.
+    pub(super) show_find: bool,
+    /// Affiche en plus la ligne de remplacement (Ctrl+H) plutôt que la seule recherche.
+    pub(super) find_replace_mode: bool,
+    pub(super) find_query: String,
+    pub(super) find_replace_text: String,
+    pub(super) find_case_sensitive: bool,
+    /// Index (dans la liste des correspondances, recalculée à chaque frame)
+    /// de la correspondance active.
+    pub(super) find_current: usize,
+    /// Ligne (0-based) vers laquelle faire défiler l'éditeur au prochain rendu,
+    /// consommée par `editor_ui` — le même patron que `scroll_to_sel` pour les
+    /// panneaux ancrables.
+    pub(super) pending_scroll_to_line: Option<usize>,
+    /// Labels de premier niveau actuellement repliés (par nom, pas par ligne :
+    /// survit aux éditions ailleurs dans le fichier). Non vide => l'éditeur
+    /// bascule en vue lecture seule (voir `folded_editor_ui`).
+    pub(super) folded_labels: std::collections::BTreeSet<String>,
     pub(super) stack_tab: StackTab,
     /// Thème sombre actif (mis à jour dans `apply_theme`) — palette de texte.
     pub(super) dark: bool,
@@ -382,6 +416,25 @@ pub struct App {
     pub(super) show_license_gate: bool,
     pub(super) license_input: String,
     pub(super) license_error: Option<String>,
+    /// Rappel de licence affiché à intervalle irrégulier — distinct de
+    /// `show_license_gate` : celui-ci est la carte d'accroche, dont le seul
+    /// bouton d'action ouvre la vraie boîte de collage.
+    pub(super) show_license_nag: bool,
+    /// `true` quand `show_license_nag` a été ouverte pour bloquer une
+    /// fermeture de fenêtre (voir `check_close_request`), plutôt que par le
+    /// rappel périodique : change le bouton secondaire en « Quitter quand
+    /// même » au lieu de « Plus tard ».
+    pub(super) exit_pending: bool,
+    /// `true` une fois que l'utilisateur a cliqué « Quitter quand même » sur
+    /// la carte de rappel. Sans ça, le `ViewportCommand::Close` qu'on envoie
+    /// nous-mêmes redéclenche `close_requested()` à la frame suivante :
+    /// `check_close_request` l'interceptait alors une seconde fois et
+    /// annulait sa propre fermeture (bouton visiblement sans effet).
+    pub(super) quit_confirmed: bool,
+    /// Prochain rappel de licence (ouvre `show_license_nag` tout seul),
+    /// en secondes de l'horloge egui (`ctx.input(|i| i.time)`). `None` tant
+    /// qu'aucune échéance n'a encore été tirée pour cette session.
+    pub(super) nag_next_at: Option<f64>,
 }
 
 impl App {
@@ -423,6 +476,15 @@ impl App {
             editor_scroll_y: 0.0,
             editor_ln: 1,
             editor_col: 1,
+            editor_cursor_byte: 0,
+            show_find: false,
+            find_replace_mode: false,
+            find_query: String::new(),
+            find_replace_text: String::new(),
+            find_case_sensitive: false,
+            find_current: 0,
+            pending_scroll_to_line: None,
+            folded_labels: std::collections::BTreeSet::new(),
             stack_tab: StackTab::Stack,
             dark: true,
             show_tooltips: true,
@@ -478,19 +540,22 @@ impl App {
             show_license_gate: false,
             license_input: String::new(),
             license_error: None,
+            show_license_nag: false,
+            exit_pending: false,
+            quit_confirmed: false,
+            nag_next_at: None,
         };
         app.load_settings();
         app.license = crate::license::load();
-        // `load()` renvoie toujours `Missing` en `cfg!(test)` (comme les réglages,
-        // volontairement indépendant de toute licence installée sur la machine de
-        // dev) : ouvrir la fenêtre automatiquement dans ce cas casserait les tests
-        // qui supposent `App::new()` sans boîte de dialogue ouverte.
-        if !cfg!(test) {
-            app.show_license_gate = !matches!(app.license, crate::license::LicenseState::Valid(_));
-        }
+        // Plus d'ouverture automatique au lancement : un rappel systématique
+        // à chaque démarrage était trop intrusif. La fenêtre se rouvre plutôt
+        // toute seule à intervalle irrégulier pendant que l'app tourne (voir
+        // `nag_next_at` dans `update()`), et reste sinon accessible à la main
+        // (menu Aide, palette).
+        //
         // Une licence stockée mais devenue invalide (ex. mise à jour vers une
         // version différente) doit expliquer pourquoi, pas seulement rouvrir
-        // une fenêtre de saisie vide.
+        // une fenêtre de saisie vide, dès qu'elle s'affichera.
         if let crate::license::LicenseState::Invalid(reason) = &app.license {
             app.license_error = Some(reason.clone());
         }
@@ -726,6 +791,7 @@ impl App {
             self.show_settings,
             self.show_calculator,
             self.show_license_gate,
+            self.show_license_nag,
             self.palette_open,
             self.pedagogy_predict,
             self.microscope.is_some(),
@@ -798,9 +864,82 @@ impl eframe::App for App {
         self.predict_window(ctx);
         self.diagnosis_window(ctx);
         self.update_window(ctx);
+        self.check_license_nag(ctx);
+        self.check_close_request(ctx);
+        self.license_nag_window(ctx);
         self.license_gate_window(ctx);
         self.repaint_on_dialog_close(ctx, dialogs_before);
         self.updater.poll();
+    }
+}
+
+impl App {
+    /// Rouvre `show_license_nag` tout seul, à intervalle irrégulier, tant
+    /// qu'aucune licence n'est active — plutôt qu'à chaque lancement (trop
+    /// intrusif). Le premier délai est tiré ici, au premier appel, faute
+    /// d'horloge egui disponible dans `App::new()`.
+    fn check_license_nag(&mut self, ctx: &egui::Context) {
+        if self.is_licensed() {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        match self.nag_next_at {
+            None => self.nag_next_at = Some(now + Self::random_nag_interval()),
+            Some(t) if now >= t => {
+                self.show_license_nag = true;
+                self.nag_next_at = Some(now + Self::random_nag_interval());
+            }
+            _ => {
+                // Sans interaction utilisateur, egui ne redessine pas de
+                // lui-même : on force un réveil de temps à autre pour que
+                // l'échéance soit vérifiée même si l'app reste ouverte sans
+                // qu'on y touche.
+                ctx.request_repaint_after(std::time::Duration::from_secs(60));
+            }
+        }
+    }
+
+    /// Bloque une tentative de fermeture (croix de la fenêtre ou Fichier ▸
+    /// Quitter, les deux passent par le même événement) tant qu'aucune
+    /// licence n'est active : la carte de rappel s'ouvre une dernière fois,
+    /// avec un geste explicite pour quitter quand même plutôt qu'une
+    /// fermeture silencieuse qui ne rappelle jamais rien à personne.
+    fn check_close_request(&mut self, ctx: &egui::Context) {
+        if self.is_licensed() {
+            return;
+        }
+        // `quit_confirmed` : une fois « Quitter quand même » cliqué, on laisse
+        // filer — sinon le `Close` qu'on envoie soi-même repasserait par ici
+        // et s'auto-annulerait (voir la doc du champ). Mais envoyer `Close`
+        // ne fait que programmer un événement pour la frame suivante (voir
+        // `egui_winit::process_viewport_commands` et le commentaire
+        // d'eframe sur `WindowEvent::CloseRequested` : « we may need to
+        // repaint... perhaps twice »). En rendu à la demande, sans repaint
+        // demandé, cette frame suivante n'arrive jamais toute seule et
+        // l'appli semble ne pas vouloir quitter : on force donc un réveil
+        // continu jusqu'à ce qu'eframe ait fini de traiter la fermeture.
+        if self.quit_confirmed {
+            ctx.request_repaint();
+            return;
+        }
+        if ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.show_license_nag = true;
+            self.exit_pending = true;
+        }
+    }
+
+    /// Entre 25 et 45 minutes : assez espacé pour ne pas agacer, comme
+    /// demandé. Pseudo-aléatoire via les nanosecondes de l'horloge système —
+    /// pas besoin d'une dépendance `rand` pour un simple délai d'agacement.
+    fn random_nag_interval() -> f64 {
+        const MIN_SECS: f64 = 25.0 * 60.0;
+        const SPAN_SECS: f64 = 20.0 * 60.0;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        MIN_SECS + (nanos as f64 / u32::MAX as f64) * SPAN_SECS
     }
 }
 
@@ -992,5 +1131,140 @@ mod tests {
             app.syscalls.is_empty(),
             "après resume avant le syscall, la trace ne doit pas rester figée"
         );
+    }
+
+    // ---------- Rappel de licence (nag) ----------
+
+    fn run_at(app: &mut App, ctx: &egui::Context, time: f64) {
+        let input = egui::RawInput { time: Some(time), ..Default::default() };
+        let _ = ctx.run(input, |ctx| app.check_license_nag(ctx));
+    }
+
+    #[test]
+    fn first_check_schedules_a_future_nag_without_opening_it() {
+        let mut app = App::new();
+        assert!(!app.is_licensed());
+        let ctx = egui::Context::default();
+        run_at(&mut app, &ctx, 0.0);
+        assert!(!app.show_license_nag, "pas d'ouverture au premier lancement");
+        assert!(app.nag_next_at.is_some_and(|t| t > 0.0), "une échéance future doit être tirée");
+    }
+
+    #[test]
+    fn nag_opens_once_the_deadline_is_reached_and_schedules_the_next_one() {
+        let mut app = App::new();
+        let ctx = egui::Context::default();
+        run_at(&mut app, &ctx, 0.0);
+        let first_deadline = app.nag_next_at.unwrap();
+
+        // Juste avant l'échéance : rien ne s'ouvre encore.
+        run_at(&mut app, &ctx, first_deadline - 1.0);
+        assert!(!app.show_license_nag);
+
+        // À l'échéance (ou après) : la fenêtre s'ouvre, et une nouvelle
+        // échéance future est tirée pour le prochain rappel.
+        run_at(&mut app, &ctx, first_deadline);
+        assert!(app.show_license_nag, "l'échéance est atteinte : le rappel s'ouvre");
+        let second_deadline = app.nag_next_at.unwrap();
+        assert!(second_deadline > first_deadline, "un nouveau délai est programmé");
+    }
+
+    #[test]
+    fn a_valid_license_never_triggers_the_nag() {
+        let mut app = App::new();
+        app.license = crate::license::valid_for_tests();
+        let ctx = egui::Context::default();
+        run_at(&mut app, &ctx, 0.0);
+        run_at(&mut app, &ctx, 1_000_000.0);
+        assert!(!app.show_license_nag, "licencié : jamais de rappel");
+        assert!(app.nag_next_at.is_none(), "aucune échéance n'est même tirée");
+    }
+
+    // ---------- Blocage de la fermeture tant que non licencié ----------
+
+    /// Simule un événement de fermeture (croix de fenêtre, ou `ViewportCommand::Close`
+    /// envoyé par Fichier ▸ Quitter — les deux se traduisent par le même événement).
+    fn close_requested_input() -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.viewports.insert(
+            input.viewport_id,
+            egui::ViewportInfo { events: vec![egui::ViewportEvent::Close], ..Default::default() },
+        );
+        input
+    }
+
+    #[test]
+    fn unlicensed_close_is_cancelled_and_opens_the_nag() {
+        let mut app = App::new();
+        assert!(!app.is_licensed());
+        let ctx = egui::Context::default();
+        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+
+        assert!(app.show_license_nag, "la fermeture doit ouvrir la carte de rappel");
+        assert!(app.exit_pending, "on doit savoir que c'est une tentative de fermeture");
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(
+            commands.contains(&egui::ViewportCommand::CancelClose),
+            "la fermeture doit être annulée le temps de montrer le rappel"
+        );
+    }
+
+    #[test]
+    fn licensed_close_is_never_intercepted() {
+        let mut app = App::new();
+        app.license = crate::license::valid_for_tests();
+        let ctx = egui::Context::default();
+        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+
+        assert!(!app.show_license_nag, "licencié : la fermeture doit se dérouler normalement");
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+    }
+
+    /// Régression : après avoir cliqué « Quitter quand même », le `Close`
+    /// qu'on envoie soi-même ne doit plus être réintercepté à la frame
+    /// suivante — sinon le bouton n'a visiblement aucun effet (la carte se
+    /// rouvre en boucle au lieu de laisser l'appli se fermer).
+    #[test]
+    fn confirmed_quit_is_never_intercepted_again() {
+        let mut app = App::new();
+        app.quit_confirmed = true; // posé par le bouton « Quitter quand même »
+        let ctx = egui::Context::default();
+        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+
+        assert!(!app.show_license_nag, "la carte ne doit pas se rouvrir après confirmation");
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(
+            !commands.contains(&egui::ViewportCommand::CancelClose),
+            "la fermeture confirmée ne doit plus jamais être annulée"
+        );
+    }
+
+    /// Régression : `ViewportCommand::Close` ne fait que programmer un
+    /// événement pour la frame suivante (voir la doc de `check_close_request`).
+    /// Sans repaint forcé tant que `quit_confirmed`, en rendu à la demande
+    /// cette frame n'arrive jamais et l'appli ne quitte jamais vraiment —
+    /// c'est ce qui rendait le bouton « Quitter quand même » silencieusement
+    /// inopérant.
+    #[test]
+    fn quit_confirmed_keeps_requesting_a_repaint_until_eframe_closes() {
+        use std::time::Duration;
+        let mut app = App::new();
+        app.quit_confirmed = true;
+        let ctx = egui::Context::default();
+        // Même sans nouvel événement de fermeture, tant qu'on n'a pas
+        // effectivement quitté on continue à réclamer un rendu immédiat.
+        let out = ctx.run(Default::default(), |ctx| app.check_close_request(ctx));
+        let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        assert_eq!(delay, Duration::ZERO, "un réveil immédiat doit être programmé");
+    }
+
+    #[test]
+    fn a_frame_without_close_event_touches_nothing() {
+        let mut app = App::new();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.check_close_request(ctx));
+        assert!(!app.show_license_nag);
+        assert!(!app.exit_pending);
     }
 }

@@ -13,6 +13,7 @@ mod license;
 mod srcmap;
 mod syntax;
 mod syscall;
+mod trial;
 mod tutorial;
 mod updater;
 

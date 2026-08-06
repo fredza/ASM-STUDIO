@@ -22,6 +22,11 @@ pub(crate) enum Command {
     Open,
     Save,
     SaveAs,
+    // Éditeur
+    Find,
+    FindReplace,
+    FoldAtCursor,
+    UnfoldAll,
     // Exécution
     Build,
     Run,
@@ -60,6 +65,10 @@ impl Command {
             Command::Open => t("Fichier : Ouvrir…", "File: Open…", "Archivo: Abrir…").into(),
             Command::Save => t("Fichier : Enregistrer", "File: Save", "Archivo: Guardar").into(),
             Command::SaveAs => t("Fichier : Enregistrer sous…", "File: Save As…", "Archivo: Guardar como…").into(),
+            Command::Find => t("Rechercher dans l'éditeur", "Find in editor", "Buscar en el editor").into(),
+            Command::FindReplace => t("Rechercher / remplacer dans l'éditeur", "Find / replace in editor", "Buscar / reemplazar en el editor").into(),
+            Command::FoldAtCursor => t("Replier le label sous le curseur", "Fold the label under the cursor", "Plegar la etiqueta bajo el cursor").into(),
+            Command::UnfoldAll => t("Tout déplier", "Unfold all", "Desplegar todo").into(),
             Command::Build => t("Assembler", "Build", "Ensamblar").into(),
             Command::Run => t("Lancer le programme", "Run the program", "Ejecutar el programa").into(),
             Command::Step => t("Pas à pas (une instruction)", "Step (one instruction)", "Paso a paso (una instrucción)").into(),
@@ -106,6 +115,10 @@ impl Command {
             Command::Open => "Ctrl+O",
             Command::Save => "Ctrl+S",
             Command::Build => "Ctrl+B",
+            Command::Find => "Ctrl+F",
+            Command::FindReplace => "Ctrl+H",
+            Command::FoldAtCursor => "Ctrl+Maj+[",
+            Command::UnfoldAll => "Ctrl+Maj+]",
             Command::Run => "F5",
             Command::Step => "F10",
             Command::Stop => "Échap",
@@ -131,6 +144,10 @@ impl Command {
             Command::Open,
             Command::Save,
             Command::SaveAs,
+            Command::Find,
+            Command::FindReplace,
+            Command::FoldAtCursor,
+            Command::UnfoldAll,
             Command::TimelineStart,
             Command::TimelinePrev,
             Command::TimelineNext,
@@ -243,6 +260,20 @@ impl App {
                 self.save_source();
             }
             Command::SaveAs => self.open_saveas(),
+            Command::FoldAtCursor => self.fold_label_at_cursor(),
+            Command::UnfoldAll => self.unfold_all(),
+            Command::Find => {
+                self.show_find = true;
+                self.find_replace_mode = false;
+                self.show_panel(Panel::Editor);
+                self.focus_panel(Panel::Editor);
+            }
+            Command::FindReplace => {
+                self.show_find = true;
+                self.find_replace_mode = true;
+                self.show_panel(Panel::Editor);
+                self.focus_panel(Panel::Editor);
+            }
             Command::Build => self.build(),
             Command::Run => self.launch(),
             Command::Step => self.step(),

@@ -36,8 +36,33 @@ readonly DIST="${ROOT}/dist"
 readonly STAGE="${DIST}/${PKG}"
 
 step "Compilation (release)"
+# Le script de build (hash git, date) n'est réexécuté que si .git/HEAD ou
+# .git/logs/HEAD a changé : un binaire release gardé du jour d'avant affiche
+# donc un « Build » périmé dans « À propos » — celui-là même que l'utilisateur
+# copie pour demander sa licence. On force la réexécution avant de packager.
+touch build.rs
 cargo build --release
 ok "target/release/asm_studio"
+
+# La clé publique de vérification des licences est figée dans le binaire à la
+# compilation. Un binaire plus ancien que la dernière modification de
+# `src/license.rs` en embarque une autre et refuse toutes les licences avec
+# « signature invalide » — c'est ce qui fait « la licence marche en debug mais
+# pas en release ». On vérifie que ce qui part en distribution contient bien la
+# clé actuellement dans les sources, et pas une clé de test.
+if ! python3 - "${ROOT}/src/license.rs" target/release/asm_studio <<'PY'
+import re, sys
+src, binary = sys.argv[1], sys.argv[2]
+m = re.search(r'const PUBLIC_KEY: \[u8; 32\] = \[(.*?)\];', open(src).read(), re.S)
+key = bytes(int(x, 16) for x in re.findall(r'0x([0-9A-Fa-f]{2})', m.group(1)))
+sys.exit(0 if key in open(binary, 'rb').read() else 1)
+PY
+then
+    err "le binaire release n'embarque pas la PUBLIC_KEY de src/license.rs"
+    dim "Recompilez depuis zéro :  cargo clean -p asm_studio && cargo build --release"
+    exit 1
+fi
+ok "clé publique de licence conforme aux sources"
 
 step "Vérifications avant publication"
 # Une archive qui ne passe pas les tests n'a rien à faire en ligne.

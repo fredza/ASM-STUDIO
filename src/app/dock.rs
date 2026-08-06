@@ -210,19 +210,20 @@ impl TabViewer for Viewer<'_> {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Panel) {
         let app = &mut *self.app;
         // Disasm, Flags, Registers et Timeline sont réservés aux licences
-        // ASM Studio (voir `crate::license`) : sans licence valide, le contenu
+        // ASM Studio ou à la période avant inscription gratuite (voir
+        // `crate::license`/`crate::trial`) : sans l'un ou l'autre, le contenu
         // réel cède la place à `locked_panel_ui` (src/app/ui_windows.rs).
         match tab {
             Panel::Editor => app.editor_tab_ui(ui),
-            Panel::Disasm => if app.is_licensed() { app.disasm_ui(ui) } else { app.locked_panel_ui(ui) },
+            Panel::Disasm => if app.is_unlocked() { app.disasm_ui(ui) } else { app.locked_panel_ui(ui) },
             Panel::MemMap => app.memory_map_ui(ui),
             Panel::Explorer => app.explorer_ui(ui),
             Panel::Instruction => app.instruction_ui(ui),
-            Panel::Flags => if app.is_licensed() { app.flags_ui(ui) } else { app.locked_panel_ui(ui) },
-            Panel::Registers => if app.is_licensed() { app.registers_ui(ui) } else { app.locked_panel_ui(ui) },
+            Panel::Flags => if app.is_unlocked() { app.flags_ui(ui) } else { app.locked_panel_ui(ui) },
+            Panel::Registers => if app.is_unlocked() { app.registers_ui(ui) } else { app.locked_panel_ui(ui) },
             Panel::Stack => app.stack_ui(ui),
             Panel::Memory => app.memory_ui(ui),
-            Panel::Timeline => if app.is_licensed() { app.timeline_col_ui(ui) } else { app.locked_panel_ui(ui) },
+            Panel::Timeline => if app.is_unlocked() { app.timeline_col_ui(ui) } else { app.locked_panel_ui(ui) },
             Panel::Console => app.console_ui(ui),
             Panel::CallStack => app.callstack_ui(ui),
             Panel::Syscalls => app.syscalls_ui(ui),

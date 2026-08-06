@@ -30,7 +30,232 @@ impl App {
             });
         });
         ui.separator();
-        self.editor_ui(ui);
+        if self.show_find {
+            self.find_bar_ui(ui);
+            ui.add_space(2.0);
+        }
+        let fold_ranges = compute_fold_ranges(&self.source);
+        if fold_ranges.iter().any(|f| self.folded_labels.contains(&f.label)) {
+            self.folded_editor_ui(ui, &fold_ranges);
+        } else {
+            self.editor_ui(ui);
+        }
+    }
+
+    /// Vue en lecture seule affichée tant qu'au moins un label est replié :
+    /// chaque ligne visible est une rangée à part (numéro + coloration
+    /// syntaxique d'une seule ligne), les zones repliées cédant la place à un
+    /// marqueur cliquable. On n'édite jamais à travers un repli — pas besoin
+    /// de synchroniser texte réel et texte affiché, ni de gérer un curseur ici.
+    fn folded_editor_ui(&mut self, ui: &mut egui::Ui, fold_ranges: &[FoldRange]) {
+        let dark = self.dark;
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let lines: Vec<String> = self.source.lines().map(str::to_string).collect();
+        let width = lines.len().to_string().len();
+        let mut to_fold: Option<String> = None;
+        let mut to_unfold: Option<String> = None;
+
+        egui::ScrollArea::both()
+            .id_salt("editor_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let mut i = 0usize;
+                while i < lines.len() {
+                    // Zone repliable démarrant à cette ligne, repliée ou non.
+                    let range_here = fold_ranges.iter().find(|f| f.start_line == i);
+                    let folded_here = range_here.filter(|f| self.folded_labels.contains(&f.label));
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{:>width$}", i + 1)).monospace().color(GUTTER));
+                        let job = syntax::highlight(&format!("{}\n", lines[i]), dark, None, None, None);
+                        let galley = ui.fonts_mut(|f| f.layout_job(job));
+                        if let Some(range) = range_here.filter(|_| folded_here.is_none()) {
+                            // Label encore déplié, avec un corps à replier.
+                            let resp = ui.add(egui::Label::new(galley).sense(egui::Sense::click()));
+                            if resp.clicked() {
+                                to_fold = Some(range.label.clone());
+                            }
+                        } else {
+                            ui.add(egui::Label::new(galley));
+                        }
+                    });
+                    if let Some(f) = folded_here {
+                        let hidden = f.end_line - f.start_line;
+                        ui.horizontal(|ui| {
+                            ui.add_space((width + 2) as f32 * 7.0);
+                            let text = format!(
+                                "⋯ {hidden} {}",
+                                tr(
+                                    "ligne(s) repliée(s) — cliquer pour déplier",
+                                    "line(s) folded — click to unfold",
+                                    "línea(s) plegada(s) — clic para desplegar",
+                                )
+                            );
+                            if ui.selectable_label(false, RichText::new(text).italics().color(ACCENT)).clicked() {
+                                to_unfold = Some(f.label.clone());
+                            }
+                        });
+                        i = f.end_line + 1;
+                    } else {
+                        i += 1;
+                    }
+                }
+            });
+
+        if let Some(name) = to_fold {
+            self.folded_labels.insert(name);
+        }
+        if let Some(name) = to_unfold {
+            self.folded_labels.remove(&name);
+        }
+    }
+
+    /// Replie le label de premier niveau qui contient la position du curseur
+    /// (telle qu'elle était au dernier rendu éditable — voir `editor_cursor_byte`).
+    /// Sans effet si le curseur n'est dans aucun label, ou si celui-ci n'a pas
+    /// de corps à replier.
+    pub(super) fn fold_label_at_cursor(&mut self) {
+        let ranges = compute_fold_ranges(&self.source);
+        let byte = self.editor_cursor_byte.min(self.source.len());
+        let cursor_line = self.source[..byte].matches('\n').count();
+        if let Some(f) = ranges.iter().find(|f| cursor_line >= f.start_line && cursor_line <= f.end_line) {
+            self.folded_labels.insert(f.label.clone());
+        }
+    }
+
+    /// Ctrl+Maj+] : dépliage total (échappatoire simple, sans devoir viser
+    /// chaque marqueur un par un).
+    pub(super) fn unfold_all(&mut self) {
+        self.folded_labels.clear();
+    }
+
+    /// Barre de recherche/remplacement (Ctrl+F / Ctrl+H), au-dessus du texte.
+    pub(super) fn find_bar_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let matches = self.find_matches();
+        self.find_current = if matches.is_empty() { 0 } else { self.find_current % matches.len() };
+
+        egui::Frame::default()
+            .fill(ui.visuals().extreme_bg_color)
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .corner_radius(egui::CornerRadius::same(4))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.find_query)
+                            .id(super::find_query_id())
+                            .desired_width(180.0)
+                            .hint_text(tr("Rechercher", "Find", "Buscar")),
+                    );
+                    if resp.changed() {
+                        self.find_current = 0;
+                    }
+                    if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if ui.input(|i| i.modifiers.shift) {
+                            self.find_prev();
+                        } else {
+                            self.find_next();
+                        }
+                    }
+
+                    if matches.is_empty() {
+                        if !self.find_query.is_empty() {
+                            ui.colored_label(FALSE_COL, tr("Aucun résultat", "No results", "Sin resultados"));
+                        }
+                    } else {
+                        ui.label(format!("{}/{}", self.find_current + 1, matches.len()));
+                    }
+                    if ui.small_button("◀").on_hover_text(tr("Précédent", "Previous", "Anterior")).clicked() {
+                        self.find_prev();
+                    }
+                    if ui.small_button("▶").on_hover_text(tr("Suivant", "Next", "Siguiente")).clicked() {
+                        self.find_next();
+                    }
+                    if ui
+                        .selectable_label(self.find_case_sensitive, "Aa")
+                        .on_hover_text(tr("Respecter la casse", "Match case", "Distinguir mayúsculas"))
+                        .clicked()
+                    {
+                        self.find_case_sensitive = !self.find_case_sensitive;
+                        self.find_current = 0;
+                    }
+                    if ui
+                        .small_button("✕")
+                        .on_hover_text(tr("Fermer (Échap)", "Close (Esc)", "Cerrar (Esc)"))
+                        .clicked()
+                    {
+                        self.show_find = false;
+                    }
+                });
+                if self.find_replace_mode {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.find_replace_text)
+                                .id(super::find_replace_id())
+                                .desired_width(180.0)
+                                .hint_text(tr("Remplacer par", "Replace with", "Reemplazar con")),
+                        );
+                        if ui.button(tr("Remplacer", "Replace", "Reemplazar")).clicked() {
+                            self.find_replace_current();
+                        }
+                        if ui.button(tr("Tout remplacer", "Replace all", "Reemplazar todo")).clicked() {
+                            self.find_replace_all();
+                        }
+                    });
+                }
+            });
+    }
+
+    /// Correspondances de la recherche active dans le source courant.
+    pub(super) fn find_matches(&self) -> Vec<(usize, usize)> {
+        syntax::find_matches(&self.source, &self.find_query, self.find_case_sensitive)
+    }
+
+    pub(super) fn find_next(&mut self) {
+        let matches = self.find_matches();
+        if matches.is_empty() {
+            return;
+        }
+        self.find_current = (self.find_current + 1) % matches.len();
+        self.request_scroll_to_current_match(&matches);
+    }
+
+    pub(super) fn find_prev(&mut self) {
+        let matches = self.find_matches();
+        if matches.is_empty() {
+            return;
+        }
+        self.find_current = (self.find_current + matches.len() - 1) % matches.len();
+        self.request_scroll_to_current_match(&matches);
+    }
+
+    fn request_scroll_to_current_match(&mut self, matches: &[(usize, usize)]) {
+        let Some(&(start, _)) = matches.get(self.find_current) else { return };
+        let line = self.source[..start].matches('\n').count();
+        self.pending_scroll_to_line = Some(line);
+    }
+
+    /// Remplace la correspondance active par `find_replace_text`.
+    pub(super) fn find_replace_current(&mut self) {
+        let matches = self.find_matches();
+        let Some(&(s, e)) = matches.get(self.find_current) else { return };
+        self.source.replace_range(s..e, &self.find_replace_text);
+        self.dirty = true;
+    }
+
+    /// Remplace toutes les correspondances. Parcourt de la fin vers le début
+    /// pour que les octets déjà remplacés ne décalent pas les offsets suivants.
+    pub(super) fn find_replace_all(&mut self) {
+        let matches = self.find_matches();
+        if matches.is_empty() {
+            return;
+        }
+        for &(s, e) in matches.iter().rev() {
+            self.source.replace_range(s..e, &self.find_replace_text);
+        }
+        self.dirty = true;
+        self.find_current = 0;
     }
 
     /// Repère « ▶ RIP : 0x… mnémonique opérandes », si un programme tourne.
@@ -76,9 +301,27 @@ impl App {
         let hl = self.current_source_line();
         let dark = self.dark;
 
+        // Recherche active (Ctrl+F) : surlignage par-dessus la coloration
+        // syntaxique, sans le calculer si la barre est fermée ou vide.
+        let matches = self.find_matches();
+        let current_offset = (!matches.is_empty())
+            .then(|| matches[self.find_current % matches.len()].0);
+        let find_highlight = (self.show_find && !self.find_query.is_empty()).then_some(syntax::FindHighlight {
+            query: self.find_query.as_str(),
+            case_sensitive: self.find_case_sensitive,
+            current: current_offset,
+        });
+
+        // Parenthèse/crochet correspondant à celui que touche le curseur, tel
+        // qu'il était à la fin de la frame précédente — un cran de retard
+        // imperceptible, dans le même esprit que la ligne RIP surlignée.
+        let bracket_match = syntax::matching_bracket(&self.source, self.editor_cursor_byte);
+
         // Coloration syntaxique NASM (retour à la ligne désactivé => aligné aux numéros).
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, _wrap: f32| {
-            ui.fonts_mut(|f| f.layout_job(syntax::highlight(text.as_str(), dark, hl)))
+            ui.fonts_mut(|f| {
+                f.layout_job(syntax::highlight(text.as_str(), dark, hl, find_highlight.as_ref(), bracket_match))
+            })
         };
 
         // Gouttière : numéros de ligne (▶ + accent sur la ligne courante).
@@ -108,24 +351,44 @@ impl App {
         let max_cols = self.source.lines().map(|l| l.chars().count()).max().unwrap_or(0);
         let content_w = (max_cols as f32 + 2.0) * char_w;
 
-        ui.horizontal_top(|ui| {
-            // Gouttière : défilement vertical synchronisé, sans barre ni scroll direct.
-            egui::ScrollArea::vertical()
-                .id_salt("gutter_scroll")
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .scroll_source(egui::scroll_area::ScrollSource::NONE)
-                .auto_shrink([true, false])
-                .vertical_scroll_offset(self.editor_scroll_y)
-                .show(ui, |ui| {
-                    let galley = ui.fonts_mut(|f| f.layout_job(gutter_job));
-                    ui.add(egui::Label::new(galley).selectable(false));
-                });
-            ui.separator();
-            // Éditeur : défilement vertical + horizontal ; la gouttière reste fixe.
-            let out = egui::ScrollArea::both()
-                .id_salt("editor_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
+        // Défilement forcé vers une correspondance de recherche visée
+        // (Ctrl+F/F3) : `take()` consomme la demande, la frame suivante rend
+        // la main au défilement naturel piloté par l'utilisateur.
+        let forced_scroll = self.pending_scroll_to_line.take().map(|line| {
+            let row_h = ui.fonts_mut(|f| f.row_height(&gfont));
+            (line as f32 * row_h - ui.available_height() / 2.0).max(0.0)
+        });
+
+        // Cliché d'avant frappe, pour repérer après coup ce qu'un seul
+        // caractère tapé a changé (fermeture automatique des paires).
+        let pre_edit_source = self.source.clone();
+
+        // `layouter` emprunte `self.find_query` via `find_highlight` : tant
+        // qu'il est capturé par les fermetures ci-dessous, `self` ne peut pas
+        // être remprunté en `&mut` — l'auto-fermeture des paires doit donc
+        // attendre la sortie de `ui.horizontal_top` pour s'exécuter.
+        let (changed, cursor_range) = ui
+            .horizontal_top(|ui| {
+                // Gouttière : défilement vertical synchronisé, sans barre ni scroll direct.
+                egui::ScrollArea::vertical()
+                    .id_salt("gutter_scroll")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .scroll_source(egui::scroll_area::ScrollSource::NONE)
+                    .auto_shrink([true, false])
+                    .vertical_scroll_offset(forced_scroll.unwrap_or(self.editor_scroll_y))
+                    .show(ui, |ui| {
+                        let galley = ui.fonts_mut(|f| f.layout_job(gutter_job));
+                        ui.add(egui::Label::new(galley).selectable(false));
+                    });
+                ui.separator();
+                // Éditeur : défilement vertical + horizontal ; la gouttière reste fixe.
+                let mut editor_scroll = egui::ScrollArea::both()
+                    .id_salt("editor_scroll")
+                    .auto_shrink([false, false]);
+                if let Some(y) = forced_scroll {
+                    editor_scroll = editor_scroll.vertical_scroll_offset(y);
+                }
+                let out = editor_scroll.show(ui, |ui| {
                     let out = egui::TextEdit::multiline(&mut self.source)
                         .id(super::editor_id())
                         .frame(false)
@@ -135,7 +398,8 @@ impl App {
                         .lock_focus(true)
                         .layouter(&mut layouter)
                         .show(ui);
-                    if out.response.changed() {
+                    let changed = out.response.changed();
+                    if changed {
                         self.dirty = true;
                     }
                     // Position du curseur (Ln/Col) pour la barre d'état.
@@ -147,11 +411,67 @@ impl App {
                         let before: String = self.source.chars().take(idx).collect();
                         self.editor_ln = before.matches('\n').count() + 1;
                         self.editor_col = before.chars().rev().take_while(|&c| c != '\n').count() + 1;
+                        self.editor_cursor_byte = before.len();
                     }
+                    (changed, out.cursor_range)
                 });
-            // Synchronise la gouttière sur le défilement vertical de l'éditeur.
-            self.editor_scroll_y = out.state.offset.y;
-        });
+                // Synchronise la gouttière sur le défilement vertical de l'éditeur.
+                self.editor_scroll_y = out.state.offset.y;
+                out.inner
+            })
+            .inner;
+
+        if changed {
+            self.auto_pair_after_edit(&pre_edit_source, cursor_range);
+        }
+    }
+
+    /// Après une frappe unique dans l'éditeur, complète les paires ouvrantes
+    /// `( [ { " '` par leur fermant, saute par-dessus un fermant déjà présent
+    /// plutôt que de le dupliquer, et nettoie une paire vide au Retour arrière.
+    ///
+    /// Ne manipule jamais le curseur persisté par egui : chaque octet
+    /// ajouté/retiré l'est STRICTEMENT avant ou après sa position (jamais À sa
+    /// position), ce qui suffit à le laisser au bon endroit à la frame
+    /// suivante sans toucher à `egui::Memory`.
+    ///
+    /// Heuristique volontairement simple : le « saut par-dessus » ne distingue
+    /// pas un fermant auto-inséré d'un fermant tapé à la main — cohérent avec
+    /// la plupart des éditeurs légers, au prix d'avaler un `)` voulu à dessein
+    /// juste avant un `)` existant (cas rare en NASM).
+    fn auto_pair_after_edit(&mut self, before: &str, cursor_range: Option<egui::text::CCursorRange>) {
+        let Some(range) = cursor_range else { return };
+        if range.primary != range.secondary {
+            return; // une sélection est encore active : rien à faire.
+        }
+        let char_idx = range.primary.index;
+
+        // Un caractère vient de disparaître (Retour arrière/Suppr) : si c'est
+        // un ouvrant dont le fermant le suit immédiatement à vide, il part avec.
+        if self.source.len() + 1 == before.len() {
+            let Some(removed) = before.chars().nth(char_idx) else { return };
+            let Some(closer) = pair_closer(removed) else { return };
+            let byte_idx = byte_offset_of_char(&self.source, char_idx);
+            if self.source[byte_idx..].starts_with(closer) {
+                self.source.remove(byte_idx);
+            }
+            return;
+        }
+
+        // Un seul caractère vient d'être ajouté (frappe normale — un collage
+        // d'un unique caractère est indiscernable et se traite pareil, sans
+        // conséquence).
+        if self.source.len() != before.len() + 1 || char_idx == 0 {
+            return;
+        }
+        let byte_idx = byte_offset_of_char(&self.source, char_idx);
+        let typed = self.source[..byte_idx].chars().next_back().unwrap();
+
+        if let Some(closer) = pair_closer(typed) {
+            self.source.insert(byte_idx, closer);
+        } else if is_closer(typed) && self.source[byte_idx..].starts_with(typed) {
+            self.source.remove(byte_idx - typed.len_utf8());
+        }
     }
 
     pub(super) fn disasm_ui(&mut self, ui: &mut egui::Ui) {
@@ -479,6 +799,81 @@ impl App {
     }
 }
 
+/// Fermant attendu pour un caractère ouvrant de paire, sinon `None`.
+fn pair_closer(opener: char) -> Option<char> {
+    match opener {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        _ => None,
+    }
+}
+
+fn is_closer(c: char) -> bool {
+    matches!(c, ')' | ']' | '}' | '"' | '\'')
+}
+
+/// Offset en octets du `char_idx`-ième caractère de `s` (fin de chaîne si
+/// hors bornes — un curseur en bout de texte est un cas normal).
+fn byte_offset_of_char(s: &str, char_idx: usize) -> usize {
+    s.char_indices().nth(char_idx).map(|(b, _)| b).unwrap_or(s.len())
+}
+
+// ---------- Pliage de code ----------
+//
+// Repli « simple » : uniquement les labels de PREMIER NIVEAU (`_start:`, pas
+// `.loop:`) dont le corps n'est pas vide. Un label local imbriqué se replie
+// avec le label qui le précède plutôt que d'offrir son propre repli — évite
+// d'avoir à suivre une hiérarchie d'indentation pour un bénéfice marginal.
+
+/// Une zone repliable : `start_line` (le label, toujours visible) jusqu'à
+/// `end_line` inclus (dernière ligne de son corps).
+#[derive(Debug)]
+struct FoldRange {
+    start_line: usize,
+    end_line: usize,
+    label: String,
+}
+
+fn is_label_ident_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || matches!(c, '_' | '@' | '$')
+}
+
+fn is_label_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '$')
+}
+
+/// La ligne déclare-t-elle un label de premier niveau (`foo:`, pas `.foo:`) ?
+fn top_level_label(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with(is_label_ident_start) {
+        return None;
+    }
+    let end = trimmed.find(|c: char| !is_label_ident_char(c)).unwrap_or(trimmed.len());
+    trimmed[end..].starts_with(':').then(|| &trimmed[..end])
+}
+
+/// Zones repliables du source : un label de premier niveau par zone, avec au
+/// moins une ligne de corps avant le label suivant (ou la fin du fichier).
+fn compute_fold_ranges(source: &str) -> Vec<FoldRange> {
+    let lines: Vec<&str> = source.lines().collect();
+    let labels: Vec<(usize, &str)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| top_level_label(l).map(|name| (i, name)))
+        .collect();
+    labels
+        .iter()
+        .enumerate()
+        .filter_map(|(k, &(start, name))| {
+            let end = labels.get(k + 1).map(|&(l, _)| l - 1).unwrap_or(lines.len().saturating_sub(1));
+            (end > start).then(|| FoldRange { start_line: start, end_line: end, label: name.to_string() })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,5 +1018,264 @@ mod tests {
         app.disasm.clear();
         app.move_disasm_selection(true);
         assert_eq!(app.selected, None);
+    }
+
+    // ---------- Recherche / remplacement ----------
+
+    fn app_with_source(src: &str) -> App {
+        let mut app = App::new();
+        app.source = src.to_string();
+        app
+    }
+
+    #[test]
+    fn find_next_cycles_through_matches_and_wraps() {
+        let mut app = app_with_source("mov rax, rax\nadd rax, 1\n");
+        app.find_query = "rax".into();
+        assert_eq!(app.find_current, 0);
+
+        app.find_next();
+        assert_eq!(app.find_current, 1);
+        app.find_next();
+        assert_eq!(app.find_current, 2);
+        app.find_next();
+        assert_eq!(app.find_current, 0, "doit boucler après la dernière correspondance");
+    }
+
+    #[test]
+    fn find_prev_wraps_backwards() {
+        let mut app = app_with_source("rax rax rax\n");
+        app.find_query = "rax".into();
+        app.find_prev();
+        assert_eq!(app.find_current, 2, "depuis 0, précédent boucle sur la dernière");
+    }
+
+    #[test]
+    fn find_next_prev_are_safe_without_matches() {
+        let mut app = app_with_source("mov rbx, 1\n");
+        app.find_query = "introuvable".into();
+        app.find_next();
+        app.find_prev();
+        assert_eq!(app.find_current, 0);
+    }
+
+    #[test]
+    fn find_next_requests_a_scroll_to_the_matched_line() {
+        let mut app = app_with_source("mov rbx, 1\nmov rcx, 2\nmov rax, 3\n");
+        app.find_query = "rax".into();
+        app.find_next();
+        assert_eq!(app.pending_scroll_to_line, Some(2), "\"rax\" est sur la 3e ligne (0-based: 2)");
+    }
+
+    #[test]
+    fn find_replace_current_only_touches_the_active_match() {
+        let mut app = app_with_source("mov rax, rax\n");
+        app.find_query = "rax".into();
+        app.find_replace_text = "rbx".into();
+        app.find_current = 1; // la seconde occurrence
+        app.find_replace_current();
+        assert_eq!(app.source, "mov rax, rbx\n");
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn find_replace_all_handles_every_occurrence_without_shifting_offsets() {
+        let mut app = app_with_source("rax rax rax\n");
+        app.find_query = "rax".into();
+        app.find_replace_text = "rbx".into();
+        app.find_replace_all();
+        assert_eq!(app.source, "rbx rbx rbx\n");
+    }
+
+    #[test]
+    fn find_replace_all_is_safe_without_matches() {
+        let mut app = app_with_source("mov rbx, 1\n");
+        app.find_query = "introuvable".into();
+        app.find_replace_text = "x".into();
+        app.find_replace_all();
+        assert_eq!(app.source, "mov rbx, 1\n", "rien à remplacer, rien ne doit changer");
+    }
+
+    #[test]
+    fn find_respects_case_sensitivity_toggle() {
+        let mut app = app_with_source("mov RAX, rax\n");
+        app.find_query = "rax".into();
+        assert_eq!(app.find_matches().len(), 2, "insensible à la casse par défaut");
+        app.find_case_sensitive = true;
+        assert_eq!(app.find_matches().len(), 1);
+    }
+
+    // ---------- Auto-fermeture des paires ----------
+
+    fn ccursor(idx: usize) -> Option<egui::text::CCursorRange> {
+        Some(egui::text::CCursorRange::one(egui::text::CCursor::new(idx)))
+    }
+
+    #[test]
+    fn typing_an_opener_inserts_its_closer() {
+        let mut app = app_with_source("x(");
+        app.auto_pair_after_edit("x", ccursor(2));
+        assert_eq!(app.source, "x()");
+    }
+
+    #[test]
+    fn typing_a_quote_inserts_its_matching_quote() {
+        let mut app = app_with_source("x\"");
+        app.auto_pair_after_edit("x", ccursor(2));
+        assert_eq!(app.source, "x\"\"");
+    }
+
+    #[test]
+    fn typing_a_closer_right_before_an_existing_one_skips_over_it() {
+        // Avant la frappe : « x) », curseur juste avant le « ) » existant.
+        // egui a déjà inséré le « ) » tapé : « x)) », curseur à l'index 2.
+        let mut app = app_with_source("x))");
+        app.auto_pair_after_edit("x)", ccursor(2));
+        assert_eq!(app.source, "x)", "le ) tapé en trop doit disparaître, pas être dupliqué");
+    }
+
+    #[test]
+    fn backspacing_an_opener_removes_its_empty_matching_closer_too() {
+        // Avant : « x() », curseur après le « ( » (index 2). Retour arrière
+        // supprime le « ( » : source « x) », curseur à l'index 1.
+        let mut app = app_with_source("x)");
+        app.auto_pair_after_edit("x()", ccursor(1));
+        assert_eq!(app.source, "x", "l'ouvrant ET son fermant vide doivent partir ensemble");
+    }
+
+    #[test]
+    fn backspacing_an_opener_with_content_inside_only_removes_the_opener() {
+        // « x(y) » -> Retour arrière sur « ( » -> « xy) » : le « ) » ne doit
+        // pas partir, il ne suit plus immédiatement (du contenu les sépare).
+        let mut app = app_with_source("xy)");
+        app.auto_pair_after_edit("x(y)", ccursor(1));
+        assert_eq!(app.source, "xy)", "rien de plus à supprimer : le fermant n'est pas adjacent");
+    }
+
+    #[test]
+    fn ordinary_typing_is_left_untouched() {
+        let mut app = app_with_source("ab");
+        app.auto_pair_after_edit("a", ccursor(2));
+        assert_eq!(app.source, "ab", "une lettre ordinaire ne déclenche aucune paire");
+    }
+
+    #[test]
+    fn multi_character_changes_are_never_reinterpreted_as_typing() {
+        // Un collage ou un Ctrl+Z peut changer la longueur de plus d'un
+        // caractère : l'auto-fermeture ne doit jamais s'en mêler.
+        let mut app = app_with_source("abc(");
+        app.auto_pair_after_edit("a", ccursor(4));
+        assert_eq!(app.source, "abc(", "changement de plus d'un caractère : on n'y touche pas");
+    }
+
+    #[test]
+    fn a_selection_still_active_after_the_edit_is_left_alone() {
+        let mut app = app_with_source("x(");
+        let range = egui::text::CCursorRange {
+            primary: egui::text::CCursor::new(2),
+            secondary: egui::text::CCursor::new(0),
+            h_pos: None,
+        };
+        app.auto_pair_after_edit("x", Some(range));
+        assert_eq!(app.source, "x(", "une sélection encore active : on ne complète rien");
+    }
+
+    // ---------- Pliage de code ----------
+
+    #[test]
+    fn top_level_label_is_recognised_and_local_labels_are_not() {
+        assert_eq!(top_level_label("_start:"), Some("_start"));
+        assert_eq!(top_level_label("  main:"), Some("main"), "l'indentation ne change rien");
+        assert_eq!(top_level_label("_start: mov rax, 1"), Some("_start"), "code sur la même ligne toléré");
+        assert_eq!(top_level_label(".loop:"), None, "un label local n'a pas son propre repli");
+        assert_eq!(top_level_label("mov rax, 1"), None);
+        assert_eq!(top_level_label("; _start: en commentaire"), None);
+    }
+
+    #[test]
+    fn compute_fold_ranges_covers_the_body_up_to_the_next_top_level_label() {
+        let src = "_start:\n mov rax, 1\n.loop:\n mov rbx, 2\nend:\n mov rcx, 3\n";
+        let ranges = compute_fold_ranges(src);
+        assert_eq!(ranges.len(), 2, "{ranges:?}", );
+        assert_eq!(ranges[0].label, "_start");
+        assert_eq!(ranges[0].start_line, 0);
+        assert_eq!(ranges[0].end_line, 3, "le corps de _start engloutit .loop, jusqu'à end (exclu)");
+        assert_eq!(ranges[1].label, "end");
+        assert_eq!(ranges[1].start_line, 4);
+        assert_eq!(ranges[1].end_line, 5, "dernier label : corps jusqu'à la fin du fichier");
+    }
+
+    #[test]
+    fn a_label_immediately_followed_by_another_has_no_fold_range() {
+        // Corps vide : rien à replier, la ligne ne doit pas apparaître.
+        let src = "foo:\nbar:\n mov rax, 1\n";
+        let ranges = compute_fold_ranges(src);
+        assert_eq!(ranges.len(), 1, "{ranges:?}");
+        assert_eq!(ranges[0].label, "bar");
+    }
+
+    #[test]
+    fn compute_fold_ranges_is_empty_without_any_label() {
+        assert!(compute_fold_ranges("mov rax, 1\nmov rbx, 2\n").is_empty());
+    }
+
+    #[test]
+    fn fold_label_at_cursor_folds_the_label_containing_the_cursor_line() {
+        let mut app = app_with_source("_start:\n mov rax, 1\n mov rbx, 2\n");
+        // Curseur sur la ligne 1 (« mov rax, 1 ») : à l'intérieur du corps de _start.
+        app.editor_cursor_byte = app.source.find("mov rax").unwrap();
+        app.fold_label_at_cursor();
+        assert!(app.folded_labels.contains("_start"));
+    }
+
+    #[test]
+    fn fold_label_at_cursor_is_a_no_op_outside_any_foldable_body() {
+        let mut app = app_with_source("mov rax, 1\n");
+        app.editor_cursor_byte = 0;
+        app.fold_label_at_cursor();
+        assert!(app.folded_labels.is_empty(), "aucun label ici : rien à replier");
+    }
+
+    #[test]
+    fn unfold_all_clears_every_fold() {
+        let mut app = app_with_source("_start:\n mov rax, 1\nend:\n mov rbx, 2\n");
+        app.folded_labels.insert("_start".to_string());
+        app.folded_labels.insert("end".to_string());
+        app.unfold_all();
+        assert!(app.folded_labels.is_empty());
+    }
+
+    /// La bascule éditable ↔ lecture seule (dans `editor_tab_ui`) et le rendu
+    /// replié lui-même ne doivent jamais paniquer, replis actifs ou non.
+    #[test]
+    fn folded_view_renders_without_panicking() {
+        let mut app = app_with_source("_start:\n mov rax, 1\n mov rbx, 2\nend:\n mov rcx, 3\n");
+        app.set_ui_mode(crate::app::UiMode::Full);
+        app.folded_labels.insert("_start".to_string());
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
+    }
+
+    /// Replier le DERNIER label (corps jusqu'à la fin du fichier, sans ligne
+    /// suivante) ne doit pas paniquer — cas limite de `end_line`.
+    #[test]
+    fn folding_the_last_label_up_to_end_of_file_renders_without_panicking() {
+        let mut app = app_with_source("_start:\n mov rax, 1\nend:\n mov rbx, 2\n mov rcx, 3\n");
+        app.set_ui_mode(crate::app::UiMode::Full);
+        app.folded_labels.insert("end".to_string());
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
+    }
+
+    /// Un nom de fichier sans retour à la ligne final ne doit pas non plus
+    /// faire paniquer le calcul des replis ni le rendu.
+    #[test]
+    fn source_without_a_trailing_newline_is_safe() {
+        let mut app = app_with_source("_start:\n mov rax, 1");
+        app.set_ui_mode(crate::app::UiMode::Full);
+        assert_eq!(compute_fold_ranges(&app.source).len(), 1);
+        app.folded_labels.insert("_start".to_string());
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
     }
 }

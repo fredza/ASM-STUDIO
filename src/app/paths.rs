@@ -46,7 +46,12 @@ pub(super) fn is_asm(p: &Path) -> bool {
 /// Cohérent avec les settings dans `~/.config/asm_studio/`, toujours accessible
 /// en écriture quelle que soit la position de l'exécutable.
 pub(super) fn data_dir() -> PathBuf {
+    // La spec XDG Base Directory impose de traiter une variable *définie mais
+    // vide* comme absente : sans le `.filter`, une variable exportée vide
+    // (fréquent selon la session de bureau) donne un chemin relatif au
+    // répertoire courant du process au lieu du vrai chemin absolu.
     std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
         .unwrap_or_else(|| PathBuf::from("."))
@@ -100,7 +105,11 @@ pub(super) fn setup_examples() {
 }
 
 pub(super) fn settings_path() -> Option<PathBuf> {
+    // Voir le commentaire de `data_dir` : une variable XDG vide doit être
+    // traitée comme absente, sous peine de chemin relatif au répertoire
+    // courant du process au lieu du vrai chemin absolu.
     let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("asm_studio").join("settings.conf"))
@@ -110,9 +119,53 @@ pub(super) fn settings_path() -> Option<PathBuf> {
 /// `pub(crate)` : lu depuis `crate::license`, hors du module `app`.
 pub(crate) fn license_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("asm_studio").join("license.txt"))
+}
+
+/// Répertoire de cache XDG : `~/.cache/asm_studio/`.
+fn cache_dir() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("asm_studio")
+}
+
+/// Répertoire d'état XDG : `~/.local/state/asm_studio/`.
+fn state_dir() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("asm_studio")
+}
+
+/// Marqueurs de premier lancement (période avant inscription gratuite),
+/// en **trois copies redondantes** sur des répertoires XDG distincts, sous
+/// des noms neutres différents. Volontairement discrets : ni à côté de
+/// `settings.conf`/`license.txt` (déjà connus comme emplacements à
+/// chercher), ni tous au même endroit sous le même nom.
+///
+/// Ce n'est toujours pas un verrou absolu : le dépôt est public, quiconque
+/// lit `crate::trial` sait où ils sont et comment ils fonctionnent. Mais
+/// `crate::trial::reconcile` recompose l'état à partir de celles qui
+/// survivent et réécrit celles qui manquent : supprimer une seule copie (le
+/// réflexe le plus évident, `rm ~/.local/share/asm_studio/.cache_id`) ne
+/// suffit plus à obtenir un nouvel essai — il faut désormais trouver et
+/// supprimer les trois en même temps, un geste délibéré plutôt qu'un
+/// effacement distrait.
+/// `pub(crate)` : lu depuis `crate::trial`, hors du module `app`.
+pub(crate) fn trial_marker_paths() -> [PathBuf; 3] {
+    [
+        data_dir().join(".cache_id"),
+        cache_dir().join(".sess_meta"),
+        state_dir().join(".ck"),
+    ]
 }
 
 /// Répertoire contenant `asmstd.inc` dans les données utilisateur.

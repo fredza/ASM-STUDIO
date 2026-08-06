@@ -25,6 +25,17 @@ impl App {
         if self.palette_open {
             return;
         }
+        // Barre de recherche ouverte : Échap la referme d'abord, sans faire
+        // aussi office d'arrêt du programme — sinon fermer la recherche
+        // interromprait une exécution en cours par surprise.
+        if self.show_find && ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.show_find = false;
+            if let Some(id) = ctx.memory(|m| m.focused()) {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+            ctx.memory_mut(|m| m.request_focus(super::editor_id()));
+            return;
+        }
         // Ignore les raccourcis d'action quand l'éditeur a le focus (sauf Ctrl+*).
         let (step, run, stop, build, save, open, new, first, prev, next, last) = ctx.input(|i| {
             let c = i.modifiers.ctrl;
@@ -56,6 +67,48 @@ impl App {
         }
         if run {
             self.launch();
+        }
+        // Ctrl+F ouvre la recherche, Ctrl+H la recherche-remplacement —
+        // toujours actifs même si l'éditeur a le focus (comme Ctrl+S/O/N/B).
+        let (find, replace) = ctx.input(|i| {
+            let c = i.modifiers.ctrl;
+            (c && i.key_pressed(Key::F), c && i.key_pressed(Key::H))
+        });
+        if find || replace {
+            self.show_find = true;
+            self.find_replace_mode = replace;
+            self.show_panel(super::dock::Panel::Editor);
+            self.focus_panel(super::dock::Panel::Editor);
+            ctx.memory_mut(|m| m.request_focus(super::find_query_id()));
+        }
+        // F3 / Maj+F3 : correspondance suivante / précédente, même barre
+        // fermée — elle se rouvre pour qu'on revoie le surlignage.
+        let (f3, f3_back) = ctx.input(|i| {
+            let p = i.key_pressed(Key::F3);
+            (p && !i.modifiers.shift, p && i.modifiers.shift)
+        });
+        if (f3 || f3_back) && !self.find_query.is_empty() {
+            self.show_find = true;
+            if f3_back {
+                self.find_prev();
+            } else {
+                self.find_next();
+            }
+        }
+        // Ctrl+Maj+[ replie le label sous le curseur, Ctrl+Maj+] déplie tout
+        // — mêmes touches que VSCode (Fold / Unfold), le second simplifié en
+        // « tout déplier » plutôt que « déplier celui sous le curseur » : sans
+        // curseur vivant une fois replié (vue lecture seule), viser un label
+        // précis au clavier n'aurait pas de sens.
+        let (fold, unfold_all) = ctx.input(|i| {
+            let c = i.modifiers.ctrl && i.modifiers.shift;
+            (c && i.key_pressed(Key::OpenBracket), c && i.key_pressed(Key::CloseBracket))
+        });
+        if fold {
+            self.fold_label_at_cursor();
+        }
+        if unfold_all {
+            self.unfold_all();
         }
         // Échap : d'abord sortir du champ de saisie, sinon arrêter le programme.
         // Sans cette priorité, un utilisateur au clavier reste piégé dans l'éditeur.
@@ -458,9 +511,13 @@ impl App {
                     if item(ui, tr("Raccourcis clavier…", "Keyboard shortcuts…", "Atajos de teclado…"), "F1") {
                         self.show_shortcuts = true;
                     }
-                    ui.separator();
-                    if item(ui, tr("Activer une licence…", "Activate a license…", "Activar una licencia…"), "") {
-                        self.show_license_gate = true;
+                    // Une fois la licence active, plus rien à activer : l'entrée
+                    // disparaît au lieu de proposer une action sans effet utile.
+                    if !self.is_licensed() {
+                        ui.separator();
+                        if item(ui, tr("Activer une licence…", "Activate a license…", "Activar una licencia…"), "") {
+                            self.show_license_gate = true;
+                        }
                     }
                     ui.separator();
                     if item(ui, tr("À propos", "About", "Acerca de"), "") {
@@ -1193,6 +1250,64 @@ mod keyboard_tests {
         assert!(app.dbg.is_some());
         frame(&mut app, &ctx, key(egui::Key::Escape));
         assert!(app.dbg.is_none(), "Échap arrête le programme");
+    }
+
+    // ---------- Recherche / remplacement (Ctrl+F / Ctrl+H) ----------
+
+    #[test]
+    fn ctrl_f_opens_the_find_bar_in_search_only_mode() {
+        let mut app = running_app("find1");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+        assert!(!app.show_find);
+
+        frame(&mut app, &ctx, ctrl(egui::Key::F));
+        assert!(app.show_find, "Ctrl+F doit ouvrir la barre");
+        assert!(!app.find_replace_mode, "Ctrl+F seul n'affiche pas le remplacement");
+    }
+
+    #[test]
+    fn ctrl_h_opens_the_find_bar_with_replace_mode() {
+        let mut app = running_app("find2");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+
+        frame(&mut app, &ctx, ctrl(egui::Key::H));
+        assert!(app.show_find);
+        assert!(app.find_replace_mode, "Ctrl+H doit afficher la ligne de remplacement");
+    }
+
+    /// Fermer la recherche par Échap ne doit PAS aussi arrêter un programme en
+    /// cours d'exécution : les deux usages d'Échap ne doivent pas se marcher
+    /// dessus.
+    #[test]
+    fn escape_closes_find_bar_without_stopping_the_running_program() {
+        let mut app = running_app("find3");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+        frame(&mut app, &ctx, ctrl(egui::Key::F));
+        assert!(app.show_find);
+        assert!(app.dbg.is_some(), "running_app lance déjà un programme");
+
+        frame(&mut app, &ctx, key(egui::Key::Escape));
+        assert!(!app.show_find, "Échap doit fermer la barre");
+        assert!(app.dbg.is_some(), "fermer la recherche ne doit pas arrêter le programme");
+    }
+
+    /// F3 doit rouvrir la barre (pour revoir le surlignage) et avancer à la
+    /// correspondance suivante, même si elle avait été fermée entre-temps.
+    #[test]
+    fn f3_reopens_a_closed_bar_and_advances_to_the_next_match() {
+        let mut app = running_app("find4");
+        let ctx = egui::Context::default();
+        frame(&mut app, &ctx, Default::default());
+        // Le source de `running_app` contient deux occurrences de « rax ».
+        app.find_query = "rax".to_string();
+        app.show_find = false;
+
+        frame(&mut app, &ctx, key(egui::Key::F3));
+        assert!(app.show_find, "F3 doit rouvrir la barre");
+        assert_eq!(app.find_current, 1, "avance vers la correspondance suivante");
     }
 }
 
