@@ -265,12 +265,19 @@ struct Io {
     /// Extrémité de lecture du tuyau branché sur stdout+stderr de l'enfant
     /// (non bloquante : on la vide sans jamais attendre).
     out: OwnedFd,
-    /// Extrémité d'écriture du tuyau branché sur stdin de l'enfant.
+    /// Extrémité d'écriture du tuyau branché sur stdin de l'enfant
+    /// (non bloquante, pour la raison dite sur `outgoing`).
     inp: OwnedFd,
     /// Octets lus mais pas encore remis à l'appelant. Conservés en brut : une
     /// lecture peut couper un caractère multi-octets en deux, la queue
     /// incomplète attend le reste plutôt que de sortir en « � ».
     pending: Vec<u8>,
+    /// Saisie pas encore avalée par le programme. Un tuyau ne tient que 64 Kio,
+    /// et le programme n'en lit que ce qu'il veut : au-delà, écrire bloquerait
+    /// jusqu'à ce qu'il consomme — c'est-à-dire peut-être jamais, l'IDE figé
+    /// avec lui. On dépose donc ce qui passe et on garde le reste pour les
+    /// frames suivantes.
+    outgoing: Vec<u8>,
 }
 
 pub struct Debugger {
@@ -399,6 +406,9 @@ impl Debugger {
         }
         let start = Instant::now();
         let deadline = start + STEP_BUDGET;
+        // Le programme est justement suspendu dans un `read` : c'est le moment
+        // où il consomme ce qui attendait faute de place dans le tuyau.
+        self.flush_input()?;
         loop {
             let status = waitpid(self.child, Some(WaitPidFlag::WNOHANG))
                 .map_err(|e| format!("waitpid: {e}"))?;
@@ -482,6 +492,9 @@ impl Debugger {
     /// La queue d'un caractère multi-octets coupé en deux reste en attente.
     pub fn take_output(&mut self) -> String {
         self.drain_output();
+        // Appelé à chaque frame par l'interface : c'est le battement qui écoule
+        // aussi la saisie restée en attente.
+        let _ = self.flush_input();
         let Some(io) = self.io.as_mut() else {
             return String::new();
         };
@@ -498,27 +511,49 @@ impl Debugger {
     /// Envoie une ligne sur l'entrée standard du programme. C'est ce qui
     /// débloque un `read` en attente (état [`RunState::Running`]).
     pub fn write_stdin(&mut self, line: &str) -> Result<(), String> {
-        let Some(io) = self.io.as_ref() else {
+        let Some(io) = self.io.as_mut() else {
             return Err("entrée standard non redirigée".to_string());
         };
-        // `write` sur un tuyau n'est atomique que jusqu'à `PIPE_BUF` (4 Kio) :
-        // au-delà, il peut n'en prendre qu'une partie. Sans cette boucle, la
-        // fin d'une ligne collée un peu longue disparaîtrait sans rien dire, et
-        // le programme lirait une saisie tronquée.
+        io.outgoing.extend_from_slice(line.as_bytes());
+        self.flush_input()
+    }
+
+    /// Pousse vers le programme ce qui reste de saisie en attente, sans jamais
+    /// attendre. Ce qui ne passe pas — tuyau plein, programme qui ne lit pas
+    /// encore — reste en file pour la frame suivante.
+    fn flush_input(&mut self) -> Result<(), String> {
+        let Some(io) = self.io.as_mut() else {
+            return Ok(());
+        };
         let mut sent = 0;
-        while sent < line.len() {
-            let rest = &line.as_bytes()[sent..];
+        while sent < io.outgoing.len() {
+            let rest = &io.outgoing[sent..];
             let n = unsafe { libc::write(io.inp.as_raw_fd(), rest.as_ptr().cast(), rest.len()) };
             if n < 0 {
                 let err = std::io::Error::last_os_error();
-                // Interrompu par un signal : rien n'est perdu, on réessaie.
-                if err.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
+                match err.kind() {
+                    // Interrompu par un signal : rien n'est perdu, on réessaie.
+                    std::io::ErrorKind::Interrupted => continue,
+                    // Tuyau plein : le programme n'a pas encore lu. On garde
+                    // le reste et on rendra la main.
+                    std::io::ErrorKind::WouldBlock => break,
+                    // Le programme a fermé son entrée ou s'est terminé sans
+                    // tout lire — le cas de `read-stdin.asm`, qui prend
+                    // 64 octets et sort. Un shell n'en dit rien non plus : on
+                    // jette ce qui reste, sans en faire une erreur du pas.
+                    std::io::ErrorKind::BrokenPipe => {
+                        io.outgoing.clear();
+                        return Ok(());
+                    }
+                    _ => {
+                        io.outgoing.drain(..sent);
+                        return Err(format!("écriture sur l'entrée standard : {err}"));
+                    }
                 }
-                return Err(format!("écriture sur l'entrée standard : {err}"));
             }
             sent += n as usize;
         }
+        io.outgoing.drain(..sent);
         Ok(())
     }
 
@@ -756,8 +791,11 @@ impl Pipes {
         let (in_r, in_w) = new_pipe()?;
         let (out_r, out_w) = new_pipe()?;
         // Lecture non bloquante : la console se vide à chaque frame, elle ne
-        // doit jamais attendre après un programme qui n'écrit rien.
+        // doit jamais attendre après un programme qui n'écrit rien. Écriture
+        // non bloquante pour la raison symétrique : ni l'une ni l'autre ne doit
+        // pouvoir suspendre le thread qui peint l'interface.
         set_nonblocking(&out_r)?;
+        set_nonblocking(&in_w)?;
         Ok(Pipes {
             in_r,
             in_w,
@@ -773,6 +811,7 @@ impl Pipes {
             out: self.out_r,
             inp: self.in_w,
             pending: Vec::new(),
+            outgoing: Vec::new(),
         }
     }
 }
@@ -1070,6 +1109,44 @@ mod tests {
             dbg.step().expect("step");
         }
         assert_eq!(dbg.take_output(), "salut\n");
+    }
+
+    /// Une saisie plus grosse que le tuyau ne doit pas suspendre l'appelant :
+    /// le programme ne lit que 64 octets, le reste attendrait indéfiniment
+    /// qu'il en veuille davantage — et l'interface avec.
+    #[test]
+    fn a_huge_input_does_not_block_the_caller() {
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/read-stdin.asm"),
+            Path::new("build/test-bigstdin"),
+            &[],
+        )
+        .expect("assemblage");
+        let mut dbg = Debugger::launch(&out.binary).expect("launch");
+
+        // Bien au-delà des 64 Kio que retient un tuyau sous Linux.
+        let huge = "x".repeat(256 * 1024);
+        let started = Instant::now();
+        dbg.write_stdin(&huge).expect("write_stdin");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "write_stdin a bloqué {:?} au lieu de mettre en file",
+            started.elapsed()
+        );
+
+        // Le programme lit ses 64 octets et repart : ce qui compte est qu'il
+        // ait bien reçu le début de la saisie, pas qu'il ait tout avalé.
+        for _ in 0..200 {
+            if !dbg.is_alive() {
+                break;
+            }
+            dbg.step().expect("step");
+            dbg.poll().expect("poll");
+        }
+        assert!(
+            dbg.take_output().starts_with("xxx"),
+            "le programme doit avoir reçu et réécrit le début de la saisie"
+        );
     }
 
     /// `run_until` enchaîne les pas jusqu'à l'adresse visée, en gardant un
