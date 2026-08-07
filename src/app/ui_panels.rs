@@ -4,7 +4,7 @@ use crate::debugger::Flags;
 use crate::i18n;
 
 use super::{
-    App, ACTION, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, FLASH_BRIGHT,
+    App, ACTION, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, FLASH_BRIGHT, GUTTER,
     PUSH_COL, POP_COL,
     changed_color, changed_color2, lerp_color,
     panel_header, icon_img, icon_tab,
@@ -257,6 +257,54 @@ impl App {
                 }
             });
         });
+        // Champ de saisie en bas : le programme tracé lit ce qu'on y tape.
+        // Réservé aux moments où il tourne — hors exécution, il n'y a personne
+        // au bout du tuyau.
+        let can_input = self.dbg.as_ref().is_some_and(|d| d.is_alive() && d.has_stdin());
+        if can_input {
+            let waiting = self.dbg.as_ref().is_some_and(|d| d.is_waiting());
+            // Le focus se prend au passage en attente, et une seule fois : le
+            // reprendre à chaque frame retiendrait l'élève dans ce champ tant
+            // que le programme n'a pas sa saisie, sans pouvoir retourner dans
+            // l'éditeur ni ouvrir la palette.
+            let claim_focus = waiting && !self.stdin_focus_claimed;
+            self.stdin_focus_claimed = waiting;
+            egui::TopBottomPanel::bottom("console_stdin")
+                .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(2, 4)))
+                .show_inside(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Le chevron passe à l'orange quand le programme est
+                        // effectivement suspendu sur un `read` : c'est le seul
+                        // signe visible que c'est à l'élève de jouer.
+                        ui.label(
+                            RichText::new("❯")
+                                .monospace()
+                                .color(if waiting { ACTION } else { GUTTER }),
+                        );
+                        let hint = i18n::tr3(
+                            self.lang,
+                            "Entrée envoyée au programme…",
+                            "Input sent to the program…",
+                            "Entrada enviada al programa…",
+                        );
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.stdin_input)
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Monospace)
+                                .hint_text(hint),
+                        );
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            self.send_stdin();
+                            resp.request_focus();
+                        }
+                        // Le programme vient de se suspendre sur son `read` :
+                        // l'élève n'a qu'à taper.
+                        if claim_focus {
+                            resp.request_focus();
+                        }
+                    });
+                });
+        }
         egui::ScrollArea::vertical()
             .id_salt("console_scroll")
             .stick_to_bottom(true)
@@ -355,6 +403,10 @@ impl App {
             tr("clic sur une valeur pour l'éditer", "click a value to edit it", "clic en un valor para editarlo")
         } else if self.dbg.as_ref().is_some_and(|d| !d.is_alive()) {
             tr("édition indisponible (programme terminé — relancez)", "editing unavailable (program finished — relaunch)", "edición no disponible (programa terminado — reinicie)")
+        } else if self.dbg.as_ref().is_some_and(|d| d.is_waiting()) {
+            // Suspendu dans un appel système : ptrace n'a pas la main, et le
+            // dire vaut mieux que de laisser croire à un panneau en panne.
+            tr("édition suspendue (le programme attend une entrée)", "editing paused (the program is waiting for input)", "edición en pausa (el programa espera una entrada)")
         } else {
             tr("édition à la dernière étape (revenez en fin de timeline)", "editing only at the last step (go to the end of the timeline)", "edición solo en el último paso (vaya al final de la línea de tiempo)")
         };
@@ -853,7 +905,7 @@ impl App {
             }
         }
 
-        let prev_stack = self.prev_snap().map(|p| p.stack.clone()).unwrap_or_default();
+        let prev_stack = self.prev_snap().map(|p| p.stack).unwrap_or_default();
         let blink = self.blink_intensity(ui);
         let ped = self.pedagogy_anim;
         // Décalage horizontal du glissement : la case fraîchement empilée arrive

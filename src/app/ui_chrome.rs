@@ -40,7 +40,10 @@ impl App {
         let (step, run, stop, build, save, open, new, first, prev, next, last) = ctx.input(|i| {
             let c = i.modifiers.ctrl;
             (
-                i.key_pressed(Key::F10) || i.key_pressed(Key::F8),
+                // Sans modificateur : Maj+F10 est le pas par-dessus et Ctrl+F8
+                // le point d'arrêt, ni l'un ni l'autre ne doit avancer d'un pas.
+                (!i.modifiers.shift && i.key_pressed(Key::F10))
+                    || (!i.modifiers.ctrl && i.key_pressed(Key::F8)),
                 i.key_pressed(Key::F5),
                 i.modifiers.shift && i.key_pressed(Key::F5),
                 c && i.key_pressed(Key::B),
@@ -67,6 +70,26 @@ impl App {
         }
         if run {
             self.launch();
+        }
+        // Pas par-dessus, continuer, point d'arrêt. Maj+F10 prolonge le F10 du
+        // pas simple ; F9 et Ctrl+F8 reprennent les touches de JetBrains, dont
+        // vient le public de cet IDE.
+        let (step_over, cont, toggle_bp) = ctx.input(|i| {
+            (
+                i.modifiers.shift && i.key_pressed(Key::F10),
+                i.key_pressed(Key::F9),
+                i.modifiers.ctrl && i.key_pressed(Key::F8),
+            )
+        });
+        if step_over {
+            self.step_over();
+        }
+        if cont {
+            self.cont();
+        }
+        if toggle_bp {
+            let line = self.editor_ln;
+            self.toggle_breakpoint(line);
         }
         // Ctrl+F ouvre la recherche, Ctrl+H la recherche-remplacement —
         // toujours actifs même si l'éditeur a le focus (comme Ctrl+S/O/N/B).
@@ -647,6 +670,35 @@ impl App {
                 {
                     self.step();
                 }
+                // Par-dessus : franchit un `call` d'un bloc, sans dérouler la
+                // fonction appelée instruction par instruction.
+                if self
+                    .tip(
+                        bordered_button(ui, None, tr("Par-dessus", "Step over", "Por encima"), can_step),
+                        tr(
+                            "Exécuter l'appel d'un bloc (Maj+F10)",
+                            "Run the call in one go (Shift+F10)",
+                            "Ejecutar la llamada de una vez (Mayús+F10)",
+                        ),
+                    )
+                    .clicked()
+                {
+                    self.step_over();
+                }
+                // Continuer : jusqu'au prochain point d'arrêt, ou la fin.
+                if self
+                    .tip(
+                        bordered_button(ui, None, tr("Continuer", "Continue", "Continuar"), can_step),
+                        tr(
+                            "Jusqu'au prochain point d'arrêt (F9)",
+                            "To the next breakpoint (F9)",
+                            "Hasta el próximo punto de interrupción (F9)",
+                        ),
+                    )
+                    .clicked()
+                {
+                    self.cont();
+                }
                 // Stop.
                 if self.tip(bordered_button(ui, ic_stop.as_ref(), tr("Arrêter", "Stop", "Detener"), running), tr("Arrêter (Échap)", "Stop (Esc)", "Detener (Esc)")).clicked() {
                     self.stop();
@@ -792,6 +844,19 @@ impl App {
                         }
                         RunState::Stopped => {
                             ui.colored_label(FLAG_OFF, format!("○ {}", tr("Arrêté", "Stopped", "Detenido")));
+                        }
+                        // Suspendu dans un appel système : presque toujours un
+                        // `read` qui attend la saisie de l'élève.
+                        RunState::Running => {
+                            ui.colored_label(
+                                FLAG_ON,
+                                RichText::new(tr(
+                                    "⏳ En attente d'entrée",
+                                    "⏳ Waiting for input",
+                                    "⏳ Esperando entrada",
+                                ))
+                                .strong(),
+                            );
                         }
                     },
                     None => {
@@ -1343,8 +1408,7 @@ mod font_tests {
             return;
         }
 
-        let defs = ctx.fonts(|_| ()); // force l'initialisation
-        let _ = defs;
+        ctx.fonts(|_| ()); // force l'initialisation
         let families = ctx.style().text_styles.clone();
         assert!(!families.is_empty(), "les styles de texte doivent exister");
 

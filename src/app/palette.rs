@@ -31,6 +31,10 @@ pub(crate) enum Command {
     Build,
     Run,
     Step,
+    StepOver,
+    Continue,
+    ToggleBreakpoint,
+    ClearBreakpoints,
     Stop,
     ResumeHere,
     // Timeline
@@ -72,6 +76,30 @@ impl Command {
             Command::Build => t("Assembler", "Build", "Ensamblar").into(),
             Command::Run => t("Lancer le programme", "Run the program", "Ejecutar el programa").into(),
             Command::Step => t("Pas à pas (une instruction)", "Step (one instruction)", "Paso a paso (una instrucción)").into(),
+            Command::StepOver => t(
+                "Pas par-dessus (exécute l'appel d'un bloc)",
+                "Step over (run the call in one go)",
+                "Paso por encima (ejecuta la llamada de una vez)",
+            )
+            .into(),
+            Command::Continue => t(
+                "Continuer jusqu'au point d'arrêt",
+                "Continue to breakpoint",
+                "Continuar hasta el punto de interrupción",
+            )
+            .into(),
+            Command::ToggleBreakpoint => t(
+                "Point d'arrêt sur la ligne courante",
+                "Toggle breakpoint on current line",
+                "Punto de interrupción en la línea actual",
+            )
+            .into(),
+            Command::ClearBreakpoints => t(
+                "Retirer tous les points d'arrêt",
+                "Remove all breakpoints",
+                "Quitar todos los puntos de interrupción",
+            )
+            .into(),
             Command::Stop => t("Arrêter le programme", "Stop the program", "Detener el programa").into(),
             Command::ResumeHere => t("Reprendre à cette étape", "Resume at this step", "Reanudar en este paso").into(),
             Command::TimelineStart => t("Timeline : début", "Timeline: start", "Línea de tiempo: inicio").into(),
@@ -121,6 +149,9 @@ impl Command {
             Command::UnfoldAll => "Ctrl+Maj+]",
             Command::Run => "F5",
             Command::Step => "F10",
+            Command::StepOver => "Maj+F10",
+            Command::Continue => "F9",
+            Command::ToggleBreakpoint => "Ctrl+F8",
             Command::Stop => "Échap",
             Command::TimelineStart => "Home",
             Command::TimelineEnd => "End",
@@ -137,9 +168,13 @@ impl Command {
         let mut v = vec![
             Command::Run,
             Command::Step,
+            Command::StepOver,
+            Command::Continue,
             Command::Build,
             Command::Stop,
             Command::ResumeHere,
+            Command::ToggleBreakpoint,
+            Command::ClearBreakpoints,
             Command::New,
             Command::Open,
             Command::Save,
@@ -277,6 +312,13 @@ impl App {
             Command::Build => self.build(),
             Command::Run => self.launch(),
             Command::Step => self.step(),
+            Command::StepOver => self.step_over(),
+            Command::Continue => self.cont(),
+            Command::ToggleBreakpoint => {
+                let line = self.editor_ln;
+                self.toggle_breakpoint(line);
+            }
+            Command::ClearBreakpoints => self.breakpoints.clear(),
             Command::Stop => self.stop(),
             Command::ResumeHere => self.resume_here(),
             Command::TimelineStart => self.set_view(0),

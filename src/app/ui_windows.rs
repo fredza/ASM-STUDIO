@@ -48,8 +48,8 @@ impl App {
         let dynamics = self.microscope_states(addr).map(|(b, a)| {
             (
                 b.regs.clone(),
-                b.stack.clone(),
-                a.map(|s| (s.regs.clone(), s.stack.clone())),
+                b.stack,
+                a.map(|s| (s.regs.clone(), s.stack)),
             )
         });
 
@@ -392,7 +392,7 @@ impl App {
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             ui.label(
-                                RichText::new(tr("🔷  VERSION BÊTA 1", "🔷  BETA 1 VERSION", "🔷  VERSIÓN BETA 1"))
+                                RichText::new(tr("🔷  VERSION BÊTA 2", "🔷  BETA 2 VERSION", "🔷  VERSIÓN BETA 2"))
                                     .strong()
                                     .color(egui::Color32::WHITE),
                             );
@@ -971,6 +971,9 @@ impl App {
                     ("F1", tr("Afficher/masquer cette aide", "Show/hide this help", "Mostrar/ocultar esta ayuda")),
                     ("F5", tr("Lancer / Restart", "Run / Restart", "Ejecutar / Reiniciar")),
                     ("F10 / F8", tr("Instruction suivante (Next)", "Next instruction (Next)", "Instrucción siguiente (Siguiente)")),
+                    ("Maj+F10", tr("Pas par-dessus : exécute l'appel d'un bloc", "Step over: run the call in one go", "Paso por encima: ejecuta la llamada de una vez")),
+                    ("F9", tr("Continuer jusqu'au prochain point d'arrêt", "Continue to the next breakpoint", "Continuar hasta el próximo punto de interrupción")),
+                    ("Ctrl+F8", tr("Point d'arrêt sur la ligne du curseur (ou clic dans la gouttière)", "Breakpoint on the cursor's line (or click the gutter)", "Punto de interrupción en la línea del cursor (o clic en el margen)")),
                     ("Échap / Maj+F5", tr("Stop", "Stop", "Detener")),
                     ("Ctrl+B", tr("Assembler + Lier", "Assemble + Link", "Ensamblar + Enlazar")),
                     ("Ctrl+S", tr("Enregistrer", "Save", "Guardar")),
@@ -2032,7 +2035,7 @@ mod settings_tests {
         app.show_settings = false;
         let ctx = egui::Context::default();
         let out = ctx.run(Default::default(), |ctx| app.settings_window(ctx));
-        assert!(out.shapes.is_empty() || app.show_settings == false);
+        assert!(out.shapes.is_empty() || !app.show_settings);
     }
 
     /// Le dossier de travail ne doit pas influer sur le rendu des réglages.

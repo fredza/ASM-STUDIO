@@ -1990,11 +1990,6 @@ impl Progress {
         (l.iter().filter(|x| self.is_done(x.id)).count(), l.len())
     }
 
-    /// Sérialisation pour les réglages : identifiants séparés par des virgules.
-    pub fn to_string(&self) -> String {
-        self.done.join(",")
-    }
-
     /// Relecture. Les identifiants inconnus sont écartés : renommer une leçon
     /// ne doit pas laisser de progression fantôme.
     pub fn parse(s: &str) -> Progress {
@@ -2010,6 +2005,14 @@ impl Progress {
     /// Première leçon non terminée du parcours, pour reprendre où l'on en était.
     pub fn next_lesson(&self) -> Option<Lesson> {
         catalogue().into_iter().find(|l| !self.is_done(l.id))
+    }
+}
+
+/// Sérialisation pour les réglages : identifiants séparés par des virgules.
+/// Réciproque de [`Progress::parse`].
+impl std::fmt::Display for Progress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.done.join(","))
     }
 }
 
