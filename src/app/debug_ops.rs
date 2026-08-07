@@ -410,14 +410,40 @@ impl App {
         let target = self.view_index;
         match Debugger::launch(&bin) {
             Ok(mut d) => {
+                // `is_ready` et non `is_alive` : un pas resté suspendu dans un
+                // appel système laisse `step` sans effet, et la boucle
+                // tournerait à vide jusqu'au bout du compte.
+                let mut blocked = false;
                 for _ in 0..target {
-                    if !d.is_alive() {
+                    if !d.is_ready() {
+                        blocked = d.is_waiting();
                         break;
                     }
                     let _ = d.step();
                 }
+                // Le rejeu réécrit sur la sortie standard tout ce que
+                // l'exécution d'origine avait déjà écrit. Ces octets sont dans
+                // la console depuis le premier passage : les verser une
+                // seconde fois la ferait bégayer.
+                let _ = d.take_output();
                 self.view_index = d.history.len() - 1;
-                self.status = format!("{} {}", i18n::tr(self.lang, "Repris à l'étape", "Resumed at step"), self.view_index);
+                self.status = if blocked {
+                    // L'entrée saisie la première fois n'est pas rejouée : le
+                    // programme réclame la sienne, et on s'arrête là plutôt
+                    // que d'annoncer une étape qu'on n'a pas atteinte.
+                    format!(
+                        "{} {} — {}",
+                        i18n::tr(self.lang, "Repris à l'étape", "Resumed at step"),
+                        self.view_index,
+                        i18n::tr(
+                            self.lang,
+                            "le programme attend une entrée, saisissez-la pour aller plus loin",
+                            "the program is waiting for input, type it to go further",
+                        )
+                    )
+                } else {
+                    format!("{} {}", i18n::tr(self.lang, "Repris à l'étape", "Resumed at step"), self.view_index)
+                };
                 self.selected = None;
                 self.dbg = Some(d);
                 self.rebuild_trace(); // resynchronise call stack + syscalls
@@ -657,6 +683,45 @@ mod tests {
             app.console.contains("salut\n"),
             "la console doit contenir la sortie du programme, pas seulement le \
              journal des appels système : {}",
+            app.console
+        );
+    }
+
+    /// « Reprendre ici » rejoue le programme depuis le début : il réécrit donc
+    /// sur sa sortie ce qui est déjà affiché. La console ne doit pas bégayer.
+    #[test]
+    fn resuming_does_not_echo_the_output_twice() {
+        let mut app = app_with(
+            "resume-out",
+            "section .data\n\
+             msg db \"bonjour\", 10\n\
+             section .text\n\
+             global _start\n\
+             _start:\n\
+             mov rax,1\n\
+             mov rdi,1\n\
+             mov rsi,msg\n\
+             mov rdx,8\n\
+             syscall\n\
+             mov rax,60\n\
+             xor rdi,rdi\n\
+             syscall\n",
+        );
+        app.cont();
+        assert_eq!(app.console.matches("bonjour").count(), 1, "affiché une fois");
+
+        // On repart d'une étape située APRÈS le `write` — sans quoi le rejeu
+        // n'atteindrait pas l'appel système, et le test ne prouverait rien.
+        // Quatre `mov` puis le `syscall` : l'étape 5 l'a exécuté.
+        app.view_index = 5;
+        app.resume_here();
+        let ctx = egui::Context::default();
+        app.poll_debugger(&ctx);
+
+        assert_eq!(
+            app.console.matches("bonjour").count(),
+            1,
+            "le rejeu ne doit pas remettre la sortie dans la console : {}",
             app.console
         );
     }
