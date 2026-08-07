@@ -88,7 +88,11 @@ install -m 644 install/INSTALL.md   "${STAGE}/INSTALL.md"
 install -m 644 DEPENDENCIES.md      "${STAGE}/DEPENDENCIES.md"
 # En `set -e`, un `[ -f x ] && cmd` faux interrompt le script : d'où le if/fi.
 if [ -f LICENSE.md ]; then install -m 644 LICENSE.md "${STAGE}/LICENSE.md"; fi
-if [ -f README.md ];  then install -m 644 README.md  "${STAGE}/README.md";  fi
+# Les trois langues, comme l'interface : un élève hispanophone qui ouvre
+# l'archive n'a pas à passer par la version anglaise.
+for r in README.md README.fr.md README.es.md; do
+    if [ -f "${r}" ]; then install -m 644 "${r}" "${STAGE}/${r}"; fi
+done
 ok "documentation"
 
 install -m 644 assets/asm-studio.desktop "${STAGE}/assets/"
@@ -106,13 +110,40 @@ SIZE="$(du -h "${DIST}/${PKG}.tar.gz" | cut -f1)"
 ok "dist/${PKG}.tar.gz  (${SIZE})"
 ok "dist/${PKG}.tar.gz.sha256"
 
+# Notes de version : la seule section du CHANGELOG qui concerne cette version.
+# Passer le fichier entier en `--notes-file` collerait tout l'historique du
+# projet dans la release, jusqu'à la 0.2.1.
+readonly NOTES="${DIST}/RELEASE-NOTES-${VERSION}.md"
+awk -v want="## [${VERSION}]" '
+    index($0, want) == 1 { inside = 1; next }
+    inside && /^## \[/   { exit }
+    inside               { print }
+' CHANGELOG.md > "${NOTES}"
+if [ -s "${NOTES}" ]; then
+    ok "dist/RELEASE-NOTES-${VERSION}.md"
+else
+    rm -f -- "${NOTES}"
+    err "aucune section « ## [${VERSION}] » dans CHANGELOG.md"
+    dim "La release peut se publier sans, mais elle n'aura pas de notes."
+fi
+
 echo
 dim "Contenu :"
 tar -tzf "${DIST}/${PKG}.tar.gz" | sed 's/^/    /'
 echo
 dim "Pour publier une release GitHub :"
 dim "  gh release create v${VERSION} dist/${PKG}.tar.gz dist/${PKG}.tar.gz.sha256 \\"
-dim "     --title \"ASM Studio ${VERSION}\" --notes-file CHANGELOG.md"
+if [ -f "${NOTES}" ]; then
+    dim "     --title \"ASM Studio ${VERSION}\" --notes-file \"${NOTES#"${ROOT}"/}\""
+else
+    dim "     --title \"ASM Studio ${VERSION}\" --notes \"…\""
+fi
+case "${VERSION}" in
+    *-*) echo
+         dim "Version de pré-publication : ajoutez --prerelease, sinon la mise à"
+         dim "jour automatique la proposera à tous les utilisateurs stables." ;;
+esac
 echo
-dim "Rappel : le nom du dépôt attendu par la mise à jour automatique est défini"
-dim "par GITHUB_REPO dans src/updater.rs — vérifiez-le avant publication."
+dim "Rappel : le dépôt interrogé par la mise à jour automatique est défini par"
+dim "GITHUB_REPO dans src/updater.rs — actuellement :"
+dim "  $(sed -n 's/^const GITHUB_REPO: &str = "\(.*\)";/\1/p' src/updater.rs)"
