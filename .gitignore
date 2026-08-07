@@ -7,3 +7,10 @@
 /.claude/worktrees
 # Archives de distribution produites par install/package.sh
 /dist
+# Notes de travail sur le système de licence : documents internes, que le
+# changelog interne demande lui-même de ne pas publier tel quel. Ils restent
+# sur le disque, hors du dépôt. Le guide de démarrage rapide, lui, est
+# destiné à l'utilisateur final et reste suivi.
+/doc/LICENCE-SYSTEME-INTERNE.md
+/doc/TEST-LICENCE.md
+/doc/CHANGELOG-LICENCE-INTERNE.md
