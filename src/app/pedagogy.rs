@@ -117,7 +117,7 @@ pub(super) fn bit_strip_tooltip(val: u64, pval: u64, lang: crate::i18n::Lang) ->
         .map(|b| format!("{:08b}", (val >> (56 - b * 8)) & 0xFF))
         .collect();
     format!(
-        "{}\n\n{}\n{}\n{}\n\n{} : {}\n{}\n{}",
+        "{}\n\n{}\n{}\n{}\n\n{} : {}\n{}\n0b {}",
         t(
             "Les 64 bits du registre — bit 63 à gauche, bit 0 à droite.",
             "The register's 64 bits — bit 63 on the left, bit 0 on the right.",
@@ -141,7 +141,7 @@ pub(super) fn bit_strip_tooltip(val: u64, pval: u64, lang: crate::i18n::Lang) ->
         t("Bits modifiés", "Changed bits", "Bits modificados"),
         diff.count_ones(),
         t("Les traits séparent les octets.", "The ticks separate bytes.", "Las marcas separan bytes."),
-        format!("0b {}", grouped.join(" ")),
+        grouped.join(" "),
     )
 }
 
@@ -866,10 +866,9 @@ mod tests {
         const TITLE_H: f32 = 16.0;
         const BOUNDS_H: f32 = 13.0;
 
-        for pointers in 0..=6 {
-            let h = lane_height(pointers);
-            assert!(h >= LANE_MIN_H, "{pointers} pointeurs → {h}px sous le plancher");
-
+        // Ces deux-là ne dépendent pas du nombre de pointeurs : des constantes
+        // face à des constantes, vérifiées une fois pour toutes à la compilation.
+        const {
             // Titre puis bornes, sans recouvrement.
             assert!(
                 LANE_TITLE_Y + TITLE_H <= LANE_BOUNDS_Y,
@@ -880,6 +879,11 @@ mod tests {
                 LANE_BOUNDS_Y + BOUNDS_H <= LANE_CONTENT_Y,
                 "les bornes débordent sur la ligne d'octets"
             );
+        }
+
+        for pointers in 0..=6 {
+            let h = lane_height(pointers);
+            assert!(h >= LANE_MIN_H, "{pointers} pointeurs → {h}px sous le plancher");
 
             // La mini-carte est ancrée en bas : elle doit rester sous tout le reste.
             let track_top = h - LANE_TRACK_H - LANE_TRACK_MARGIN;

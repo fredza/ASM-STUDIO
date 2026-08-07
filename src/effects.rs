@@ -389,7 +389,7 @@ mod tests {
         v.iter().any(|r| matches!(r, Resource::Register(x) if x.eq_ignore_ascii_case(name)))
     }
     fn has_rip(v: &[Resource]) -> bool {
-        v.iter().any(|r| *r == Resource::Rip)
+        v.contains(&Resource::Rip)
     }
 
     #[test]

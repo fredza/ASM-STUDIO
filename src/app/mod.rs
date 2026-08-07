@@ -110,6 +110,8 @@ pub(super) const FALSE_COL: Color32 = Color32::from_rgb(0xD9, 0x5B, 0x5B);
 
 // Couleur de la gouttière de numéros de ligne.
 pub(super) const GUTTER: Color32 = Color32::from_rgb(0x60, 0x66, 0x70);
+// Pastille de point d'arrêt, dans la gouttière.
+pub(super) const BREAKPOINT: Color32 = Color32::from_rgb(0xE0, 0x4A, 0x4A);
 // Animation « CPU vivant ».
 pub(super) const FLASH_DUR: f64 = 0.7; // durée du fondu (secondes)
 pub(super) const FLASH_BRIGHT: Color32 = Color32::from_rgb(0xFF, 0xF2, 0x9A); // pic de pulsation
@@ -270,10 +272,41 @@ pub struct App {
     pub(super) selected: Option<u64>,
     /// Instruction ouverte dans le mode « microscope » (fenêtre dédiée).
     pub(super) microscope: Option<u64>,
+    /// Adresse → index dans `disasm`. Reconstruit à chaque lancement : la
+    /// trace remonte l'historique instruction par instruction, et une
+    /// recherche linéaire dans le désassemblage y coûtait le prix fort.
+    pub(super) disasm_index: HashMap<u64, usize>,
     /// Appels système exécutés (panneau SYSCALLS).
     pub(super) syscalls: Vec<SyscallLog>,
     /// Adresses des frames actives (panneau CALL STACK), suivi call/ret.
     pub(super) call_stack: Vec<u64>,
+    /// Nombre de transitions de l'historique déjà dépouillées par
+    /// `extend_trace` : au pas suivant, seule la nouvelle est à traiter.
+    pub(super) trace_cursor: usize,
+    /// L'appel système final (celui qui a tué le processus, sans snapshot
+    /// successeur) a déjà été journalisé.
+    pub(super) trace_tail_done: bool,
+    /// Pas lancé dont la finalisation reste à faire — le programme est
+    /// suspendu dans un appel système (voir `RunState::Running`).
+    pub(super) step_in_flight: bool,
+    /// « Continuer » interrompu par un appel système bloquant, à reprendre dès
+    /// que celui-ci aura rendu la main. `Some(None)` pour un « continuer »
+    /// ordinaire, `Some(Some(addr))` pour un pas par-dessus.
+    pub(super) run_pending: Option<Option<u64>>,
+    /// Appel système sur le point de s'exécuter, mémorisé avant le pas pour
+    /// être journalisé avec sa valeur de retour une fois le pas achevé.
+    pub(super) pending_syscall: Option<(String, u64)>,
+    /// Ligne que l'élève s'apprête à envoyer sur l'entrée standard du
+    /// programme (champ de saisie du panneau Console).
+    pub(super) stdin_input: String,
+    /// Le focus a déjà été donné au champ de saisie pour l'attente en cours :
+    /// il ne sera pas repris tant que le programme n'aura pas de nouveau
+    /// besoin d'une entrée.
+    pub(super) stdin_focus_claimed: bool,
+    /// Points d'arrêt, par numéro de ligne source (1-based). Posés sur la
+    /// ligne et non sur l'adresse : c'est ce que l'élève voit, et ça survit à
+    /// un réassemblage qui déplace le code.
+    pub(super) breakpoints: std::collections::BTreeSet<usize>,
     /// Dossier affiché dans l'explorateur de fichiers (panneau de gauche).
     pub(super) explorer_dir: PathBuf,
     /// Fichier retenu au clavier dans l'explorateur (surligné, ouvert par Entrée).
@@ -463,8 +496,17 @@ impl App {
             src_map: HashMap::new(),
             selected: None,
             microscope: None,
+            disasm_index: HashMap::new(),
             syscalls: Vec::new(),
             call_stack: Vec::new(),
+            trace_cursor: 0,
+            trace_tail_done: false,
+            step_in_flight: false,
+            run_pending: None,
+            pending_syscall: None,
+            stdin_input: String::new(),
+            stdin_focus_claimed: false,
+            breakpoints: std::collections::BTreeSet::new(),
             explorer_dir,
             explorer_selected: None,
             view_index: 0,
@@ -650,7 +692,7 @@ impl App {
             self.pedagogy_memview,
             self.pedagogy_predict,
             self.tutorial_enabled,
-            self.tutorial_progress.to_string(),
+            self.tutorial_progress,
             self.tutorial_current.clone().unwrap_or_default(),
             self.welcome_dismissed,
             self.dock_layout_string(),
@@ -687,8 +729,12 @@ impl App {
     pub(super) fn is_head_view(&self) -> bool {
         matches!(&self.dbg, Some(d) if self.view_index >= d.history.len() - 1)
     }
+    /// Le programme peut avancer d'un pas — et, par la même occasion, recevoir
+    /// une écriture de registre ou de mémoire. `is_ready` et non `is_alive` :
+    /// un processus suspendu dans un appel système est bien vivant, mais ptrace
+    /// n'a pas la main dessus, et tout ce qui est proposé ici y échouerait.
     pub(super) fn can_step(&self) -> bool {
-        self.dbg.as_ref().is_some_and(|d| d.is_alive()) && self.is_head_view()
+        self.dbg.as_ref().is_some_and(|d| d.is_ready()) && self.is_head_view()
     }
     pub(super) fn can_read_memory(&self) -> bool {
         self.is_head_view() && self.dbg.as_ref().is_some_and(|d| d.is_alive())
@@ -840,6 +886,10 @@ impl eframe::App for App {
         if self.dialog_pending() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        // Sortie du programme tracé, et fin d'un pas resté en suspens sur un
+        // appel système bloquant. Avant toute peinture : la console et la
+        // barre d'état de cette frame doivent montrer l'état à jour.
+        self.poll_debugger(ctx);
         if self.pending_flash {
             self.flash_time = ctx.input(|i| i.time);
             self.pending_flash = false;

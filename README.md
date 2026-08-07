@@ -30,6 +30,12 @@ memory — is the genuine process state, not an approximation.
 - **Real debugger** — step-by-step execution of a NASM binary via `ptrace`
   (registers, `SETREGS`, reading/writing `/proc/pid/mem`), not a simulated
   virtual machine.
+- **Breakpoints** — click the gutter (or `Ctrl+F8`) to mark a line, then
+  `Continue` (`F9`) runs up to it. `Step over` (`Shift+F10`) runs a whole
+  `call` in one go. Every instruction still lands in the timeline.
+- **Real console** — what the program writes to stdout/stderr shows up in the
+  IDE, and you can type into its standard input: a program blocked on `read`
+  waits for you instead of freezing the interface.
 - **Two display modes** — *Learning* (the essentials: code, explained
   instruction, general-purpose registers, stack, console) and *Full*
   (everything: disassembly, memory view, hex dump, call stack, syscalls).

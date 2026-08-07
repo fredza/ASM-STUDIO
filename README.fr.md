@@ -30,6 +30,12 @@ l'état authentique du processus, pas une approximation.
 - **Débogueur réel** — exécution pas à pas d'un binaire NASM via `ptrace`
   (registres, `SETREGS`, lecture/écriture de `/proc/pid/mem`), pas une machine
   virtuelle simulée.
+- **Points d'arrêt** — un clic dans la gouttière (ou `Ctrl+F8`) marque une
+  ligne, `Continuer` (`F9`) y mène d'une traite. `Par-dessus` (`Maj+F10`)
+  franchit un `call` d'un bloc. Chaque instruction reste dans la timeline.
+- **Vraie console** — ce que le programme écrit sur sa sortie standard arrive
+  dans l'IDE, et l'on peut lui envoyer de l'entrée : un programme suspendu sur
+  un `read` vous attend au lieu de figer l'interface.
 - **Deux modes d'affichage** — *Apprentissage* (l'essentiel : code, instruction
   expliquée, registres généraux, pile, console) et *Complet* (tout : désassemblage,
   vue mémoire, vidage hexa, pile d'appels, appels système).

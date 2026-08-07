@@ -7,7 +7,7 @@ use crate::syntax;
 use crate::syscall;
 
 use super::{
-    App, ACCENT, ACTION, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, GUTTER,
+    App, ACCENT, ACTION, BREAKPOINT, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, GUTTER,
     badge, card,
 };
 
@@ -363,6 +363,21 @@ impl App {
         // caractère tapé a changé (fermeture automatique des paires).
         let pre_edit_source = self.source.clone();
 
+        // Ligne cliquée dans la gouttière, traitée après le rendu : `self` y
+        // est emprunté par le layouter et les zones défilantes.
+        let mut gutter_click: Option<usize> = None;
+
+        // Points d'arrêt à peindre, résolus avant le rendu pour la même raison
+        // (ligne, porte du code). Tant que rien n'a été assemblé, aucune ligne
+        // n'a d'adresse : on ne peut pas encore dire lesquelles portent du
+        // code, et tout point d'arrêt est plausible.
+        let mapped = !self.src_map.is_empty();
+        let bp_marks: Vec<(usize, bool)> = self
+            .breakpoints
+            .iter()
+            .map(|l| (*l, !mapped || self.line_is_executable(*l)))
+            .collect();
+
         // `layouter` emprunte `self.find_query` via `find_highlight` : tant
         // qu'il est capturé par les fermetures ci-dessous, `self` ne peut pas
         // être remprunté en `&mut` — l'auto-fermeture des paires doit donc
@@ -378,7 +393,44 @@ impl App {
                     .vertical_scroll_offset(forced_scroll.unwrap_or(self.editor_scroll_y))
                     .show(ui, |ui| {
                         let galley = ui.fonts_mut(|f| f.layout_job(gutter_job));
-                        ui.add(egui::Label::new(galley).selectable(false));
+                        let row_h = galley.size().y / line_count.max(1) as f32;
+                        let resp = ui.add(
+                            egui::Label::new(galley)
+                                .selectable(false)
+                                .sense(egui::Sense::click()),
+                        );
+                        // Pastilles peintes par-dessus les numéros plutôt
+                        // qu'insérées dans le texte : un glyphe de plus dans la
+                        // gouttière décalerait les numéros des seules lignes qui
+                        // en portent un.
+                        let painter = ui.painter();
+                        let x = resp.rect.left() + row_h * 0.35;
+                        for (line, executable) in &bp_marks {
+                            let y = resp.rect.top() + (*line as f32 - 0.5) * row_h;
+                            let c = egui::pos2(x, y);
+                            let r = row_h * 0.24;
+                            // Cercle creux : point d'arrêt posé sur une ligne
+                            // sans code (commentaire, `section`, ligne vide),
+                            // que l'exécution ne rencontrera jamais.
+                            if *executable {
+                                painter.circle_filled(c, r, BREAKPOINT);
+                            } else {
+                                painter.circle_stroke(c, r, (1.5, BREAKPOINT));
+                            }
+                        }
+                        // Clic dans la gouttière : bascule le point d'arrêt de la
+                        // ligne visée, si elle porte du code exécutable.
+                        if resp.clicked()
+                            && let Some(pos) = resp.interact_pointer_pos()
+                        {
+                            let line = ((pos.y - resp.rect.top()) / row_h) as usize + 1;
+                            if line <= line_count {
+                                gutter_click = Some(line);
+                            }
+                        }
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
                     });
                 ui.separator();
                 // Éditeur : défilement vertical + horizontal ; la gouttière reste fixe.
@@ -423,6 +475,9 @@ impl App {
 
         if changed {
             self.auto_pair_after_edit(&pre_edit_source, cursor_range);
+        }
+        if let Some(line) = gutter_click {
+            self.toggle_breakpoint(line);
         }
     }
 

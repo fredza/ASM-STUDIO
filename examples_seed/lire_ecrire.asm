@@ -1,6 +1,9 @@
 ; Lire / Écrire — lit un octet sur stdin, l'affiche sur stdout
 ; Démontre : syscall read (0) et write (1)
-; Lancer depuis un terminal : echo "X" | ./build/lire_ecrire
+;
+; Lancez-le ici même : au « read », la barre d'état passe à « En attente
+; d'entrée » et le chevron du panneau Console s'allume. Tapez un caractère,
+; Entrée : le programme repart, et son « write » ressort dans cette console.
 
 section .bss
     buf resb 1          ; tampon d'un octet

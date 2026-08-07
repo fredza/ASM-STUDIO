@@ -57,11 +57,10 @@ impl App {
 
         // Ouvre ce dont la leçon parle : elle met sous les yeux ce qu'elle explique.
         for key in &lesson.panels {
-            if let Some(p) = Panel::from_key(key) {
-                if !self.panel_is_open(p) {
+            if let Some(p) = Panel::from_key(key)
+                && !self.panel_is_open(p) {
                     self.show_panel(p);
                 }
-            }
         }
         self.save_settings();
     }
