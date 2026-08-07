@@ -6,10 +6,52 @@ use super::{abs_dir_of, asmstd_dir, data_dir, App};
 
 impl App {
     pub(super) fn log(&mut self, s: &str) {
-        self.console.push_str(s);
+        self.console_push(s);
         if !s.ends_with('\n') {
-            self.console.push('\n');
+            self.console_push("\n");
         }
+    }
+
+    /// Ajoute du texte à la console en gardant celle-ci bornée.
+    ///
+    /// Passage obligé : c'est ici que sont écrits aussi bien le journal de
+    /// l'IDE que la sortie du programme tracé. Or une boucle `write` — l'étourderie
+    /// classique de l'élève qui oublie sa condition d'arrêt — produit des dizaines
+    /// de milliers de lignes par « Continuer ». La `String` grandirait sans fin,
+    /// et egui, qui remet en page tout le texte à chaque frame, rendrait l'IDE
+    /// injouable bien avant que la mémoire ne manque.
+    pub(super) fn console_push(&mut self, s: &str) {
+        self.console.push_str(s);
+        if self.console.len() > super::CONSOLE_MAX {
+            self.trim_console();
+        }
+    }
+
+    /// Ne conserve que la fin de la console — c'est là qu'est le plus récent,
+    /// donc le plus utile. On coupe par gros blocs plutôt qu'octet par octet :
+    /// chaque troncature décale tout le reste de la chaîne, et le faire à
+    /// chaque écriture coûterait plus cher que le débordement qu'on évite.
+    fn trim_console(&mut self) {
+        let cut = self.console.len() - super::CONSOLE_KEEP;
+        // Repart sur une frontière de caractère, puis sur un début de ligne :
+        // couper au milieu d'un caractère multi-octets ferait paniquer le
+        // découpage, et au milieu d'une ligne tromperait la lecture.
+        let cut = (cut..self.console.len())
+            .find(|i| self.console.is_char_boundary(*i))
+            .unwrap_or(self.console.len());
+        let cut = self.console[cut..]
+            .find('\n')
+            .map_or(cut, |i| cut + i + 1);
+        let kept = self.console.split_off(cut);
+        self.console = format!(
+            "{}\n{kept}",
+            i18n::tr3(
+                self.lang,
+                "[…] début de la console tronqué",
+                "[…] start of the console truncated",
+                "[…] inicio de la consola truncado",
+            )
+        );
     }
 
     /// Pointe l'explorateur INTERNE de l'IDE sur le dossier où sont écrits les
@@ -200,5 +242,66 @@ impl App {
             dirs.push(d);
         }
         dirs
+    }
+}
+
+#[cfg(test)]
+mod console_tests {
+    use super::super::{App, CONSOLE_KEEP, CONSOLE_MAX};
+
+    /// Une boucle `write` étourdie ne doit pas faire enfler la console sans
+    /// fin : passé le plafond, c'est le début qui est jeté.
+    #[test]
+    fn the_console_stays_bounded() {
+        let mut app = App::new();
+        let line = "sortie du programme qui boucle\n";
+        for _ in 0..(CONSOLE_MAX / line.len() + 500) {
+            app.console_push(line);
+        }
+        assert!(
+            app.console.len() <= CONSOLE_MAX,
+            "console à {} octets, au-delà du plafond de {CONSOLE_MAX}",
+            app.console.len()
+        );
+        assert!(
+            app.console.len() >= CONSOLE_KEEP,
+            "on jette le début, on ne vide pas tout"
+        );
+    }
+
+    /// Ce qui est gardé est la fin — la partie récente, celle que l'élève
+    /// regarde — et le rognage est annoncé.
+    #[test]
+    fn trimming_keeps_the_end_and_says_so() {
+        let mut app = App::new();
+        app.console_push("TOUT DEBUT\n");
+        // Assez pour franchir le plafond, quelle que soit la longueur des
+        // lignes : on s'arrête sur la taille atteinte, pas sur un compte deviné.
+        let mut i = 0;
+        while app.console.len() < CONSOLE_MAX {
+            app.console_push(&format!("ligne {i}\n"));
+            i += 1;
+        }
+        app.console_push("DERNIERE LIGNE\n");
+
+        assert!(app.console.ends_with("DERNIERE LIGNE\n"), "la fin est intacte");
+        assert!(!app.console.contains("TOUT DEBUT"), "le début est parti");
+        assert!(app.console.starts_with("[…]"), "le rognage est signalé");
+    }
+
+    /// Le rognage tombe sur une frontière de caractère : couper au milieu d'un
+    /// caractère multi-octets ferait paniquer le découpage de la chaîne.
+    #[test]
+    fn trimming_does_not_split_a_multibyte_character() {
+        let mut app = App::new();
+        // « é » fait deux octets, « … » trois : les frontières ne tombent pas
+        // sur des multiples ronds, et une coupe naïve atterrirait dedans.
+        let line = "déjà lu… caractères accentués\n";
+        for _ in 0..(CONSOLE_MAX / line.len() + 500) {
+            app.console_push(line);
+        }
+        // Le seul fait d'arriver ici sans panique vaut vérification ; on
+        // s'assure en plus que le texte reste lisible.
+        assert!(app.console.contains("déjà lu…"), "le texte gardé reste intact");
     }
 }

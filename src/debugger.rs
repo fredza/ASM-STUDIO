@@ -501,14 +501,23 @@ impl Debugger {
         let Some(io) = self.io.as_ref() else {
             return Err("entrée standard non redirigée".to_string());
         };
-        let n = unsafe {
-            libc::write(io.inp.as_raw_fd(), line.as_ptr().cast(), line.len())
-        };
-        if n < 0 {
-            return Err(format!(
-                "écriture sur l'entrée standard : {}",
-                std::io::Error::last_os_error()
-            ));
+        // `write` sur un tuyau n'est atomique que jusqu'à `PIPE_BUF` (4 Kio) :
+        // au-delà, il peut n'en prendre qu'une partie. Sans cette boucle, la
+        // fin d'une ligne collée un peu longue disparaîtrait sans rien dire, et
+        // le programme lirait une saisie tronquée.
+        let mut sent = 0;
+        while sent < line.len() {
+            let rest = &line.as_bytes()[sent..];
+            let n = unsafe { libc::write(io.inp.as_raw_fd(), rest.as_ptr().cast(), rest.len()) };
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                // Interrompu par un signal : rien n'est perdu, on réessaie.
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(format!("écriture sur l'entrée standard : {err}"));
+            }
+            sent += n as usize;
         }
         Ok(())
     }

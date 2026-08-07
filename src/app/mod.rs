@@ -112,6 +112,13 @@ pub(super) const FALSE_COL: Color32 = Color32::from_rgb(0xD9, 0x5B, 0x5B);
 pub(super) const GUTTER: Color32 = Color32::from_rgb(0x60, 0x66, 0x70);
 // Pastille de point d'arrêt, dans la gouttière.
 pub(super) const BREAKPOINT: Color32 = Color32::from_rgb(0xE0, 0x4A, 0x4A);
+// Taille au-delà de laquelle la console est rognée par le début, et taille
+// conservée après rognage. L'écart entre les deux est ce qui est jeté d'un
+// coup : le prendre large espace les rognages, dont chacun recopie tout ce
+// qui reste. Un demi-mégaoctet représente déjà plusieurs milliers de lignes,
+// bien plus que ce qu'un élève relit.
+pub(super) const CONSOLE_MAX: usize = 512 * 1024;
+pub(super) const CONSOLE_KEEP: usize = 384 * 1024;
 // Animation « CPU vivant ».
 pub(super) const FLASH_DUR: f64 = 0.7; // durée du fondu (secondes)
 pub(super) const FLASH_BRIGHT: Color32 = Color32::from_rgb(0xFF, 0xF2, 0x9A); // pic de pulsation

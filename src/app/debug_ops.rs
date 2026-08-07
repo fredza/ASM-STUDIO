@@ -197,7 +197,7 @@ impl App {
             None => return,
         };
         if !out.is_empty() {
-            self.console.push_str(&out);
+            self.console_push(&out);
         }
     }
 
@@ -207,7 +207,7 @@ impl App {
         line.push('\n');
         // Écho dans la console : sinon l'élève ne garde aucune trace de ce
         // qu'il a saisi, un terminal l'affichant d'ordinaire de lui-même.
-        self.console.push_str(&line);
+        self.console_push(&line);
         if let Some(d) = self.dbg.as_mut()
             && let Err(e) = d.write_stdin(&line)
         {
