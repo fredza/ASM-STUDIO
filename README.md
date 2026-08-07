@@ -9,7 +9,7 @@ ASM Studio is not a simulator: your program is **actually assembled**
 step by step through `ptrace`. What you see — registers, flags, stack,
 memory — is the genuine process state, not an approximation.
 
-![ASM Studio preview](src/Assets/mockup-asm_studio.png)
+![ASM Studio preview](assets/captures/asm_studio-preview.png)
 
 ---
 

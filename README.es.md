@@ -10,7 +10,7 @@ dirigido paso a paso mediante `ptrace`. Lo que usted ve — registros,
 banderas, pila, memoria — es el estado auténtico del proceso, no una
 aproximación.
 
-![Vista previa de ASM Studio](src/Assets/mockup-asm_studio.png)
+![Vista previa de ASM Studio](assets/captures/asm_studio-preview.png)
 
 ---
 
