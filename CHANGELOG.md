@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0-beta.2] - 2026-08-07
+
+### Added
+- **Breakpoints**: Click the editor gutter (or `Ctrl+F8`) to mark a line; `Continue` (`F9`) runs straight to it. Marks sit on source lines rather than addresses, so they survive a rebuild that moves the code. A hollow circle flags a breakpoint on a line that carries no code.
+- **Step over** (`Shift+F10`): Runs a whole `call` in one go instead of walking through the callee. Both commands keep single-stepping under the hood — every instruction still enters the timeline, which would otherwise have gaps.
+- **Real console I/O**: The traced program's stdout and stderr are piped into the IDE's console instead of the parent terminal (invisible when launched from a desktop shortcut), and an input field feeds its stdin. A program blocked on `read` now waits for you: the step is non-blocking, and an interrupted `Continue` resumes on its own once the input arrives.
+- **License system**: ASM Studio Personal Free License (ASFL) v1.0 replaces the MIT license. Disassembly, registers/flags and the timeline require an activated license, after a 14-day grace period counted from first launch. The license can be pasted, inspected and deactivated from the About window.
+- **Calculator**: Hexadecimal by default, bit-by-bit view, and arithmetic/logic operations.
+- **Continuous integration**: A GitHub Actions workflow checks build, clippy (`-D warnings`) and tests on every push.
+
+### Changed
+- **Distribution binary down from 22.8 MB to 12.4 MB**: capstone now builds x86 only (it was compiling all eighteen architectures it knows), and the release profile uses fat LTO, one codegen unit, symbol stripping and `opt-level = "s"`. `panic = "abort"` was deliberately left out: file dialogs and the update check run on background threads, where a panic currently kills only the thread instead of taking the unsaved source down with the IDE.
+- `F1` toggles the shortcut help instead of only opening it; all shortcuts were reviewed for conflicts.
+- The Exercise and Tutorial panels are merged into one.
+- Stack/Heap views render as cards, and register chips are harmonized with the rest of the interface.
+
+### Fixed
+- Disassembly now uses its full width, without a stray rule along the top.
+
+### Performance
+- A step no longer costs an allocation and an `open`+`close` on `/proc/pid/mem`: the stack window is an inline array and the file is opened once per traced process.
+- Call stack and syscall log are now built incrementally. Rebuilding them from scratch on every step made a full run quadratic in the number of instructions.
+- Address-to-instruction lookups go through an index instead of scanning the whole disassembly.
+- `Continue` and the history are both bounded, so an infinite loop hands control back to the interface rather than freezing the IDE or filling memory.
+
+## [0.4.0-beta.1] - 2026-08-02
+
+### Added
+- **Tutorial module**: A guided path of 29 lessons over four levels — 9 beginner, 8 intermediate, 6 advanced, 6 expert — wired to the IDE's own panels: a lesson opens what it talks about. Progress is persisted, and can be reset from Settings.
+- **Self-checked exercises**: Expected results declared in the source itself, with `;@interdit` / `;@requis` text constraints, plus a seeded set of exercise files. The File menu opens the examples folder, and missing examples are re-seeded on demand.
+- **Predict before you reveal**: Guess a register or flag before stepping; a wrong prediction is explained in detail in a dedicated floating window.
+- **Plain-language crash diagnosis**: A hardware fault is analyzed on the spot and explained, instead of leaving RIP frozen in silence.
+- **Learning / Full display modes**: Learning keeps the essentials and opens the Tutorial by default, with a lighter toolbar and status bar and a welcome banner; Full shows everything.
+- **Dockable, detachable panels** (egui_dock), with the layout persisted between sessions.
+- **Full keyboard navigation**: The whole interface is drivable from the keyboard, including the memory, memory view and disassembly panels.
+- **Teaching content**: The System V ABI (call frame and register roles), little-endianness in the memory view, and broader instruction coverage in `explain.rs`.
+- **Microscope**: Machine encoding, effects and context for a single instruction, with a link to the Intel reference.
+- **Internationalization**: French/English/Spanish across the interface, dialogs, status messages and instruction explanations, with the language persisted.
+- **asmstd**: Completed, documented, and verified at run time.
+- Multi-base calculator with negative decimals, syscall identification, and a visible exit code.
+- Quick-start guide (`doc/GUIDE-DEMARRAGE-RAPIDE.md`) and an install/release build directory.
+
+### Changed
+- Upgraded to egui/eframe/egui_dock 0.33 (from 0.29); non-UI dependencies moved to their latest stable versions.
+- Native GNOME file dialogs through the XDG portal (rfd), without GTK.
+- Tree-style file explorer, in the manner of an IDE.
+- Interface brought in line with the design mockup: accent toolbar, syscall badges, panel title bars, cards, rounded tabs, themed icons, softer colors and a much more discreet focus ring.
+- Registers laid out in three columns, flags as cards; FLAGS moved to the bottom of the INSTRUCTION panel.
+- `src/app.rs` (3128 lines) split into seven submodules, with the pedagogy mode extracted to `src/app/pedagogy.rs`.
+
+### Fixed
+- File dialogs no longer block the UI thread — the end of the "not responding" freeze.
+- Zombie processes left behind on relaunch, and the Kill action now targets the right PID.
+- `.rodata` and `.data`/`.bss` were unreadable in the memory view.
+- SYSCALLS vanished when the PREDICTION column appeared; both panels gained horizontal scrollbars.
+- The call stack and syscall trace are rebuilt from a single source of truth.
+- Double close buttons on every panel (an egui_dock 0.18 regression), and a Tutorial close button that did nothing.
+- Focus ring drawn over floating windows, scrolling that failed to follow the cursor, and a rendering pass missing when a dialog closed.
+- Text contrast in the light theme, and scrollbars that overlapped panel content.
+
 ## [0.3.0] - 2026-07-25
 
 ### Added
