@@ -1,3 +1,5 @@
+use eframe::egui;
+
 use crate::assemble;
 use crate::debugger::{Debugger, RunState};
 use crate::disasm;
@@ -6,6 +8,15 @@ use crate::srcmap;
 use crate::syscall;
 
 use super::{App, SyscallLog};
+
+/// Nombre maximal d'instructions enchaînées par « Continuer » avant de rendre
+/// la main à l'interface. Sans ce plafond, une boucle infinie figerait l'IDE
+/// exactement comme le faisait l'attente d'un appel système bloquant.
+///
+/// Un pas coûte une dizaine de microsecondes (deux allers-retours `ptrace` et
+/// la capture de la fenêtre de pile) : ce budget borne donc l'à-coup à environ
+/// une seconde, au-delà de laquelle la barre d'état invite à relancer.
+const RUN_BUDGET: usize = 100_000;
 
 impl App {
     /// Enregistre puis assemble (nasm) et lie (ld) le programme de l'utilisateur.
@@ -33,8 +44,37 @@ impl App {
         }
     }
 
+    /// Relit l'énoncé d'exercice depuis le source courant. Appelé à l'ouverture
+    /// d'un fichier et à chaque lancement (le source a pu être édité entre-temps).
+    pub(super) fn reload_exercise(&mut self) {
+        self.exercise = crate::exercise::parse(&self.source);
+        self.checks.clear();
+        // Un fichier qui déclare des attentes ouvre son panneau : l'élève ne
+        // devrait pas avoir à deviner qu'il y a un énoncé à lire.
+        if self.has_exercise() {
+            self.show_panel(super::dock::Panel::Exercise);
+        }
+        for e in &self.exercise.errors.clone() {
+            self.log(&format!("⚠ énoncé : {e}"));
+        }
+    }
+
+    /// Vérifie les attentes de l'exercice contre l'état final observé.
+    fn verify_exercise(&mut self, exit_code: Option<i32>) {
+        if !self.exercise.is_exercise() {
+            return;
+        }
+        let Some(d) = self.dbg.as_ref() else { return };
+        let regs = d.regs().clone();
+        self.checks = crate::exercise::check(&self.exercise, &regs, exit_code, &self.source);
+        let summary = crate::exercise::summary(&self.checks, self.lang);
+        self.log(&summary);
+        self.status = summary;
+    }
+
     pub(super) fn launch(&mut self) {
         self.build();
+        self.reload_exercise();
         let Some(bin) = self.binary.clone() else {
             return;
         };
@@ -42,6 +82,12 @@ impl App {
             Ok(insns) => self.disasm = insns,
             Err(e) => self.log(&e),
         }
+        self.disasm_index = self
+            .disasm
+            .iter()
+            .enumerate()
+            .map(|(i, insn)| (insn.address, i))
+            .collect();
         self.mem_addr = disasm::section_address(&bin, ".data")
             .or_else(|| disasm::section_address(&bin, ".text"))
             .unwrap_or(0);
@@ -49,6 +95,16 @@ impl App {
         self.selected = None;
         self.syscalls.clear();
         self.call_stack.clear();
+        self.trace_cursor = 0;
+        self.trace_tail_done = false;
+        self.step_in_flight = false;
+        self.run_pending = None;
+        self.pending_syscall = None;
+        self.stdin_input.clear();
+        self.stdin_focus_claimed = false;
+        self.diagnosis = None;
+        self.prediction = None;
+        self.pred_input.clear();
         self.view_index = 0;
         self.dbg = None;
         match Debugger::launch(&bin) {
@@ -66,6 +122,10 @@ impl App {
 
     pub(super) fn stop(&mut self) {
         self.dbg = None;
+        // Une consigne d'exécution en attente ne doit pas survivre au
+        // programme qu'elle pilotait.
+        self.run_pending = None;
+        self.step_in_flight = false;
         self.status = i18n::tr(self.lang, "Arrêté", "Stopped").to_string();
     }
 
@@ -73,9 +133,11 @@ impl App {
         if !self.can_step() {
             return;
         }
-        // Appel système sur le point de s'exécuter (RIP) : pour le journal console.
-        let pending = self.dbg.as_ref().and_then(|d| {
-            let insn = self.disasm.iter().find(|i| i.address == d.regs().rip)?;
+        // Appel système sur le point de s'exécuter (RIP) : pour le journal
+        // console. Mémorisé dans `self` car le pas peut rester en suspens
+        // plusieurs frames (appel bloquant) avant d'être journalisable.
+        self.pending_syscall = self.dbg.as_ref().and_then(|d| {
+            let insn = self.insn_at(d.regs().rip)?;
             (insn.mnemonic == "syscall").then(|| (syscall::format_call(d.regs()), d.regs().rax))
         });
 
@@ -85,32 +147,262 @@ impl App {
             self.log(&e);
             return;
         }
+        self.step_in_flight = true;
+        self.finish_step_if_done();
+    }
+
+    /// Sonde le débogueur à chaque frame : récupère ce que le programme a
+    /// écrit, et finalise le pas en cours dès qu'il s'achève.
+    ///
+    /// Sans ce sondage, un `read` sur l'entrée standard bloquerait le
+    /// `waitpid` — donc l'interface entière — jusqu'à la saisie.
+    pub(super) fn poll_debugger(&mut self, ctx: &egui::Context) {
+        if let Some(d) = self.dbg.as_mut()
+            && d.is_waiting()
+            && let Err(e) = d.poll()
+        {
+            self.log(&e);
+        }
+        self.drain_program_output();
+        if self.step_in_flight {
+            self.finish_step_if_done();
+        }
+        // L'appel système a rendu la main : on reprend le « Continuer » qu'il
+        // avait interrompu, sauf si l'on vient justement d'atteindre un point
+        // d'arrêt (`run_until` teste la condition après le pas, pas avant) ou
+        // si le programme s'est terminé entre-temps.
+        if let Some(extra) = self.run_pending
+            && self.dbg.as_ref().is_none_or(|d| !d.is_waiting())
+        {
+            self.run_pending = None;
+            let at_stop = self
+                .view_rip()
+                .is_some_and(|rip| self.stop_addresses(extra).contains(&rip));
+            if !at_stop && self.dbg.as_ref().is_some_and(|d| d.is_ready()) {
+                self.run_until(extra);
+            }
+        }
+        // Tant que le programme est suspendu, on redemande une frame : rien
+        // d'autre ne réveillerait l'UI quand le syscall rendra la main.
+        if self.dbg.as_ref().is_some_and(|d| d.is_waiting()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        }
+    }
+
+    /// Verse dans la console ce que le programme a écrit sur sa sortie
+    /// standard ou d'erreur, tel quel (le programme mène ses retours à la ligne).
+    fn drain_program_output(&mut self) {
+        let out = match self.dbg.as_mut() {
+            Some(d) => d.take_output(),
+            None => return,
+        };
+        if !out.is_empty() {
+            self.console.push_str(&out);
+        }
+    }
+
+    /// Envoie une ligne au programme suspendu sur un `read`.
+    pub(super) fn send_stdin(&mut self) {
+        let mut line = std::mem::take(&mut self.stdin_input);
+        line.push('\n');
+        // Écho dans la console : sinon l'élève ne garde aucune trace de ce
+        // qu'il a saisi, un terminal l'affichant d'ordinaire de lui-même.
+        self.console.push_str(&line);
+        if let Some(d) = self.dbg.as_mut()
+            && let Err(e) = d.write_stdin(&line)
+        {
+            self.log(&e);
+        }
+    }
+
+    /// Clôt le pas en cours si le débogueur n'attend plus : journal, trace,
+    /// prédiction, barre d'état. Sans effet tant que le pas est suspendu.
+    fn finish_step_if_done(&mut self) {
+        let Some(state) = self.dbg.as_ref().map(|d| d.state) else {
+            self.step_in_flight = false;
+            return;
+        };
+        if state == RunState::Running {
+            self.status = i18n::tr(
+                self.lang,
+                "En attente d'une entrée du programme…",
+                "Waiting for program input…",
+            )
+            .to_string();
+            return;
+        }
+        self.step_in_flight = false;
+        // Ce que le programme a écrit doit précéder le journal de l'appel
+        // système qui l'a produit, et être là dès la fin du pas — sans
+        // attendre le sondage de la frame suivante.
+        self.drain_program_output();
+
         if let Some(d) = self.dbg.as_ref() {
             self.view_index = d.history.len() - 1;
         }
         self.pending_flash = true; // déclenche l'animation « CPU vivant »
+        // Le nouvel état est en place : la prédiction en attente peut être jugée.
+        self.resolve_prediction();
 
-        // Reconstruit pile d'appels + journal syscalls depuis l'historique complet
-        // (source unique, cohérente après Step ET après « Reprendre ici »).
-        self.rebuild_trace();
+        // Complète pile d'appels + journal syscalls avec les transitions
+        // nouvellement apparues dans l'historique.
+        self.extend_trace();
 
         // Journalise l'appel système dans la console (une fois, à son exécution).
-        if let Some((call, num)) = pending {
+        if let Some((call, num)) = self.pending_syscall.take() {
             if syscall::is_exit(num) {
                 self.log(&call);
             } else if let Some(d) = self.dbg.as_ref() {
                 self.log(&format!("{call} = {}", d.regs().rax as i64));
             }
         }
-        match self.dbg.as_ref().map(|d| d.state) {
-            Some(RunState::Stopped) => {
+        match state {
+            RunState::Stopped => {
                 let d = self.dbg.as_ref().unwrap();
                 self.status = format!("{} {} — RIP @ 0x{:X}", i18n::tr(self.lang, "Étape", "Step"), d.steps(), d.regs().rip);
             }
-            Some(RunState::Exited(code)) => self.status = format!("{} (exit {code})", i18n::tr(self.lang, "Terminé", "Terminated")),
-            Some(RunState::Signaled) => self.status = i18n::tr(self.lang, "Terminé (signal)", "Terminated (signal)").to_string(),
-            None => {}
+            RunState::Exited(code) => {
+                self.status = format!("{} (exit {code})", i18n::tr(self.lang, "Terminé", "Terminated"));
+                self.verify_exercise(Some(code));
+            }
+            RunState::Signaled => {
+                self.status = i18n::tr(self.lang, "Terminé (signal)", "Terminated (signal)").to_string();
+                self.verify_exercise(None);
+            }
+            // Faute matérielle : on diagnostique tout de suite et on ouvre la
+            // fenêtre d'explication (l'ancien code laissait RIP figé en silence).
+            RunState::Faulted(_) => {
+                self.diagnose_fault();
+                // Un plantage fait échouer l'exercice : pas de code de sortie.
+                self.verify_exercise(None);
+            }
+            RunState::Running => unreachable!("écarté plus haut"),
         }
+    }
+
+    /// Enchaîne les pas jusqu'au prochain point d'arrêt, la fin du programme,
+    /// ou l'épuisement du budget d'instructions.
+    ///
+    /// `extra_stop` ajoute une condition d'arrêt ponctuelle aux points
+    /// d'arrêt de l'élève : c'est ce qui sert au pas-par-dessus (`step_over`).
+    fn run_until(&mut self, extra_stop: Option<u64>) {
+        if !self.can_step() {
+            return;
+        }
+        let stops = self.stop_addresses(extra_stop);
+
+        // Sortie et journal se reconstruisent après coup : le premier pas peut
+        // très bien être celui qui exécute un appel système.
+        self.pending_syscall = None;
+        let done = match self.dbg.as_mut() {
+            Some(d) => match d.run_until(RUN_BUDGET, |rip| stops.contains(&rip)) {
+                Ok(n) => n,
+                Err(e) => {
+                    self.log(&e);
+                    return;
+                }
+            },
+            None => return,
+        };
+        self.step_in_flight = true;
+        // Un appel système bloquant a coupé l'enchaînement : on note la
+        // consigne pour la reprendre au déblocage, sinon « Continuer » sur un
+        // programme qui lit une entrée s'arrêterait là sans rien dire.
+        self.run_pending = self
+            .dbg
+            .as_ref()
+            .is_some_and(|d| d.is_waiting())
+            .then_some(extra_stop);
+        self.finish_step_if_done();
+
+        // Budget épuisé sans rencontrer d'arrêt : on le dit plutôt que de
+        // laisser croire que le programme s'est arrêté tout seul.
+        if done >= RUN_BUDGET && self.dbg.as_ref().is_some_and(|d| d.is_ready()) {
+            self.status = format!(
+                "{RUN_BUDGET} {}",
+                i18n::tr(
+                    self.lang,
+                    "instructions exécutées, toujours en cours — relancez « Continuer »",
+                    "instructions run, still going — hit “Continue” again",
+                )
+            );
+        }
+    }
+
+    /// Adresses où l'exécution doit s'interrompre : les lignes marquées par
+    /// l'élève, plus une éventuelle cible ponctuelle (retour d'un `call`).
+    fn stop_addresses(&self, extra: Option<u64>) -> std::collections::HashSet<u64> {
+        self.src_map
+            .iter()
+            .filter(|(_, line)| self.breakpoints.contains(line))
+            .map(|(addr, _)| *addr)
+            .chain(extra)
+            .collect()
+    }
+
+    /// Exécute jusqu'au prochain point d'arrêt (ou la fin du programme).
+    pub(super) fn cont(&mut self) {
+        self.run_until(None);
+    }
+
+    /// Exécute l'instruction courante ; si c'est un `call`, exécute la
+    /// fonction appelée d'un bloc et s'arrête à l'instruction suivante.
+    pub(super) fn step_over(&mut self) {
+        let is_call = self
+            .view_rip()
+            .and_then(|rip| self.insn_at(rip))
+            .is_some_and(|i| i.mnemonic == "call");
+        match (is_call, self.next_addr()) {
+            (true, Some(ret)) => self.run_until(Some(ret)),
+            _ => self.step(),
+        }
+    }
+
+    /// Pose ou retire un point d'arrêt sur une ligne source (1-based).
+    pub(super) fn toggle_breakpoint(&mut self, line: usize) {
+        if !self.breakpoints.remove(&line) {
+            self.breakpoints.insert(line);
+        }
+    }
+
+    /// Vrai si cette ligne source (1-based) porte du code exécutable, donc
+    /// peut recevoir un point d'arrêt utile.
+    pub(super) fn line_is_executable(&self, line: usize) -> bool {
+        self.src_map.values().any(|l| *l == line)
+    }
+
+    /// Instruction désassemblée à cette adresse, par l'index plutôt qu'en
+    /// balayant tout le désassemblage.
+    pub(super) fn insn_at(&self, addr: u64) -> Option<&crate::disasm::Insn> {
+        self.disasm_index.get(&addr).and_then(|i| self.disasm.get(*i))
+    }
+
+    /// Analyse la faute courante, met à jour la barre d'état et ouvre la fenêtre
+    /// de diagnostic. Idempotent : rappelé sans effet si le diagnostic existe.
+    pub(super) fn diagnose_fault(&mut self) {
+        if self.diagnosis.is_some() {
+            return;
+        }
+        let Some(d) = self.dbg.as_ref() else { return };
+        let Some(fault) = d.fault() else { return };
+        let regions = d.mem_regions();
+
+        // L'instruction fautive écrivait-elle ? Le désassemblage le dit.
+        let is_write = self
+            .disasm
+            .iter()
+            .find(|i| i.address == fault.rip)
+            .is_some_and(|i| crate::diagnostic::writes_memory(&i.mnemonic, &i.operands));
+        let line = self.src_map.get(&fault.rip).copied();
+
+        let diag = crate::diagnostic::diagnose(&fault, &regions, is_write, line, self.lang);
+        self.status = format!(
+            "✘ {} — {}",
+            diag.title,
+            crate::diagnostic::cause_label(diag.cause, self.lang)
+        );
+        self.log(&format!("✘ {} : {}", diag.title, diag.explanation));
+        self.diagnosis = Some(diag);
     }
 
     pub(super) fn resume_here(&mut self) {
@@ -134,13 +426,25 @@ impl App {
         }
     }
 
-    /// Reconstruit `call_stack` et `syscalls` depuis l'historique complet du
-    /// debugger : source unique de vérité pour ces deux panneaux. Chaque
-    /// transition `history[i] → history[i+1]` correspond à l'exécution de
-    /// l'instruction à `history[i].rip`.
+    /// Repart de zéro sur `call_stack` et `syscalls`. Nécessaire quand
+    /// l'historique lui-même change de sens sous nos pieds — au relancement,
+    /// et après « Reprendre ici » qui rejoue le programme depuis le début.
     pub(super) fn rebuild_trace(&mut self) {
-        let mut call_stack = Vec::new();
-        let mut syscalls = Vec::new();
+        self.call_stack.clear();
+        self.syscalls.clear();
+        self.trace_cursor = 0;
+        self.trace_tail_done = false;
+        self.extend_trace();
+    }
+
+    /// Complète `call_stack` et `syscalls` avec les transitions apparues
+    /// depuis le dernier appel. Chaque transition `history[i] → history[i+1]`
+    /// correspond à l'exécution de l'instruction à `history[i].rip`.
+    ///
+    /// Le dépouillement est incrémental : tout reprendre à chaque pas rendait
+    /// le coût d'un pas proportionnel à la longueur de l'historique, donc
+    /// l'exécution entière quadratique.
+    pub(super) fn extend_trace(&mut self) {
         // Petit utilitaire local : décompose "name(args)" en (name, args).
         let log_syscall = |list: &mut Vec<SyscallLog>, regs: &crate::debugger::Registers, ret: Option<i64>| {
             let num = regs.rax;
@@ -151,12 +455,20 @@ impl App {
                 .unwrap_or_default();
             list.push(SyscallLog { name: syscall::name(num).to_string(), args, number: num, ret });
         };
+        // Sortis de `self` le temps de parcourir l'historique, qui en fait
+        // partie aussi.
+        let mut call_stack = std::mem::take(&mut self.call_stack);
+        let mut syscalls = std::mem::take(&mut self.syscalls);
+        let mut cursor = self.trace_cursor;
+        let mut tail_done = self.trace_tail_done;
+
         if let Some(d) = self.dbg.as_ref() {
             let hist = &d.history;
-            for i in 0..hist.len().saturating_sub(1) {
+            let last = hist.len().saturating_sub(1);
+            for i in cursor..last {
                 let cur = &hist[i].regs;
                 let next = &hist[i + 1].regs;
-                let Some(insn) = self.disasm.iter().find(|x| x.address == cur.rip) else {
+                let Some(insn) = self.insn_at(cur.rip) else {
                     continue;
                 };
                 match insn.mnemonic.as_str() {
@@ -171,23 +483,293 @@ impl App {
                     _ => {}
                 }
             }
+            cursor = last;
             // Cas de l'appel qui termine le processus (exit) : il reste en tête de
             // l'historique sans successeur (aucun snapshot après la mort du process).
-            if !d.is_alive()
+            if !tail_done
+                && !d.is_alive()
                 && let Some(head) = hist.last()
-                && let Some(insn) = self.disasm.iter().find(|x| x.address == head.regs.rip)
+                && let Some(insn) = self.insn_at(head.regs.rip)
                 && insn.mnemonic == "syscall"
             {
                 log_syscall(&mut syscalls, &head.regs, None);
+                tail_done = true;
             }
         }
         self.call_stack = call_stack;
         self.syscalls = syscalls;
+        self.trace_cursor = cursor;
+        self.trace_tail_done = tail_done;
     }
 
     pub(super) fn next_addr(&self) -> Option<u64> {
         let rip = self.view_rip()?;
-        let idx = self.disasm.iter().position(|i| i.address == rip)?;
+        let idx = self.disasm_index.get(&rip)?;
         self.disasm.get(idx + 1).map(|i| i.address)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Une application prête à exécuter `source`. `tag` distingue les
+    /// artefacts : sans cela, les tests parallèles assemblent dans le même
+    /// dossier et s'écrasent l'un l'autre.
+    fn app_with(tag: &str, source: &str) -> App {
+        let mut app = App::new();
+        app.src_path = PathBuf::from(format!("build/dbgops-{tag}.asm"));
+        app.out_dir = PathBuf::from(format!("build/dbgops-{tag}"));
+        app.source = source.to_string();
+        app.launch();
+        app
+    }
+
+    /// Neuf lignes, dont six instructions : les numéros comptent, les tests
+    /// posent leurs points d'arrêt dessus.
+    const COUNTER: &str = "section .text\n\
+                           global _start\n\
+                           _start:\n\
+                           mov rax,1\n\
+                           mov rbx,2\n\
+                           mov rcx,3\n\
+                           mov rax,60\n\
+                           xor rdi,rdi\n\
+                           syscall\n";
+
+    #[test]
+    fn continue_stops_on_the_marked_line() {
+        let mut app = app_with("bp", COUNTER);
+        app.toggle_breakpoint(6); // « mov rcx,3 »
+        app.cont();
+
+        assert_eq!(
+            app.current_source_line(),
+            Some(5),
+            "l'exécution doit s'arrêter sur la ligne marquée (0-based)"
+        );
+        // Les deux instructions précédentes ont bien été exécutées, chacune
+        // avec son snapshot : la timeline ne saute rien.
+        assert_eq!(app.dbg.as_ref().expect("dbg").steps(), 2);
+        assert_eq!(app.view_index, 2, "la vue suit la tête de l'historique");
+    }
+
+    #[test]
+    fn continue_without_breakpoints_runs_to_the_end() {
+        let mut app = app_with("bp-none", COUNTER);
+        app.cont();
+
+        assert!(
+            matches!(app.dbg.as_ref().map(|d| d.state), Some(RunState::Exited(0))),
+            "sans point d'arrêt, le programme va jusqu'à sa sortie"
+        );
+    }
+
+    #[test]
+    fn a_breakpoint_can_be_taken_back() {
+        let mut app = app_with("bp-off", COUNTER);
+        app.toggle_breakpoint(6);
+        app.toggle_breakpoint(6);
+        assert!(app.breakpoints.is_empty());
+        app.cont();
+        assert!(
+            matches!(app.dbg.as_ref().map(|d| d.state), Some(RunState::Exited(0))),
+            "plus de point d'arrêt, plus d'arrêt"
+        );
+    }
+
+    /// Un point d'arrêt sur une ligne sans code ne fait rien, et l'interface
+    /// le montre (cercle creux) — encore faut-il savoir le reconnaître.
+    #[test]
+    fn a_line_without_code_is_reported_as_such() {
+        let app = app_with("bp-dead", COUNTER);
+        assert!(app.line_is_executable(4), "« mov rax,1 » porte du code");
+        assert!(!app.line_is_executable(1), "« section .text » n'en porte pas");
+    }
+
+    /// Le pas par-dessus franchit l'appel d'un bloc et s'arrête juste après,
+    /// au lieu de dérouler la fonction instruction par instruction.
+    #[test]
+    fn step_over_runs_the_whole_call() {
+        let mut app = app_with(
+            "over",
+            "section .text\n\
+             global _start\n\
+             _start:\n\
+             call inc3\n\
+             mov rax,60\n\
+             xor rdi,rdi\n\
+             syscall\n\
+             inc3:\n\
+             inc rbx\n\
+             inc rbx\n\
+             inc rbx\n\
+             ret\n",
+        );
+        // RIP est sur le `call`.
+        assert_eq!(app.current_source_line(), Some(3));
+        app.step_over();
+
+        assert_eq!(
+            app.current_source_line(),
+            Some(4),
+            "on ressort à l'instruction qui suit le call"
+        );
+        assert_eq!(
+            app.dbg.as_ref().expect("dbg").regs().rbx,
+            3,
+            "les trois inc de la fonction ont bien tourné"
+        );
+        // call + 3 inc + ret = 5 instructions, toutes dans l'historique.
+        assert_eq!(app.dbg.as_ref().expect("dbg").steps(), 5);
+    }
+
+    /// Hors d'un `call`, le pas par-dessus vaut un pas simple.
+    #[test]
+    fn step_over_on_an_ordinary_instruction_is_a_plain_step() {
+        let mut app = app_with("over-plain", COUNTER);
+        app.step_over();
+        assert_eq!(app.dbg.as_ref().expect("dbg").steps(), 1);
+    }
+
+    /// Ce que le programme écrit atterrit dans la console de l'IDE.
+    #[test]
+    fn program_output_lands_in_the_console() {
+        let mut app = app_with(
+            "out",
+            "section .data\n\
+             msg db \"salut\", 10\n\
+             section .text\n\
+             global _start\n\
+             _start:\n\
+             mov rax,1\n\
+             mov rdi,1\n\
+             mov rsi,msg\n\
+             mov rdx,6\n\
+             syscall\n\
+             mov rax,60\n\
+             xor rdi,rdi\n\
+             syscall\n",
+        );
+        app.cont();
+        assert!(
+            app.console.contains("salut\n"),
+            "la console doit contenir la sortie du programme, pas seulement le \
+             journal des appels système : {}",
+            app.console
+        );
+    }
+
+    /// « Continuer » sur un programme qui attend une saisie : il s'interrompt
+    /// sur le `read`, l'interface reste vivante, et l'enchaînement reprend tout
+    /// seul une fois l'entrée fournie.
+    #[test]
+    fn continue_resumes_by_itself_after_a_blocking_read() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/dbgops-wait.asm");
+        app.out_dir = PathBuf::from("build/dbgops-wait");
+        app.source = std::fs::read_to_string("examples/read-stdin.asm").expect("exemple lisible");
+        app.launch();
+
+        app.cont();
+        assert!(
+            app.dbg.as_ref().is_some_and(|d| d.is_waiting()),
+            "le programme doit être suspendu sur son read"
+        );
+        assert!(app.run_pending.is_some(), "le « continuer » est mis en attente");
+        // Pendant l'attente, ptrace n'a pas la main : ni pas à pas, ni écriture
+        // de registre. Les boutons et l'édition s'appuient là-dessus pour se
+        // griser, plutôt que de proposer des gestes qui échoueraient.
+        assert!(
+            !app.can_step(),
+            "un programme suspendu dans un appel système n'avance pas d'un pas"
+        );
+
+        // Des frames passent sans que rien ne bouge : l'UI n'est pas bloquée.
+        for _ in 0..3 {
+            app.poll_debugger(&ctx);
+        }
+        assert!(app.dbg.as_ref().is_some_and(|d| d.is_waiting()));
+
+        app.stdin_input = "coucou".to_string();
+        app.send_stdin();
+        // Le déblocage prend quelques frames (le syscall doit aboutir).
+        for _ in 0..200 {
+            app.poll_debugger(&ctx);
+            if app.dbg.as_ref().is_none_or(|d| !d.is_alive()) {
+                break;
+            }
+        }
+        assert!(
+            matches!(app.dbg.as_ref().map(|d| d.state), Some(RunState::Exited(0))),
+            "le « continuer » doit avoir repris tout seul et mené le programme à sa fin"
+        );
+        assert!(app.run_pending.is_none(), "plus rien en attente");
+        assert!(
+            app.console.contains("coucou"),
+            "le programme réécrit ce qu'il a lu : {}",
+            app.console
+        );
+    }
+
+    /// Mesure ponctuelle, hors suite ordinaire (`cargo test --release -- \
+    /// --ignored bench`) : 40 000 instructions enchaînées, pour vérifier que le
+    /// pas reste à coût constant et que « Continuer » ne s'effondre pas sur une
+    /// boucle un peu longue.
+    #[test]
+    #[ignore = "mesure de performance, pas une vérification"]
+    fn bench_forty_thousand_steps() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/dbgops-bench.asm");
+        app.out_dir = PathBuf::from("build/dbgops-bench");
+        app.source = std::fs::read_to_string("examples/bench-loop.asm").expect("exemple lisible");
+        app.launch();
+
+        let t0 = std::time::Instant::now();
+        app.cont();
+        let dt = t0.elapsed();
+        let steps = app.dbg.as_ref().expect("dbg").steps();
+        println!(
+            "{steps} instructions en {dt:?} — {:.1} µs/instruction",
+            dt.as_secs_f64() * 1e6 / steps as f64
+        );
+    }
+
+    /// La trace incrémentale doit donner exactement le même résultat que la
+    /// reconstruction complète — c'est tout l'enjeu du dépouillement par
+    /// morceaux.
+    #[test]
+    fn the_incremental_trace_matches_a_full_rebuild() {
+        let mut app = app_with(
+            "trace",
+            "section .text\n\
+             global _start\n\
+             _start:\n\
+             call twice\n\
+             mov rax,60\n\
+             xor rdi,rdi\n\
+             syscall\n\
+             twice:\n\
+             inc rbx\n\
+             ret\n",
+        );
+        for _ in 0..8 {
+            app.step();
+        }
+        let (calls, syscalls) = (
+            app.call_stack.clone(),
+            app.syscalls.iter().map(|s| s.number).collect::<Vec<_>>(),
+        );
+        assert!(!syscalls.is_empty(), "le programme fait au moins un appel système");
+
+        app.rebuild_trace();
+        assert_eq!(app.call_stack, calls, "même pile d'appels");
+        assert_eq!(
+            app.syscalls.iter().map(|s| s.number).collect::<Vec<_>>(),
+            syscalls,
+            "mêmes appels système, sans doublon ni oubli"
+        );
     }
 }

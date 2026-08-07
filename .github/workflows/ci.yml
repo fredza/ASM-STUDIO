@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Tests, clippy et format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # build.rs lit le hash du commit courant : sans l'historique, la
+          # fenêtre « À propos » afficherait « inconnu ».
+          fetch-depth: 0
+
+      # nasm et ld ne sont pas des dépendances Rust : ce sont les outils que
+      # l'IDE pilote, et une bonne part des tests assemble puis exécute
+      # réellement un binaire. Les bibliothèques X11/Wayland sont celles dont
+      # glutin a besoin pour se compiler, même sans écran.
+      - name: Dépendances système
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nasm binutils \
+            libxkbcommon-dev libwayland-dev \
+            libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
+            libgl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Le garde-fou anti-clé-de-test de `src/license.rs` est un `const _` :
+      # il ne se déclenche qu'à la compilation, d'où sa place en tête.
+      - name: Compilation
+        run: cargo build --all-targets
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Les tests forkent et tracent leurs propres enfants via PTRACE_TRACEME,
+      # ce que Yama autorise sans privilège particulier.
+      - name: Tests
+        run: cargo test
+
+      # Pas de `cargo fmt --check` : le projet assume des lignes longues pour
+      # garder les trois traductions d'un libellé sur une seule ligne, ce que
+      # rustfmt éclate en blocs. L'imposer ici reformaterait tout le dépôt.

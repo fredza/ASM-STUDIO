@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=ASM Studio
+Name[fr]=ASM Studio
+GenericName=Assembleur pédagogique
+GenericName[fr]=IDE pédagogique d'assembleur
+Comment=IDE to learn NASM x86-64 assembly (registers, flags, stack, memory, debugger)
+Comment[fr]=IDE pour apprendre l'assembleur NASM x86-64 (registres, flags, pile, débogueur)
+Exec=ASM_STUDIO_EXEC
+Icon=asm-studio
+Type=Application
+Categories=Development;Education;IDE;
+Keywords=assembly;assembleur;NASM;x86;x86-64;debugger;débogueur;
+StartupWMClass=asm-studio
+StartupNotify=true

@@ -1,0 +1,654 @@
+//! Panneau TUTORIEL : le parcours guidé, relié aux outils de l'IDE.
+//!
+//! Charger une leçon ne se contente pas d'afficher son texte : le programme de
+//! départ entre dans l'éditeur, les panneaux dont la leçon parle s'ouvrent, et
+//! ses attentes arment le panneau Exercice. L'élève lit et manipule au même
+//! endroit.
+
+use eframe::egui::{self, RichText};
+
+use super::dock::Panel;
+use super::{ACCENT, App, FLAG_ON, card};
+use crate::i18n;
+use crate::tutorial::{self, Level, Lesson};
+
+impl App {
+    /// Remet le parcours à zéro, comme au tout premier lancement : oublie les
+    /// leçons terminées, rouvre le sommaire, rallume le panneau Tutoriel et fait
+    /// réapparaître le bandeau d'accueil. Le tout est aussitôt persisté.
+    pub(super) fn reset_tutorial(&mut self) {
+        self.tutorial_progress = crate::tutorial::Progress::default();
+        self.tutorial_current = None;
+        // Repartir de zéro, c'est retrouver l'expérience du nouveau venu.
+        self.welcome_dismissed = false;
+        self.tutorial_enabled = true;
+        self.focus_panel(super::dock::Panel::Exercise);
+        self.status = i18n::tr3(
+            self.lang,
+            "Progression du tutoriel réinitialisée.",
+            "Tutorial progress reset.",
+            "Progreso del tutorial reiniciado.",
+        )
+        .to_string();
+        self.save_settings();
+    }
+
+    /// Charge une leçon : programme de départ, panneaux, et mise au point.
+    pub(super) fn load_lesson(&mut self, lesson: &Lesson) {
+        self.tutorial_current = Some(lesson.id.to_string());
+
+        if let Some(src) = lesson.starter {
+            self.source = src.to_string();
+            // Le fichier prend le nom de la leçon : l'élève retrouve son travail
+            // dans l'explorateur, et peut l'enregistrer sans écraser un exemple.
+            self.src_path = super::data_dir()
+                .join("tutoriel")
+                .join(format!("{}.asm", lesson.id));
+            if let Some(dir) = self.src_path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            self.dirty = true;
+            self.dbg = None;
+            self.disasm.clear();
+            self.binary = None;
+            // Arme les attentes portées par le programme lui-même.
+            self.reload_exercise();
+        }
+
+        // Ouvre ce dont la leçon parle : elle met sous les yeux ce qu'elle explique.
+        for key in &lesson.panels {
+            if let Some(p) = Panel::from_key(key)
+                && !self.panel_is_open(p) {
+                    self.show_panel(p);
+                }
+        }
+        self.save_settings();
+    }
+
+    /// Sommaire du parcours. L'aiguillage vers une leçon ouverte se fait dans
+    /// `exercise_ui`, qui héberge désormais les deux.
+    pub(super) fn tutorial_toc_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let hdr = self.c_header();
+
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(tr(
+                "Un parcours en quatre niveaux. Chaque leçon charge son programme et ouvre les panneaux qu'elle explique.",
+                "A four-level path. Each lesson loads its program and opens the panels it explains.",
+                "Un recorrido de cuatro niveles. Cada lección carga su programa y abre los paneles que explica.",
+            ))
+            .size(12.0)
+            .weak(),
+        );
+        ui.add_space(6.0);
+
+        let mut to_load: Option<Lesson> = None;
+        egui::ScrollArea::vertical()
+            .id_salt("tutorial_toc")
+            // Le sommaire partage le panneau avec les attentes : il ne doit pas
+            // occuper toute la hauteur.
+            .max_height(260.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for level in Level::ALL {
+                    let (done, total) = self.tutorial_progress.tally(level);
+                    let complete = total > 0 && done == total;
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(level.title(lang))
+                                .strong()
+                                .color(if complete { FLAG_ON } else { ACCENT }),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            super::badge(
+                                ui,
+                                &format!("{done}/{total}"),
+                                if complete { FLAG_ON } else { hdr },
+                            );
+                        });
+                    });
+                    ui.add_space(2.0);
+
+                    for lesson in tutorial::lessons_of(level) {
+                        let done = self.tutorial_progress.is_done(lesson.id);
+                        // Une leçon sans étape n'est pas encore écrite : on la
+                        // montre pour que le parcours soit lisible, mais grisée.
+                        let planned = lesson.steps.is_empty();
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(if done { "✔" } else { "○" })
+                                    .color(if done { FLAG_ON } else { self.c_bytes() }),
+                            );
+                            let mut txt = RichText::new(lesson.title.get(lang)).size(12.5);
+                            if planned {
+                                txt = txt.weak();
+                            }
+                            let resp = ui.add(egui::Label::new(txt).sense(egui::Sense::click()));
+                            if resp.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            if resp.clicked() {
+                                to_load = Some(lesson.clone());
+                            }
+                            if planned {
+                                ui.label(
+                                    RichText::new(tr("(à venir)", "(planned)", "(por venir)"))
+                                        .small()
+                                        .weak(),
+                                );
+                            }
+                        });
+                    }
+                    ui.add_space(8.0);
+                }
+            });
+
+        if let Some(l) = to_load {
+            // Une leçon non écrite s'ouvre quand même : son objectif se lit.
+            self.tutorial_current = Some(l.id.to_string());
+            if l.has_starter() {
+                self.load_lesson(&l);
+            }
+        }
+    }
+
+    /// Contenu d'une leçon ouverte.
+    pub(super) fn lesson_ui(&mut self, ui: &mut egui::Ui, lesson: &Lesson) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let hdr = self.c_header();
+        let mut back = false;
+        let mut reload = false;
+        let mut toggle_done = false;
+        let done = self.tutorial_progress.is_done(lesson.id);
+
+        ui.horizontal(|ui| {
+            if ui
+                .button(RichText::new(tr("← Sommaire", "← Contents", "← Índice")).small())
+                .clicked()
+            {
+                back = true;
+            }
+            ui.label(
+                RichText::new(lesson.level.title(lang))
+                    .small()
+                    .weak(),
+            );
+        });
+        ui.add_space(4.0);
+        ui.label(RichText::new(lesson.title.get(lang)).size(15.0).strong().color(self.c_mnemonic()));
+        ui.add_space(4.0);
+
+        egui::ScrollArea::vertical()
+            .id_salt("tutorial_lesson")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                card(ui, |ui| {
+                    ui.label(
+                        RichText::new(tr("Objectif", "Goal", "Objetivo"))
+                            .small()
+                            .strong()
+                            .color(hdr),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(lesson.goal.get(lang)).size(12.5));
+                });
+                ui.add_space(8.0);
+
+                if lesson.steps.is_empty() {
+                    ui.label(
+                        RichText::new(tr(
+                            "Cette leçon est annoncée mais pas encore rédigée. Son objectif figure ci-dessus pour situer la suite du parcours.",
+                            "This lesson is planned but not written yet. Its goal appears above so you can see where the path leads.",
+                            "Esta lección está prevista pero aún no redactada. Su objetivo aparece arriba.",
+                        ))
+                        .size(12.0)
+                        .weak(),
+                    );
+                    return;
+                }
+
+                for (i, step) in lesson.steps.iter().enumerate() {
+                    ui.horizontal_top(|ui| {
+                        ui.label(
+                            RichText::new(format!("{}.", i + 1))
+                                .monospace()
+                                .strong()
+                                .color(ACCENT),
+                        );
+                        ui.add(egui::Label::new(RichText::new(step.get(lang)).size(12.5)).wrap());
+                    });
+                    ui.add_space(6.0);
+                }
+
+                if lesson.has_starter() {
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(tr(
+                            "Le programme de la leçon est dans l'éditeur, avec ses attentes. Appuyez sur F5 : le panneau Exercice dira si c'est bon.",
+                            "The lesson's program is in the editor, with its expectations. Press F5: the Exercise panel will tell you if it is right.",
+                            "El programa de la lección está en el editor, con sus expectativas. Pulse F5: el panel Ejercicio dirá si está bien.",
+                        ))
+                        .size(12.0)
+                        .weak(),
+                    );
+                    ui.add_space(6.0);
+                    if ui
+                        .button(tr("↻ Recharger le programme", "↻ Reload the program", "↻ Recargar el programa"))
+                        .on_hover_text(tr(
+                            "Remet le programme de départ — vos modifications seront perdues.",
+                            "Restores the starting program — your changes will be lost.",
+                            "Restaura el programa inicial — sus cambios se perderán.",
+                        ))
+                        .clicked()
+                    {
+                        reload = true;
+                    }
+                }
+            });
+
+        // Les attentes de la leçon, juste sous ses étapes : l'élève voit d'un
+        // seul coup d'œil ce qu'on lui demande et où il en est.
+        if lesson.has_starter() {
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+            self.checks_ui(ui);
+        }
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            let label = if done {
+                tr("✔ Terminée — annuler", "✔ Done — undo", "✔ Terminada — deshacer")
+            } else {
+                tr("Marquer comme terminée", "Mark as done", "Marcar como terminada")
+            };
+            if ui.button(label).clicked() {
+                toggle_done = true;
+            }
+        });
+
+        if reload {
+            self.load_lesson(lesson);
+        }
+        if toggle_done {
+            if done {
+                self.tutorial_progress.mark_undone(lesson.id);
+            } else {
+                self.tutorial_progress.mark_done(lesson.id);
+                // Enchaîner : la leçon suivante s'ouvre d'elle-même.
+                if let Some(next) = self.tutorial_progress.next_lesson() {
+                    self.tutorial_current = Some(next.id.to_string());
+                    if next.has_starter() {
+                        self.load_lesson(&next);
+                    }
+                } else {
+                    self.tutorial_current = None;
+                }
+            }
+            self.save_settings();
+        }
+        if back {
+            self.tutorial_current = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Charger une leçon doit VRAIMENT piloter l'IDE : programme dans
+    /// l'éditeur, attentes armées, panneaux ouverts.
+    #[test]
+    fn loading_a_lesson_drives_the_ide() {
+        let mut app = App::new();
+        let lesson = tutorial::find("registres").expect("leçon présente");
+
+        app.load_lesson(&lesson);
+
+        assert!(app.source.contains("mov rbx, rax"), "le programme entre dans l'éditeur");
+        assert!(app.has_exercise(), "les attentes de la leçon sont armées");
+        assert_eq!(app.exercise.expectations.len(), 2, "rbx == 100 et exit == 0");
+        for key in &lesson.panels {
+            let p = Panel::from_key(key).expect("clé de panneau valide");
+            assert!(app.panel_is_open(p), "{key} doit être ouvert par la leçon");
+        }
+        assert_eq!(app.tutorial_current.as_deref(), Some("registres"));
+    }
+
+    /// « Réinitialiser » fait repartir de zéro comme au premier lancement :
+    /// progression oubliée, sommaire rouvert, panneau Tutoriel et bandeau
+    /// d'accueil de retour.
+    #[test]
+    fn resetting_the_tutorial_restores_the_newcomer_state() {
+        let mut app = App::new();
+        app.tutorial_progress.mark_done("registres");
+        app.tutorial_progress.mark_done("boucles");
+        app.tutorial_current = Some("boucles".to_string());
+        app.welcome_dismissed = true;
+        app.tutorial_enabled = false;
+
+        app.reset_tutorial();
+
+        assert!(!app.tutorial_progress.is_done("registres"), "leçon oubliée");
+        assert_eq!(
+            app.tutorial_progress.tally(tutorial::Level::Beginner).0,
+            0,
+            "aucune leçon débutant ne reste marquée terminée"
+        );
+        assert!(app.tutorial_current.is_none(), "retour au sommaire");
+        assert!(!app.welcome_dismissed, "le bandeau d'accueil réapparaît");
+        assert!(app.tutorial_enabled, "le tutoriel est rallumé");
+        assert!(app.panel_is_open(Panel::Exercise), "et le panneau Exercices est ouvert");
+    }
+
+    /// Toutes les clés de panneau du catalogue doivent exister : une faute de
+    /// frappe laisserait une leçon incapable d'ouvrir ce dont elle parle.
+    #[test]
+    fn every_lesson_panel_key_is_valid() {
+        for l in tutorial::catalogue() {
+            for key in &l.panels {
+                assert!(
+                    Panel::from_key(key).is_some(),
+                    "leçon « {} » : clé de panneau inconnue « {key} »",
+                    l.id
+                );
+            }
+        }
+    }
+
+    /// Terminer une leçon enchaîne sur la suivante.
+    #[test]
+    fn finishing_a_lesson_opens_the_next_one() {
+        let mut app = App::new();
+        app.tutorial_progress.mark_done("installation");
+        app.tutorial_current = Some("premier_programme".into());
+        app.tutorial_progress.mark_done("premier_programme");
+
+        let next = app.tutorial_progress.next_lesson().expect("il en reste");
+        assert_eq!(next.id, "registres", "l'ordre du parcours est respecté");
+    }
+
+    /// Le panneau Exercices se rend dans tous ses états — sommaire, leçon
+    /// ouverte, leçon annoncée, identifiant périmé, et tutoriel désactivé.
+    #[test]
+    fn tutorial_panel_renders_in_both_states() {
+        let mut app = App::new();
+        app.tutorial_enabled = true;
+        let ctx = egui::Context::default();
+
+        app.tutorial_current = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        });
+
+        app.tutorial_current = Some("pile".into());
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        });
+
+        // Une leçon annoncée mais non rédigée doit se rendre sans paniquer.
+        app.tutorial_current = Some("shellcode".into());
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        });
+
+        // Un identifiant disparu retombe sur le sommaire au lieu de planter.
+        app.tutorial_current = Some("lecon_inexistante".into());
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        });
+    }
+
+    /// Bout en bout : activer le tutoriel, charger une leçon, la RÉSOUDRE, et
+    /// voir le panneau Exercice la valider. C'est la promesse du module.
+    #[test]
+    fn a_lesson_can_be_solved_and_is_validated() {
+        use std::path::PathBuf;
+        let mut app = App::new();
+        app.tutorial_enabled = true;
+        assert!(app.panel_is_open(Panel::Exercise));
+
+        let lesson = tutorial::find("premier_programme").expect("leçon présente");
+        app.load_lesson(&lesson);
+        app.out_dir = PathBuf::from("build/tuto-e2e");
+        app.src_path = PathBuf::from("build/tuto-e2e/premier.asm");
+
+        // Tel quel, l'exercice ÉCHOUE : le programme rend 0, on attend 7.
+        app.launch();
+        for _ in 0..10 {
+            app.step();
+        }
+        assert!(!app.checks.is_empty(), "les attentes doivent être vérifiées");
+        assert!(
+            !app.checks.iter().all(|c| c.passed()),
+            "le programme de départ ne doit PAS déjà passer, sinon il n'y a rien à faire"
+        );
+
+        // L'élève applique la consigne.
+        app.source = app.source.replace("xor rdi, rdi", "mov rdi, 7");
+        app.launch();
+        for _ in 0..10 {
+            app.step();
+        }
+        assert!(
+            app.checks.iter().all(|c| c.passed()),
+            "après correction, tout doit passer : {:?}",
+            app.checks
+        );
+
+        // Et la leçon peut être marquée terminée, ce qui se conserve.
+        app.tutorial_progress.mark_done(lesson.id);
+        let saved = app.tutorial_progress.to_string();
+        let back = tutorial::Progress::parse(&saved);
+        assert!(back.is_done("premier_programme"));
+    }
+
+    /// Chaque leçon des niveaux écrits doit ÉCHOUER telle quelle et PASSER une
+    /// fois son TODO appliqué. Sans les deux moitiés, l'exercice est un leurre :
+    /// un programme qui passe déjà n'apprend rien, un programme qu'aucune
+    /// correction ne sauve décourage.
+    ///
+    /// La correction est ici celle que le commentaire du TODO dicte, mot pour
+    /// mot : le test vérifie donc aussi que la consigne écrite est la bonne.
+    #[test]
+    fn every_written_lesson_fails_then_passes() {
+        use std::path::PathBuf;
+
+        // (leçon, texte du TODO à remplacer, correction attendue)
+        let fixes: &[(&str, &str, &str)] = &[
+            // --- Intermédiaire ---
+            ("mul_div", "; TODO : multiplier RAX par R8", "imul rax, r8"),
+            ("fonctions", "; TODO : multiplier RAX par RDI", "imul rax, rdi"),
+            ("system_v", "; TODO : « push rbx » ici", "push rbx"),
+            ("system_v", "; TODO : … et « pop rbx »", "pop rbx"),
+            ("syscalls", "; TODO : RDX doit porter", ""),
+            ("syscalls", "xor rdx, rdx", "mov rdx, msg_len"),
+            ("tas", "mov rdi, r12        ; TODO", "lea rdi, [r12 + 4096]"),
+            ("tableaux", "; TODO : ajouter l'élément courant", "add rbx, [tab + rcx*8]"),
+            ("structures", "; TODO : ajouter le champ y", "add rbx, [rsi + pt_y]"),
+            ("chaines", "; TODO : s'arrêter quand AL vaut 0", "test al, al\n    jz .fin"),
+            // --- Avancé ---
+            ("elf", "; TODO : retrancher l'adresse de _start", "sub rbx, _start"),
+            ("linking", "; TODO : retrancher __bss_start", "sub rbx, __bss_start"),
+            ("plt_got", "call [rsi]                  ; TODO", "call [rsi + 8]"),
+            ("relocations", "lea rcx, [rel _start]   ; TODO", "lea rcx, [rel valeur]"),
+            ("simd", "; TODO : additionner les deux vecteurs", "paddd xmm0, xmm1"),
+            ("optimisation", "mov rbx, rax            ; TODO", "lea rbx, [rax + rax*4]"),
+            ("optimisation", "add rbx, 0              ; TODO", "add rbx, rbx"),
+            // --- Expert ---
+            ("reverse", "; TODO : déchiffrer l'octet", "xor al, cle"),
+            (
+                "desassemblage",
+                "db 0x48, 0xc7, 0xc3, 0x00, 0x00, 0x00, 0x00",
+                "db 0x48, 0xc7, 0xc3, 0x2a, 0x00, 0x00, 0x00",
+            ),
+            ("syscalls_avances", "; TODO : fds+4 est l'extrémité", "mov edi, [rel fds]"),
+            ("shellcode", "; TODO : déposer \"Hi\" sur la pile", "mov rax, 0x6948\n    push rax"),
+            ("exploitation", "mov [rbp + 0], rax", "mov [rbp + 8], rax"),
+            ("performance", "add rax, 0", "shl rax, 3"),
+        ];
+
+        let written = tutorial::lessons_of(tutorial::Level::Intermediate)
+            .into_iter()
+            .chain(tutorial::lessons_of(tutorial::Level::Advanced))
+            .chain(tutorial::lessons_of(tutorial::Level::Expert));
+
+        for lesson in written {
+            let mut app = App::new();
+            app.load_lesson(&lesson);
+            let dir = PathBuf::from(format!("build/tuto-inter/{}", lesson.id));
+            std::fs::create_dir_all(&dir).expect("dossier de travail");
+            app.out_dir = dir.clone();
+            app.src_path = dir.join(format!("{}.asm", lesson.id));
+
+            assert!(app.has_exercise(), "{} : attentes non armées", lesson.id);
+
+            // Tel quel : au moins une attente doit tomber. Qu'il se termine ou
+            // non importe peu ici — un programme de départ a le droit d'être
+            // cassé au point de boucler.
+            let _ = run_to_completion(&mut app);
+            assert!(
+                !app.checks.is_empty() && !app.checks.iter().all(|c| c.passed()),
+                "{} : le programme de départ passe déjà, il n'y a rien à faire",
+                lesson.id
+            );
+
+            // On applique la consigne, à la lettre.
+            let mut applied = 0;
+            for (id, todo, fix) in fixes {
+                if *id != lesson.id {
+                    continue;
+                }
+                let line = app
+                    .source
+                    .lines()
+                    .find(|l| l.contains(todo))
+                    .unwrap_or_else(|| panic!("{} : TODO « {todo} » introuvable", lesson.id))
+                    .to_string();
+                let indent = " ".repeat(line.len() - line.trim_start().len());
+                app.source = app.source.replace(&line, &format!("{indent}{fix}"));
+                applied += 1;
+            }
+            assert!(applied > 0, "{} : aucune correction connue", lesson.id);
+
+            let terminated = run_to_completion(&mut app);
+            assert!(
+                terminated,
+                "{} : le programme corrigé ne se termine pas dans la borne — boucle sans fin ?",
+                lesson.id
+            );
+            assert!(
+                app.checks.iter().all(|c| c.passed()),
+                "{} : la correction dictée par le TODO ne suffit pas : {:?}",
+                lesson.id,
+                app.checks
+            );
+        }
+    }
+
+    /// Une solution qui donne la BONNE valeur par un moyen PROSCRIT doit être
+    /// recalée. C'est ce que ferment les contraintes de texte, là où l'attente
+    /// de valeur seule laissait passer la triche.
+    #[test]
+    fn a_forbidden_form_is_rejected_even_when_the_value_is_right() {
+        use std::path::PathBuf;
+
+        // (leçon, motif remplacé, triche produisant la bonne valeur autrement)
+        let cheats: &[(&str, &str, &str)] = &[
+            // ×10 en une multiplication : RBX vaut 70, mais « imul » est interdit.
+            ("optimisation", "mov rbx, rax            ; TODO", "imul rbx, rax, 10"),
+            ("optimisation", "add rbx, 0              ; TODO", "nop"),
+            // ×8 en multiplication plutôt que par décalage.
+            ("performance", "add rax, 0", "imul rax, rax, 8"),
+            // Adresse absolue : l'écart reste nul, mais « rel » est requis.
+            ("relocations", "lea rcx, [rel _start]   ; TODO", "mov rcx, valeur"),
+        ];
+
+        for lesson in tutorial::lessons_of(tutorial::Level::Advanced)
+            .into_iter()
+            .chain(tutorial::lessons_of(tutorial::Level::Expert))
+        {
+            if !cheats.iter().any(|(id, ..)| *id == lesson.id) {
+                continue;
+            }
+            let mut app = App::new();
+            app.load_lesson(&lesson);
+            let dir = PathBuf::from(format!("build/tuto-cheat/{}", lesson.id));
+            std::fs::create_dir_all(&dir).expect("dossier de travail");
+            app.out_dir = dir.clone();
+            app.src_path = dir.join(format!("{}.asm", lesson.id));
+
+            for (id, pat, cheat) in cheats {
+                if *id != lesson.id {
+                    continue;
+                }
+                let line = app
+                    .source
+                    .lines()
+                    .find(|l| l.contains(pat))
+                    .unwrap_or_else(|| panic!("{} : motif « {pat} » introuvable", lesson.id))
+                    .to_string();
+                let indent = " ".repeat(line.len() - line.trim_start().len());
+                app.source = app.source.replace(&line, &format!("{indent}{cheat}"));
+            }
+
+            let terminated = run_to_completion(&mut app);
+            assert!(terminated, "{} : la triche ne se termine pas", lesson.id);
+
+            // La valeur, elle, est bonne : la triche « marche » — mais une
+            // contrainte de texte doit malgré tout la recaler.
+            let value_ok = app.checks.iter().all(|c| match &c.requirement {
+                crate::exercise::Requirement::Value(_) => c.passed(),
+                crate::exercise::Requirement::Text(_) => true,
+            });
+            assert!(value_ok, "{} : la triche devrait donner la bonne valeur : {:?}", lesson.id, app.checks);
+            assert!(
+                !app.checks.iter().all(|c| c.passed()),
+                "{} : une forme proscrite a été acceptée",
+                lesson.id
+            );
+        }
+    }
+
+    /// Assemble, lance, et avance jusqu'à la fin du programme — ou jusqu'à une
+    /// borne franche. Rend `true` s'il s'est terminé (sortie, signal ou faute),
+    /// `false` s'il tournait encore au bout de la borne, ce qui trahit une
+    /// boucle sans fin dans le programme de la leçon.
+    ///
+    /// `can_step` devient faux dès que le programme n'est plus vivant : passé ce
+    /// point, la boucle s'arrête au lieu de dérouler des pas vides.
+    ///
+    /// Réserve : un programme qui se BLOQUE dans un appel système — une lecture
+    /// sur une entrée vide, par exemple — suspend le pas ptrace lui-même, et
+    /// aucune borne côté test ne peut l'interrompre. Les leçons livrées n'en
+    /// contiennent pas.
+    #[must_use]
+    fn run_to_completion(app: &mut App) -> bool {
+        app.launch();
+        for _ in 0..2000 {
+            if !app.can_step() {
+                return true; // plus rien à exécuter : terminé proprement
+            }
+            app.step();
+        }
+        !app.can_step()
+    }
+
+    /// Le programme d'une leçon est écrit dans un dossier à part, pour ne pas
+    /// écraser les exemples livrés.
+    #[test]
+    fn lesson_files_do_not_overwrite_the_examples() {
+        let mut app = App::new();
+        let lesson = tutorial::find("boucles").expect("leçon présente");
+        app.load_lesson(&lesson);
+        let path = app.src_path.to_string_lossy().to_string();
+        assert!(path.contains("tutoriel"), "chemin attendu dans tutoriel/ : {path}");
+        assert!(path.ends_with("boucles.asm"), "{path}");
+        assert!(!path.contains("/examples/"), "ne doit pas viser les exemples : {path}");
+    }
+}

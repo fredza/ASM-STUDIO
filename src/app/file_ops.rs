@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::i18n;
 
-use super::{abs_dir_of, asmstd_dir, App};
+use super::{abs_dir_of, asmstd_dir, data_dir, App};
 
 impl App {
     pub(super) fn log(&mut self, s: &str) {
@@ -10,6 +10,27 @@ impl App {
         if !s.ends_with('\n') {
             self.console.push('\n');
         }
+    }
+
+    /// Pointe l'explorateur INTERNE de l'IDE sur le dossier où sont écrits les
+    /// exemples et les exercices auto-corrigés (`~/.local/share/…`), et l'amène
+    /// au premier plan. C'est là que l'élève retrouve les `ex_*.asm` à compléter
+    /// et enregistre son travail ; l'y emmener d'un clic évite de le lui faire
+    /// chercher, sans quitter l'IDE.
+    pub(super) fn open_examples_dir(&mut self) {
+        let dir = data_dir().join("examples");
+        // Créé au premier lancement, mais on s'en assure : un dossier absent
+        // laisserait l'explorateur vide sans explication.
+        let _ = std::fs::create_dir_all(&dir);
+        self.explorer_dir = dir.clone();
+        self.explorer_selected = None;
+        self.show_panel(super::dock::Panel::Explorer);
+        self.focus_panel(super::dock::Panel::Explorer);
+        self.log(&format!(
+            "{} {}",
+            i18n::tr(self.lang, "Explorateur :", "Explorer:"),
+            dir.display()
+        ));
     }
 
     pub(super) fn save_source(&mut self) -> bool {
@@ -133,7 +154,6 @@ impl App {
     }
 
     pub(super) fn open_file(&mut self, path: PathBuf) {
-        use super::Tab;
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 self.source = content;
@@ -144,7 +164,8 @@ impl App {
                 self.dbg = None;
                 self.disasm.clear();
                 self.binary = None;
-                self.tab = Tab::Editor;
+                self.show_panel(super::dock::Panel::Editor);
+                self.reload_exercise();
                 self.status = format!("{} {}", i18n::tr(self.lang, "Ouvert :", "Opened:"), self.src_path.display());
             }
             Err(e) => self.log(&format!("{} {}: {e}", i18n::tr(self.lang, "Impossible d'ouvrir", "Cannot open"), path.display())),
@@ -152,7 +173,6 @@ impl App {
     }
 
     pub(super) fn new_file(&mut self) {
-        use super::Tab;
         self.source = "section .data\n\nsection .text\n    global _start\n_start:\n    mov rax, 60      ; sys_exit\n    xor rdi, rdi     ; code 0\n    syscall\n".to_string();
         // Le nouveau fichier vise le dossier actuellement affiché dans l'explorateur.
         self.src_path = self.explorer_dir.join("sans-titre.asm");
@@ -160,7 +180,7 @@ impl App {
         self.dbg = None;
         self.disasm.clear();
         self.binary = None;
-        self.tab = Tab::Editor;
+        self.show_panel(super::dock::Panel::Editor);
         self.status = i18n::tr(self.lang, "Nouveau fichier", "New file").to_string();
     }
 

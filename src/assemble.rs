@@ -96,3 +96,70 @@ mod tests {
         assert!(out.binary.exists(), "le binaire doit être produit");
     }
 }
+
+#[cfg(test)]
+mod asmstd_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// asmstd doit s'assembler ET donner les bons résultats.
+    ///
+    /// Le programme de contrôle exerce les fonctions utilitaires (caractères,
+    /// chaînes, mémoire, arithmétique, tableaux) et empile chaque résultat ;
+    /// il les affiche ensuite dans l'ordre inverse. Écrire de l'assembleur
+    /// sans l'exécuter ne prouve rien.
+    #[test]
+    fn asmstd_utilities_produce_correct_results() {
+        let out = assemble_with_includes(
+            Path::new("examples/asmstd-check.asm"),
+            Path::new("build/asmstd-check"),
+            &[Path::new("examples").to_path_buf()],
+        )
+        .expect("asmstd-check.asm doit s'assembler");
+
+        let run = std::process::Command::new(&out.binary)
+            .output()
+            .expect("le binaire doit s'exécuter");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        let got: Vec<i64> = stdout
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+
+        // Les valeurs sont dépilées, donc lues à l'envers de l'ordre d'empilage.
+        let expected: Vec<i64> = vec![
+            1,    // strncmp("Bonjour…", "bonjour") != 0  → casse significative
+            0,    // memcmp(s1, s1, 5) == 0
+            7,    // arr_reverse : premier élément devient l'ancien dernier
+            9,    // arr_sort : plus grand en queue
+            1,    // arr_sort : plus petit en tête
+            2,    // arr_find(9) → index 2
+            1,    // arr_min
+            9,    // arr_max
+            25,   // arr_sum
+            10,   // clamp(20, 0, 10)
+            9,    // max(3, 9)
+            0,    // divmod par zéro : neutralisé, pas d'exception
+            3,    // 17 / 5
+            2,    // 17 % 5
+            1024, // pow(2, 10)
+            12,   // lcm(4, 6)
+            6,    // gcd(48, 18)
+            42,   // abs(-42)
+            82,   // str_reverse : 'R' de "RUOJNOB"
+            1,    // str_upper a bien majusculé
+            8,    // strchr('M') → index 8
+            3,    // str_count('o') dans "Bonjour Monde"
+            8,    // strstr("Monde") → index 8
+            1,    // is_space(' ')
+        ];
+        assert_eq!(
+            got.len(),
+            expected.len(),
+            "nombre de résultats inattendu :\n{stdout}"
+        );
+        for (i, (g, e)) in got.iter().zip(&expected).enumerate() {
+            assert_eq!(g, e, "résultat {i} : obtenu {g}, attendu {e}\n{stdout}");
+        }
+    }
+}

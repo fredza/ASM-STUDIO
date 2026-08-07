@@ -1,18 +1,53 @@
 [package]
 name = "asm_studio"
-version = "0.3.0"
+version = "0.4.0-beta.2"
 edition = "2024"
-license = "MIT"
+# Licence propre au projet, hors nomenclature SPDX : le fichier fait foi.
+license-file = "LICENSE.md"
 description = "IDE pédagogique pour apprendre l'assembleur NASM x86-64 (registres, flags, pile, mémoire, mode explication)"
 authors = ["Frederic Z"]
 
+# Binaire de distribution : c'est celui que l'élève télécharge, et il embarque
+# capstone, egui et tout le catalogue de leçons. Ces réglages, avec la
+# restriction de capstone au seul x86, le ramènent de 22,8 à 12,4 Mo — au prix
+# d'une compilation de deux minutes, qui ne concerne que les publications.
+#
+# `panic = "abort"` gagnerait encore 1,4 Mo mais n'est PAS retenu : les
+# dialogues fichiers et la vérification de mise à jour tournent sur des threads
+# de fond, où un panic (rfd, ureq, serde_json) se contente aujourd'hui de tuer
+# le thread. En abort il emporterait l'IDE, et avec lui le source que l'élève
+# n'a pas encore enregistré.
+[profile.release]
+# `fat` plutôt que `thin` : 1,4 Mo de moins, pour quatre fois plus de temps de
+# compilation. Le marché est bon quand on ne compile qu'à la publication.
+lto = "fat"
+codegen-units = 1
+strip = true
+# Optimisation pour la taille : 1,9 Mo de moins contre un pas-à-pas à 13,9 µs
+# au lieu de 11,4 (mesure `bench_forty_thousand_steps`). Le seul cas où ça se
+# voit est un « Continuer » qui épuise tout son budget, et il reste sous la
+# seconde et demie.
+opt-level = "s"
+
 [dependencies]
-eframe = "0.29"
-nix = { version = "0.29", features = ["ptrace", "process", "signal"] }
+eframe = "0.33"
+nix = { version = "0.31", features = ["ptrace", "process", "signal"] }
 libc = "0.2"
-capstone = "0.12"
-object = "0.36"
+# Une seule architecture : par défaut capstone compile les dix-huit qu'il
+# connaît (ARM, MIPS, PowerPC, SPARC…), soit des mégaoctets de tables inutiles
+# ici — ASM Studio ne désassemble que du x86-64. « full » reste indispensable :
+# sans lui, capstone est bâti en mode « diet », sans les mnémoniques en clair,
+# et le panneau de désassemblage n'aurait plus rien à afficher.
+capstone = { version = "0.14", default-features = false, features = ["full", "std", "arch_x86"] }
+object = "0.40"
 # Dialogues fichiers natifs via le portail XDG (GNOME/Wayland), sans GTK.
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # Pilote le futur AsyncFileDialog sur un thread de fond (bloque ce thread, pas l'UI).
-pollster = "0.4"
+pollster = "1"
+# Mise à jour automatique : client HTTP synchrone léger + parseur JSON minimal.
+ureq = { version = "3", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+egui_dock = "0.18"
+base64 = "0.22"
+ed25519-dalek = "2"

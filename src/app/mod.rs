@@ -6,14 +6,13 @@
 //! L'état affiché est lu dans l'historique du debugger à `view_index`.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Color32};
 
 use crate::debugger::{Debugger, Snapshot};
 use crate::disasm::Insn;
 use crate::i18n::{self, Lang};
-use crate::explain;
 
 mod file_ops;
 mod debug_ops;
@@ -21,6 +20,79 @@ mod ui_chrome;
 mod ui_windows;
 mod ui_panels;
 mod ui_center;
+mod pedagogy;
+mod dock;
+mod palette;
+mod predict;
+mod ui_exercise;
+mod ui_tutorial;
+mod widgets;
+// `pub(crate)` : `license_path()` doit être atteignable depuis `crate::license`,
+// hors de l'arbre de `app`.
+pub(crate) mod paths;
+mod parse;
+
+// Remontés dans `app` pour que les modules d'UI gardent leurs
+// `use super::{card, parse_hex, …}` : un module enfant voit les imports privés
+// de son parent, inutile de les rendre publics.
+use widgets::*;
+use paths::*;
+use parse::*;
+
+use crate::updater::Updater;
+
+/// Id stable de la zone de texte de l'éditeur : permet d'y renvoyer le focus
+/// clavier depuis n'importe où (F6), sans passer par la souris.
+pub(super) fn editor_id() -> egui::Id {
+    egui::Id::new("kb_editor")
+}
+
+/// Champs de saisie de l'application, avec le panneau auquel ils appartiennent.
+///
+/// Les flèches doivent piloter le panneau focalisé, SAUF si l'utilisateur tape
+/// DANS CE panneau — auquel cas elles déplacent le curseur du texte.
+///
+/// Deux formulations plus simples ont été essayées et sont fausses :
+/// « un widget quelconque a-t-il le focus ? » condamnait toute la navigation
+/// dès qu'on avait cliqué une fois dans « aller @ » (egui garde ce focus
+/// indéfiniment) ; « un champ de saisie a-t-il le focus ? » avait le même
+/// défaut, à peine atténué. Seule l'appartenance au panneau focalisé tranche.
+pub(super) fn text_inputs() -> [(egui::Id, dock::Panel); 6] {
+    [
+        (editor_id(), dock::Panel::Editor),
+        (egui::Id::new("kb_mem_goto"), dock::Panel::Memory),
+        (egui::Id::new("kb_mem_poke"), dock::Panel::Memory),
+        (egui::Id::new("kb_reg_edit"), dock::Panel::Registers),
+        (find_query_id(), dock::Panel::Editor),
+        (find_replace_id(), dock::Panel::Editor),
+    ]
+}
+
+/// Id stable du champ de recherche de l'éditeur (Ctrl+F).
+pub(super) fn find_query_id() -> egui::Id {
+    egui::Id::new("kb_find_query")
+}
+
+/// Id stable du champ de remplacement de l'éditeur (Ctrl+H).
+pub(super) fn find_replace_id() -> egui::Id {
+    egui::Id::new("kb_find_replace")
+}
+
+impl App {
+    /// Vrai si l'utilisateur saisit du texte dans le panneau qui a le focus.
+    pub(super) fn typing_in_focused_panel(&mut self, ctx: &egui::Context) -> bool {
+        let Some(f) = ctx.memory(|m| m.focused()) else { return false };
+        // Le champ de la prédiction vit dans une fenêtre flottante, hors de
+        // l'arbre : dès qu'il a le focus, il garde les flèches.
+        if f == egui::Id::new("kb_pred_input") {
+            return true;
+        }
+        let focused = self.focused_panel();
+        text_inputs()
+            .iter()
+            .any(|(id, panel)| *id == f && Some(*panel) == focused)
+    }
+}
 
 // --- Palette ---
 pub(super) const ACCENT: Color32 = Color32::from_rgb(0x4C, 0x8B, 0xF5); // bleu d'accent
@@ -38,6 +110,8 @@ pub(super) const FALSE_COL: Color32 = Color32::from_rgb(0xD9, 0x5B, 0x5B);
 
 // Couleur de la gouttière de numéros de ligne.
 pub(super) const GUTTER: Color32 = Color32::from_rgb(0x60, 0x66, 0x70);
+// Pastille de point d'arrêt, dans la gouttière.
+pub(super) const BREAKPOINT: Color32 = Color32::from_rgb(0xE0, 0x4A, 0x4A);
 // Animation « CPU vivant ».
 pub(super) const FLASH_DUR: f64 = 0.7; // durée du fondu (secondes)
 pub(super) const FLASH_BRIGHT: Color32 = Color32::from_rgb(0xFF, 0xF2, 0x9A); // pic de pulsation
@@ -56,6 +130,7 @@ pub(super) fn changed_color(flash: Option<f32>) -> Color32 {
     changed_color2(flash, CHANGED)
 }
 
+
 /// Comme [`changed_color`] mais vers une couleur de base arbitraire.
 pub(super) fn changed_color2(flash: Option<f32>, base: Color32) -> Color32 {
     match flash {
@@ -64,10 +139,56 @@ pub(super) fn changed_color2(flash: Option<f32>, base: Color32) -> Color32 {
     }
 }
 
-#[derive(PartialEq, Clone, Copy)]
-pub(super) enum Tab {
-    Editor,
-    Disasm,
+/// Mode d'affichage de l'interface.
+///
+/// L'application montre par défaut tout ce qu'un débogueur peut montrer, ce qui
+/// est écrasant quand on découvre l'assembleur. Le mode apprentissage réduit
+/// l'écran à ce qui sert les premières semaines : le code, ce que fait
+/// l'instruction courante, les registres, la pile et la sortie du programme.
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+pub(crate) enum UiMode {
+    /// Panneaux essentiels, registres généraux seulement.
+    #[default]
+    Learning,
+    /// Tous les panneaux et tous les registres.
+    Full,
+}
+
+impl UiMode {
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            UiMode::Learning => "learning",
+            UiMode::Full => "full",
+        }
+    }
+    pub(crate) fn from_key(k: &str) -> UiMode {
+        match k {
+            "full" => UiMode::Full,
+            _ => UiMode::Learning,
+        }
+    }
+    pub(crate) fn label(self, lang: Lang) -> &'static str {
+        match self {
+            UiMode::Learning => i18n::tr3(lang, "Apprentissage", "Learning", "Aprendizaje"),
+            UiMode::Full => i18n::tr3(lang, "Complet", "Full", "Completo"),
+        }
+    }
+    pub(crate) fn description(self, lang: Lang) -> &'static str {
+        match self {
+            UiMode::Learning => i18n::tr3(
+                lang,
+                "L'essentiel : code, instruction expliquée, registres généraux, pile, console.",
+                "The essentials: code, explained instruction, general registers, stack, console.",
+                "Lo esencial: código, instrucción explicada, registros generales, pila, consola.",
+            ),
+            UiMode::Full => i18n::tr3(
+                lang,
+                "Tout : désassemblage, vue mémoire, vidage hexa, pile d'appels, appels système.",
+                "Everything: disassembly, memory view, hex dump, call stack, system calls.",
+                "Todo: desensamblado, vista de memoria, volcado hexa, pila de llamadas, syscalls.",
+            ),
+        }
+    }
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -78,26 +199,22 @@ pub(super) enum StackTab {
 
 /// Icônes de l'app (planche `src/Assets`, découpées dans `assets/icons/`),
 /// chargées une fois comme textures egui.
+///
+/// Plusieurs icônes ont disparu avec les en-têtes de panneau : la barre
+/// d'onglets nomme chaque panneau, un pictogramme répété dans le corps n'était
+/// qu'une redite. Ne restent que celles des boutons et des rares en-têtes qui
+/// portent des contrôles.
 pub(super) struct Icons {
-    pub(super) editor: egui::TextureHandle,
     pub(super) assembler: egui::TextureHandle,
     pub(super) run: egui::TextureHandle,
     pub(super) debug: egui::TextureHandle,
-    pub(super) registers: egui::TextureHandle,
     pub(super) stack: egui::TextureHandle,
     pub(super) heap: egui::TextureHandle,
     // Icônes complémentaires (même thème, générées) — boutons et panneaux.
     pub(super) stop: egui::TextureHandle,
-    pub(super) pause: egui::TextureHandle,
     pub(super) restart: egui::TextureHandle,
-    pub(super) attach: egui::TextureHandle,
     pub(super) memory: egui::TextureHandle,
-    pub(super) timeline: egui::TextureHandle,
     pub(super) console: egui::TextureHandle,
-    pub(super) syscalls: egui::TextureHandle,
-    pub(super) callstack: egui::TextureHandle,
-    pub(super) explorer: egui::TextureHandle,
-    pub(super) instruction: egui::TextureHandle,
 }
 
 impl Icons {
@@ -108,24 +225,15 @@ impl Icons {
             };
         }
         Icons {
-            editor: ic!("editor"),
             assembler: ic!("assembler"),
             run: ic!("run"),
             debug: ic!("debug"),
-            registers: ic!("registers"),
             stack: ic!("stack"),
             heap: ic!("heap"),
             stop: ic!("stop"),
-            pause: ic!("pause"),
             restart: ic!("restart"),
-            attach: ic!("attach"),
             memory: ic!("memory"),
-            timeline: ic!("timeline"),
             console: ic!("console"),
-            syscalls: ic!("syscalls"),
-            callstack: ic!("callstack"),
-            explorer: ic!("explorer"),
-            instruction: ic!("instruction"),
         }
     }
 }
@@ -164,18 +272,58 @@ pub struct App {
     pub(super) selected: Option<u64>,
     /// Instruction ouverte dans le mode « microscope » (fenêtre dédiée).
     pub(super) microscope: Option<u64>,
+    /// Adresse → index dans `disasm`. Reconstruit à chaque lancement : la
+    /// trace remonte l'historique instruction par instruction, et une
+    /// recherche linéaire dans le désassemblage y coûtait le prix fort.
+    pub(super) disasm_index: HashMap<u64, usize>,
     /// Appels système exécutés (panneau SYSCALLS).
     pub(super) syscalls: Vec<SyscallLog>,
     /// Adresses des frames actives (panneau CALL STACK), suivi call/ret.
     pub(super) call_stack: Vec<u64>,
+    /// Nombre de transitions de l'historique déjà dépouillées par
+    /// `extend_trace` : au pas suivant, seule la nouvelle est à traiter.
+    pub(super) trace_cursor: usize,
+    /// L'appel système final (celui qui a tué le processus, sans snapshot
+    /// successeur) a déjà été journalisé.
+    pub(super) trace_tail_done: bool,
+    /// Pas lancé dont la finalisation reste à faire — le programme est
+    /// suspendu dans un appel système (voir `RunState::Running`).
+    pub(super) step_in_flight: bool,
+    /// « Continuer » interrompu par un appel système bloquant, à reprendre dès
+    /// que celui-ci aura rendu la main. `Some(None)` pour un « continuer »
+    /// ordinaire, `Some(Some(addr))` pour un pas par-dessus.
+    pub(super) run_pending: Option<Option<u64>>,
+    /// Appel système sur le point de s'exécuter, mémorisé avant le pas pour
+    /// être journalisé avec sa valeur de retour une fois le pas achevé.
+    pub(super) pending_syscall: Option<(String, u64)>,
+    /// Ligne que l'élève s'apprête à envoyer sur l'entrée standard du
+    /// programme (champ de saisie du panneau Console).
+    pub(super) stdin_input: String,
+    /// Le focus a déjà été donné au champ de saisie pour l'attente en cours :
+    /// il ne sera pas repris tant que le programme n'aura pas de nouveau
+    /// besoin d'une entrée.
+    pub(super) stdin_focus_claimed: bool,
+    /// Points d'arrêt, par numéro de ligne source (1-based). Posés sur la
+    /// ligne et non sur l'adresse : c'est ce que l'élève voit, et ça survit à
+    /// un réassemblage qui déplace le code.
+    pub(super) breakpoints: std::collections::BTreeSet<usize>,
     /// Dossier affiché dans l'explorateur de fichiers (panneau de gauche).
     pub(super) explorer_dir: PathBuf,
+    /// Fichier retenu au clavier dans l'explorateur (surligné, ouvert par Entrée).
+    pub(super) explorer_selected: Option<PathBuf>,
     pub(super) view_index: usize,
 
     pub(super) mem_addr: u64,
     pub(super) mem_input: String,
     /// Octets hexa à écrire en mémoire (laboratoire mémoire).
     pub(super) mem_poke: String,
+    /// Registre retenu au clavier dans le panneau REGISTERS (index dans
+    /// `Registers::named`), surligné et éditable par Entrée.
+    pub(super) reg_sel: usize,
+    /// Nombre de colonnes de registres réellement affichées au dernier rendu
+    /// (adapté à la largeur du panneau). ↑/↓ sautent d'autant de registres pour
+    /// suivre ce que l'œil voit dans la grille.
+    pub(super) reg_cols: usize,
     /// Registre en cours d'édition (laboratoire mémoire) et son tampon de saisie.
     pub(super) edit_reg: Option<&'static str>,
     pub(super) edit_buf: String,
@@ -188,19 +336,38 @@ pub struct App {
     /// Position du curseur dans l'éditeur (1-based), pour la barre d'état.
     pub(super) editor_ln: usize,
     pub(super) editor_col: usize,
-
-    pub(super) tab: Tab,
+    /// Position du curseur dans l'éditeur (octets dans `source`), telle que
+    /// laissée par le rendu précédent — utilisée pour l'appariement de
+    /// parenthèses de la frame courante (un cran de retard imperceptible).
+    pub(super) editor_cursor_byte: usize,
+    /// Barre de recherche/remplacement (Ctrl+F / Ctrl+H) de l'éditeur.
+    pub(super) show_find: bool,
+    /// Affiche en plus la ligne de remplacement (Ctrl+H) plutôt que la seule recherche.
+    pub(super) find_replace_mode: bool,
+    pub(super) find_query: String,
+    pub(super) find_replace_text: String,
+    pub(super) find_case_sensitive: bool,
+    /// Index (dans la liste des correspondances, recalculée à chaque frame)
+    /// de la correspondance active.
+    pub(super) find_current: usize,
+    /// Ligne (0-based) vers laquelle faire défiler l'éditeur au prochain rendu,
+    /// consommée par `editor_ui` — le même patron que `scroll_to_sel` pour les
+    /// panneaux ancrables.
+    pub(super) pending_scroll_to_line: Option<usize>,
+    /// Labels de premier niveau actuellement repliés (par nom, pas par ligne :
+    /// survit aux éditions ailleurs dans le fichier). Non vide => l'éditeur
+    /// bascule en vue lecture seule (voir `folded_editor_ui`).
+    pub(super) folded_labels: std::collections::BTreeSet<String>,
     pub(super) stack_tab: StackTab,
     /// Thème sombre actif (mis à jour dans `apply_theme`) — palette de texte.
     pub(super) dark: bool,
-    /// Visibilité des panneaux (menu Affichage).
-    pub(super) show_explorer: bool,
-    pub(super) show_instruction: bool,
-    pub(super) show_cpu_band: bool,
-    pub(super) show_bottom_band: bool,
     pub(super) show_tooltips: bool,
     /// Animations « CPU vivant » (pulsation des valeurs modifiées au Step).
     pub(super) animate: bool,
+    /// Mode pédagogique — animations enrichies (flèches, fondu directionnel).
+    pub(super) pedagogy_anim: bool,
+    /// Mode pédagogique — vue mémoire unifiée registres→zones pointées.
+    pub(super) pedagogy_memview: bool,
     /// Rend `asmstd.inc` disponible partout (ajoute son dossier aux includes nasm).
     pub(super) use_asmstd: bool,
     /// Instant (temps egui) du dernier Step, pour animer le fondu.
@@ -212,32 +379,115 @@ pub struct App {
     pub(super) lang: Lang,
     pub(super) show_settings: bool,
     pub(super) show_about: bool,
+    pub(super) show_license: bool,
     pub(super) show_shortcuts: bool,
     pub(super) show_calculator: bool,
     /// Saisie de la calculatrice multi-base (texte brut, parsé selon `calc_base`).
     pub(super) calc_input: String,
+    /// Second opérande de la calculatrice, et opération choisie.
+    pub(super) calc_input_b: String,
+    pub(super) calc_op: parse::CalcOp,
     /// Base d'entrée de la calculatrice : 2, 8, 10 ou 16.
     pub(super) calc_base: u32,
     /// Icônes (chargées au premier frame, quand le contexte egui existe).
     pub(super) icons: Option<Icons>,
     /// Dialogue « Ouvrir » natif en cours sur un thread de fond (sinon `None`).
     /// Sondé chaque frame → l'UI ne se fige pas pendant que le sélecteur est ouvert.
+    /// Panneau dont la sélection vient de bouger au clavier : sa zone défilante
+    /// doit amener l'élément retenu à l'écran. Sans cela, les flèches
+    /// déplaçaient une sélection qui sortait du cadre visible.
+    pub(super) scroll_to_sel: Option<dock::Panel>,
+    /// Parcours guidé : activable, avec sa progression et la leçon ouverte.
+    pub(super) tutorial_enabled: bool,
+    pub(super) tutorial_progress: crate::tutorial::Progress,
+    pub(super) tutorial_current: Option<String>,
+    /// Mode d'affichage : apprentissage (épuré) ou complet.
+    pub(super) mode: UiMode,
+    /// Bandeau d'accueil (mode apprentissage) écarté une fois pour toutes.
+    pub(super) welcome_dismissed: bool,
+    /// Palette de commandes (Ctrl+Maj+P) : ouverte, requête, sélection.
+    pub(super) palette_open: bool,
+    pub(super) palette_query: String,
+    pub(super) palette_sel: usize,
+    /// Demande de focus du champ de recherche au premier frame d'ouverture.
+    pub(super) palette_focus: bool,
+    /// Nom du panneau focalisé, affiché dans la barre d'état. Renseigné par le
+    /// rendu de la zone d'ancrage, qui seul connaît le nœud actif.
+    pub(super) focused_panel_name: Option<String>,
+    /// Demande de relâchement du focus widget au prochain frame : quand le
+    /// clavier quitte l'éditeur, ce dernier ne doit plus capter les touches.
+    pub(super) ctx_surrender_focus: bool,
+    /// Arbre des panneaux ancrables. `Option` car il est sorti de `self` le
+    /// temps du rendu : le `TabViewer` a besoin de `&mut App`.
+    pub(super) dock: Option<egui_dock::DockState<dock::Panel>>,
+    /// Mode pédagogique — prédire la valeur d'un registre avant chaque pas.
+    pub(super) pedagogy_predict: bool,
+    /// Prédiction en cours (en attente de résolution, ou résolue et affichée).
+    pub(super) prediction: Option<predict::Prediction>,
+    /// Compteur de réussite des prédictions.
+    pub(super) pred_score: predict::Score,
+    /// Registre visé par la prochaine prédiction.
+    pub(super) pred_reg: &'static str,
+    /// Saisie hexa de la valeur prédite.
+    pub(super) pred_input: String,
+    /// Énoncé et attentes extraits du source courant (vide si ce n'est pas un
+    /// exercice). Recalculé à chaque chargement/enregistrement du fichier.
+    pub(super) exercise: crate::exercise::Exercise,
+    /// Résultat de la dernière vérification, à la sortie du programme.
+    pub(super) checks: Vec<crate::exercise::Check>,
+    /// Diagnostic de la faute courante (plantage), s'il y en a un.
+    /// Recalculé au moment de la faute, effacé au (re)lancement.
+    pub(super) diagnosis: Option<crate::diagnostic::Diagnosis>,
+    pub(super) updater: Updater,
     pub(super) pending_open: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
     /// Dialogue « Enregistrer sous » natif en cours sur un thread de fond.
     pub(super) pending_saveas: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
+    /// Licence en vigueur (désassemblage, registres/flags, timeline).
+    pub(super) license: crate::license::LicenseState,
+    /// Fenêtre de saisie de licence — distincte de `show_license`, qui n'affiche
+    /// que le texte légal de `LICENSE.md`.
+    pub(super) show_license_gate: bool,
+    pub(super) license_input: String,
+    pub(super) license_error: Option<String>,
+    /// Rappel de licence affiché à intervalle irrégulier — distinct de
+    /// `show_license_gate` : celui-ci est la carte d'accroche, dont le seul
+    /// bouton d'action ouvre la vraie boîte de collage.
+    pub(super) show_license_nag: bool,
+    /// Demande de confirmation avant de désactiver la licence installée
+    /// (bouton « Désactiver… » de la fenêtre « À propos »). La suppression du
+    /// fichier n'a lieu qu'une fois cette confirmation acceptée : c'est une
+    /// action irréversible sans le bloc de licence d'origine sous la main.
+    pub(super) confirm_license_reset: bool,
+    /// `true` quand `show_license_nag` a été ouverte pour bloquer une
+    /// fermeture de fenêtre (voir `check_close_request`), plutôt que par le
+    /// rappel périodique : change le bouton secondaire en « Quitter quand
+    /// même » au lieu de « Plus tard ».
+    pub(super) exit_pending: bool,
+    /// `true` une fois que l'utilisateur a cliqué « Quitter quand même » sur
+    /// la carte de rappel. Sans ça, le `ViewportCommand::Close` qu'on envoie
+    /// nous-mêmes redéclenche `close_requested()` à la frame suivante :
+    /// `check_close_request` l'interceptait alors une seconde fois et
+    /// annulait sa propre fermeture (bouton visiblement sans effet).
+    pub(super) quit_confirmed: bool,
+    /// Prochain rappel de licence (ouvre `show_license_nag` tout seul),
+    /// en secondes de l'horloge egui (`ctx.input(|i| i.time)`). `None` tant
+    /// qu'aucune échéance n'a encore été tirée pour cette session.
+    pub(super) nag_next_at: Option<f64>,
 }
 
 impl App {
     pub fn new() -> Self {
-        let src_path = PathBuf::from("examples/test.asm");
+        setup_examples();
+        let src_path = data_dir().join("examples").join("hello_world.asm");
         let source = std::fs::read_to_string(&src_path).unwrap_or_else(|_| {
             "section .text\n    global _start\n_start:\n    mov rax, 60\n    xor rdi, rdi\n    syscall\n"
                 .to_string()
         });
         let explorer_dir = abs_dir_of(&src_path);
+        let out_dir = data_dir().join("build");
         let mut app = App {
             src_path,
-            out_dir: PathBuf::from("build"),
+            out_dir,
             source,
             dirty: false,
             binary: None,
@@ -246,13 +496,25 @@ impl App {
             src_map: HashMap::new(),
             selected: None,
             microscope: None,
+            disasm_index: HashMap::new(),
             syscalls: Vec::new(),
             call_stack: Vec::new(),
+            trace_cursor: 0,
+            trace_tail_done: false,
+            step_in_flight: false,
+            run_pending: None,
+            pending_syscall: None,
+            stdin_input: String::new(),
+            stdin_focus_claimed: false,
+            breakpoints: std::collections::BTreeSet::new(),
             explorer_dir,
+            explorer_selected: None,
             view_index: 0,
             mem_addr: 0,
             mem_input: String::new(),
             mem_poke: String::new(),
+            reg_sel: 0,
+            reg_cols: 2,
             edit_reg: None,
             edit_buf: String::new(),
             edit_focus: false,
@@ -261,15 +523,21 @@ impl App {
             editor_scroll_y: 0.0,
             editor_ln: 1,
             editor_col: 1,
-            tab: Tab::Editor,
+            editor_cursor_byte: 0,
+            show_find: false,
+            find_replace_mode: false,
+            find_query: String::new(),
+            find_replace_text: String::new(),
+            find_case_sensitive: false,
+            find_current: 0,
+            pending_scroll_to_line: None,
+            folded_labels: std::collections::BTreeSet::new(),
             stack_tab: StackTab::Stack,
             dark: true,
-            show_explorer: true,
-            show_instruction: true,
-            show_cpu_band: true,
-            show_bottom_band: true,
             show_tooltips: true,
             animate: true,
+            pedagogy_anim: false,
+            pedagogy_memview: false,
             use_asmstd: false,
             flash_time: 0.0,
             pending_flash: false,
@@ -277,15 +545,68 @@ impl App {
             lang: Lang::Fr,
             show_settings: false,
             show_about: false,
+            show_license: false,
             show_shortcuts: false,
             show_calculator: false,
             calc_input: String::new(),
-            calc_base: 10,
+            calc_input_b: String::new(),
+            calc_op: parse::CalcOp::And,
+            // Hexadécimal par défaut : c'est la base dans laquelle on lit un
+            // registre, une adresse ou un masque.
+            calc_base: 16,
             icons: None,
+            // Activé par défaut : un nouveau venu démarre en mode apprentissage
+            // et voit d'emblée le parcours guidé, au lieu d'un écran de
+            // débogueur nu. Les utilisateurs déjà installés gardent leur choix,
+            // que le fichier de réglages restitue par-dessus ce défaut.
+            tutorial_enabled: true,
+            welcome_dismissed: false,
+            tutorial_progress: crate::tutorial::Progress::default(),
+            tutorial_current: None,
+            scroll_to_sel: None,
+            mode: UiMode::Learning,
+            palette_open: false,
+            palette_query: String::new(),
+            palette_sel: 0,
+            palette_focus: false,
+            focused_panel_name: None,
+            ctx_surrender_focus: false,
+            dock: Some(dock::learning_layout()),
+            pedagogy_predict: false,
+            prediction: None,
+            pred_score: predict::Score::default(),
+            pred_reg: "RAX",
+            pred_input: String::new(),
+            exercise: crate::exercise::Exercise::default(),
+            checks: Vec::new(),
+            diagnosis: None,
+            updater: Updater::new(),
             pending_open: None,
             pending_saveas: None,
+            license: crate::license::LicenseState::Missing,
+            show_license_gate: false,
+            license_input: String::new(),
+            license_error: None,
+            show_license_nag: false,
+            confirm_license_reset: false,
+            exit_pending: false,
+            quit_confirmed: false,
+            nag_next_at: None,
         };
         app.load_settings();
+        app.license = crate::license::load();
+        // Plus d'ouverture automatique au lancement : un rappel systématique
+        // à chaque démarrage était trop intrusif. La fenêtre se rouvre plutôt
+        // toute seule à intervalle irrégulier pendant que l'app tourne (voir
+        // `nag_next_at` dans `update()`), et reste sinon accessible à la main
+        // (menu Aide, palette).
+        //
+        // Une licence stockée mais devenue invalide (ex. mise à jour vers une
+        // version différente) doit expliquer pourquoi, pas seulement rouvrir
+        // une fenêtre de saisie vide, dès qu'elle s'affichera.
+        if let crate::license::LicenseState::Invalid(reason) = &app.license {
+            app.license_error = Some(reason.clone());
+        }
         app
     }
 
@@ -293,8 +614,16 @@ impl App {
 
     pub(super) fn load_settings(&mut self) {
         use egui::ThemePreference;
+        // Les tests ne doivent pas dépendre de la configuration de la machine :
+        // sinon leur résultat change selon la langue choisie par l'utilisateur.
+        if cfg!(test) {
+            return;
+        }
         let Some(path) = settings_path() else { return };
         let Ok(content) = std::fs::read_to_string(&path) else { return };
+        // La disposition est appliquée en dernier : elle dépend des autres
+        // réglages (langue pour les titres) et remplace l'arbre par défaut.
+        let mut saved_dock: Option<String> = None;
         for line in content.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             let v = v.trim();
@@ -307,20 +636,39 @@ impl App {
                     }
                 }
                 "lang" => self.lang = Lang::from_key(v),
+                "mode" => self.mode = UiMode::from_key(v),
+                "tutorial" => self.tutorial_enabled = v == "true",
+                "tutorial_done" => self.tutorial_progress = crate::tutorial::Progress::parse(v),
+                "tutorial_current" => {
+                    self.tutorial_current = (!v.is_empty()).then(|| v.to_string())
+                }
                 "tooltips" => self.show_tooltips = v == "true",
                 "asmstd" => self.use_asmstd = v == "true",
                 "animate" => self.animate = v == "true",
-                "show_explorer" => self.show_explorer = v == "true",
-                "show_instruction" => self.show_instruction = v == "true",
-                "show_cpu_band" => self.show_cpu_band = v == "true",
-                "show_bottom_band" => self.show_bottom_band = v == "true",
+                "pedagogy_anim" => self.pedagogy_anim = v == "true",
+                "pedagogy_memview" => self.pedagogy_memview = v == "true",
+                "pedagogy_predict" => self.pedagogy_predict = v == "true",
+                "welcome_dismissed" => self.welcome_dismissed = v == "true",
+                "dock" => saved_dock = Some(v.to_string()),
                 _ => {}
             }
+        }
+        match saved_dock {
+            Some(layout) => self.apply_dock_layout(&layout),
+            // Pas de disposition enregistrée : celle du mode relu, sinon un
+            // réglage `mode=full` afficherait la disposition d'apprentissage.
+            None => self.dock = Some(dock::layout_for(self.mode)),
         }
     }
 
     pub(super) fn save_settings(&self) {
         use egui::ThemePreference;
+        // Et surtout, ils ne doivent RIEN écrire dedans : plusieurs exécutent des
+        // commandes qui persistent (changement de langue, fermeture de panneau),
+        // ce qui modifiait pour de bon les réglages de l'utilisateur.
+        if cfg!(test) {
+            return;
+        }
         let Some(path) = settings_path() else { return };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -331,16 +679,23 @@ impl App {
             _ => "dark",
         };
         let content = format!(
-            "theme={theme}\nlang={}\ntooltips={}\nasmstd={}\nanimate={}\n\
-             show_explorer={}\nshow_instruction={}\nshow_cpu_band={}\nshow_bottom_band={}\n",
+            "theme={theme}\nlang={}\nmode={}\ntooltips={}\nasmstd={}\nanimate={}\n\
+             pedagogy_anim={}\npedagogy_memview={}\npedagogy_predict={}\n\
+             tutorial={}\ntutorial_done={}\ntutorial_current={}\n\
+             welcome_dismissed={}\ndock={}\n",
             self.lang.key(),
+            self.mode.key(),
             self.show_tooltips,
             self.use_asmstd,
             self.animate,
-            self.show_explorer,
-            self.show_instruction,
-            self.show_cpu_band,
-            self.show_bottom_band,
+            self.pedagogy_anim,
+            self.pedagogy_memview,
+            self.pedagogy_predict,
+            self.tutorial_enabled,
+            self.tutorial_progress,
+            self.tutorial_current.clone().unwrap_or_default(),
+            self.welcome_dismissed,
+            self.dock_layout_string(),
         );
         let _ = std::fs::write(&path, content);
     }
@@ -374,8 +729,12 @@ impl App {
     pub(super) fn is_head_view(&self) -> bool {
         matches!(&self.dbg, Some(d) if self.view_index >= d.history.len() - 1)
     }
+    /// Le programme peut avancer d'un pas — et, par la même occasion, recevoir
+    /// une écriture de registre ou de mémoire. `is_ready` et non `is_alive` :
+    /// un processus suspendu dans un appel système est bien vivant, mais ptrace
+    /// n'a pas la main dessus, et tout ce qui est proposé ici y échouerait.
     pub(super) fn can_step(&self) -> bool {
-        self.dbg.as_ref().is_some_and(|d| d.is_alive()) && self.is_head_view()
+        self.dbg.as_ref().is_some_and(|d| d.is_ready()) && self.is_head_view()
     }
     pub(super) fn can_read_memory(&self) -> bool {
         self.is_head_view() && self.dbg.as_ref().is_some_and(|d| d.is_alive())
@@ -404,6 +763,20 @@ impl App {
         }
     }
 
+    /// Vrai une seule fois si ce panneau doit amener sa sélection à l'écran.
+    ///
+    /// La demande est nominative : consommer sans vérifier le destinataire
+    /// ferait absorber par le premier panneau rendu un défilement destiné à un
+    /// autre.
+    pub(super) fn take_scroll_request(&mut self, panel: dock::Panel) -> bool {
+        if self.scroll_to_sel == Some(panel) {
+            self.scroll_to_sel = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Ajoute une infobulle (raccourci) seulement si l'option est activée.
     pub(super) fn tip(&self, resp: egui::Response, text: &str) -> egui::Response {
         if self.show_tooltips {
@@ -413,9 +786,8 @@ impl App {
         }
     }
 
-    /// Traduit selon la langue courante : `tr(français, anglais)`.
-    pub(super) fn tr(&self, fr: &'static str, en: &'static str) -> &'static str {
-        i18n::tr(self.lang, fr, en)
+    pub(super) fn tr3(&self, fr: &'static str, en: &'static str, es: &'static str) -> &'static str {
+        i18n::tr3(self.lang, fr, en, es)
     }
 
     // ---------- Palette de texte sensible au thème ----------
@@ -446,13 +818,67 @@ impl App {
     pub(super) fn c_sel_row(&self) -> Color32 {
         if self.dark { SEL_ROW } else { Color32::from_rgb(0xD5, 0xE2, 0xF4) }
     }
+
+    /// Nombre de boîtes de dialogue (fenêtres flottantes) actuellement ouvertes.
+    /// Sert à repérer, dans `update`, l'image où l'une vient de se fermer : en
+    /// rendu à la demande — c'est le cas ici, on ne repeint que sur événement —
+    /// l'image qui EFFACE la fenêtre fermée n'est pas toujours présentée d'elle-
+    /// même (frame callback Wayland, animations coupées…). Un repaint explicite
+    /// à cet instant garantit que le dialogue disparaît sans attendre le prochain
+    /// mouvement de souris.
+    fn open_dialog_count(&self) -> usize {
+        use crate::updater::UpdateState;
+        let updater_shown = matches!(
+            self.updater.state,
+            UpdateState::Checking
+                | UpdateState::Available(_)
+                | UpdateState::Downloading(_)
+                | UpdateState::Done
+                | UpdateState::Error(_)
+        );
+        [
+            self.show_about,
+            self.show_license,
+            self.show_shortcuts,
+            self.show_settings,
+            self.show_calculator,
+            self.show_license_gate,
+            self.show_license_nag,
+            self.confirm_license_reset,
+            self.palette_open,
+            self.pedagogy_predict,
+            self.microscope.is_some(),
+            self.diagnosis.is_some(),
+            updater_shown,
+        ]
+        .into_iter()
+        .filter(|&open| open)
+        .count()
+    }
+
+    /// À appeler après avoir rendu toutes les boîtes de dialogue, avec le nombre
+    /// qui était ouvert AVANT. Si l'une s'est refermée pendant l'image, force un
+    /// rendu : voir [`open_dialog_count`](Self::open_dialog_count) pour le motif.
+    fn repaint_on_dialog_close(&self, ctx: &egui::Context, opened_before: usize) {
+        if self.open_dialog_count() < opened_before {
+            ctx.request_repaint();
+        }
+    }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.icons.is_none() {
             self.icons = Some(Icons::load(ctx));
+            // Une seule fois, au premier frame : recharger les polices à chaque
+            // image coûterait cher.
+            Self::install_fallback_font(ctx);
         }
+        // Workaround egui#5008 : sur Linux, egui-winit active l'IME quand un TextEdit
+        // a le focus mais ignore ensuite les événements IME → les dead keys (accents)
+        // sont avalés. On désactive l'IME : xkbcommon compose les accents directement
+        // dans les événements clavier sans passer par le protocole IME.
+        ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(false));
         self.apply_theme(ctx);
         // Récupère le résultat d'un dialogue fichier natif (thread de fond) et,
         // tant qu'il est ouvert, force un repaint périodique pour continuer à sonder.
@@ -460,6 +886,10 @@ impl eframe::App for App {
         if self.dialog_pending() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        // Sortie du programme tracé, et fin d'un pas resté en suspens sur un
+        // appel système bloquant. Avant toute peinture : la console et la
+        // barre d'état de cette frame doivent montrer l'état à jour.
+        self.poll_debugger(ctx);
         if self.pending_flash {
             self.flash_time = ctx.input(|i| i.time);
             self.pending_flash = false;
@@ -468,492 +898,230 @@ impl eframe::App for App {
 
         self.menu_bar(ctx);
         self.toolbar(ctx);
+        self.welcome_banner(ctx);
         self.status_bar(ctx);
 
-        // Marge interne unique pour TOUS les panneaux (bandes, latéraux, centre)
-        // → rythme vertical cohérent et séparateurs d'en-tête alignés.
-        let pad = egui::Margin::symmetric(8.0, 6.0);
-        let band_frame = egui::Frame::central_panel(&ctx.style()).inner_margin(pad);
+        // Toute la zone centrale est un arbre de panneaux ancrables : chaque
+        // panneau est un onglet que l'on déplace, empile ou détache en fenêtre.
+        self.dock_ui(ctx);
 
-        // Bande basse : MEMORY | TIMELINE | CONSOLE.
-        if self.show_bottom_band {
-            egui::TopBottomPanel::bottom("bottom_band")
-                .resizable(true)
-                .default_height(196.0)
-                .frame(band_frame)
-                .show(ctx, |ui| {
-                    let h = ui.available_height();
-                    let cw = ((ui.available_width() - 20.0) / 3.0).max(60.0);
-                    ui.horizontal_top(|ui| {
-                        col(ui, cw, h, |ui| self.memory_ui(ui));
-                        ui.separator();
-                        col(ui, cw, h, |ui| self.timeline_col_ui(ui));
-                        ui.separator();
-                        col(ui, ui.available_width(), h, |ui| self.console_ui(ui));
-                    });
-                });
-        }
-
-        // Bande centrale : REGISTERS | STACK | CALL STACK | SYSCALLS.
-        // (FLAGS est désormais au bas du panneau INSTRUCTION ; le désassemblage
-        // a son propre onglet au centre.)
-        if self.show_cpu_band {
-            egui::TopBottomPanel::bottom("mid_band")
-                .resizable(true)
-                .default_height(226.0)
-                .frame(band_frame)
-                .show(ctx, |ui| {
-                    let h = ui.available_height();
-                    let cw = ((ui.available_width() - 30.0) / 4.0).max(90.0);
-                    ui.horizontal_top(|ui| {
-                        col(ui, cw * 1.4, h, |ui| self.registers_ui(ui));
-                        ui.separator();
-                        col(ui, cw * 1.3, h, |ui| self.stack_ui(ui));
-                        ui.separator();
-                        col(ui, cw * 0.9, h, |ui| self.callstack_ui(ui));
-                        ui.separator();
-                        col(ui, ui.available_width(), h, |ui| self.syscalls_ui(ui));
-                    });
-                });
-        }
-
-        // Explorateur à gauche, INSTRUCTION à droite, éditeur au centre.
-        // Marge interne IDENTIQUE pour les trois → leurs en-têtes (et donc les
-        // séparateurs sous EXPLORER / onglets éditeur / INSTRUCTION) s'alignent.
-        if self.show_explorer {
-            egui::SidePanel::left("explorer_panel")
-                .resizable(true)
-                .default_width(180.0)
-                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
-                .show(ctx, |ui| self.explorer_ui(ui));
-        }
-        if self.show_instruction {
-            egui::SidePanel::right("instruction_panel")
-                .resizable(true)
-                .default_width(272.0)
-                .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(pad))
-                .show(ctx, |ui| self.instruction_ui(ui));
-        }
-        egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(pad))
-            .show(ctx, |ui| self.center_ui(ui));
-
+        // Une boîte fermée par son bouton (« Fermer », « Valider »…) bascule son
+        // état APRÈS avoir été peinte cette image. On mémorise combien étaient
+        // ouvertes avant, pour forcer un rendu si l'une s'est refermée : sinon,
+        // en rendu à la demande, l'ancienne image resterait affichée jusqu'au
+        // prochain événement (dialogue « collé » à l'écran).
+        let dialogs_before = self.open_dialog_count();
         self.about_window(ctx);
+        self.license_window(ctx);
         self.shortcuts_window(ctx);
         self.settings_window(ctx);
         self.microscope_window(ctx);
         self.calculator_window(ctx);
+        self.palette_window(ctx);
+        self.predict_window(ctx);
+        self.diagnosis_window(ctx);
+        self.update_window(ctx);
+        self.check_license_nag(ctx);
+        self.check_close_request(ctx);
+        self.license_nag_window(ctx);
+        self.license_gate_window(ctx);
+        self.license_reset_confirm_window(ctx);
+        self.repaint_on_dialog_close(ctx, dialogs_before);
+        self.updater.poll();
+    }
+}
+
+impl App {
+    /// Rouvre `show_license_nag` tout seul, à intervalle irrégulier, tant
+    /// qu'aucune licence n'est active — plutôt qu'à chaque lancement (trop
+    /// intrusif). Le premier délai est tiré ici, au premier appel, faute
+    /// d'horloge egui disponible dans `App::new()`.
+    fn check_license_nag(&mut self, ctx: &egui::Context) {
+        if self.is_licensed() {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        match self.nag_next_at {
+            None => self.nag_next_at = Some(now + Self::random_nag_interval()),
+            Some(t) if now >= t => {
+                self.show_license_nag = true;
+                self.nag_next_at = Some(now + Self::random_nag_interval());
+            }
+            _ => {
+                // Sans interaction utilisateur, egui ne redessine pas de
+                // lui-même : on force un réveil de temps à autre pour que
+                // l'échéance soit vérifiée même si l'app reste ouverte sans
+                // qu'on y touche.
+                ctx.request_repaint_after(std::time::Duration::from_secs(60));
+            }
+        }
+    }
+
+    /// Bloque une tentative de fermeture (croix de la fenêtre ou Fichier ▸
+    /// Quitter, les deux passent par le même événement) tant qu'aucune
+    /// licence n'est active : la carte de rappel s'ouvre une dernière fois,
+    /// avec un geste explicite pour quitter quand même plutôt qu'une
+    /// fermeture silencieuse qui ne rappelle jamais rien à personne.
+    fn check_close_request(&mut self, ctx: &egui::Context) {
+        if self.is_licensed() {
+            return;
+        }
+        // `quit_confirmed` : une fois « Quitter quand même » cliqué, on laisse
+        // filer — sinon le `Close` qu'on envoie soi-même repasserait par ici
+        // et s'auto-annulerait (voir la doc du champ). Mais envoyer `Close`
+        // ne fait que programmer un événement pour la frame suivante (voir
+        // `egui_winit::process_viewport_commands` et le commentaire
+        // d'eframe sur `WindowEvent::CloseRequested` : « we may need to
+        // repaint... perhaps twice »). En rendu à la demande, sans repaint
+        // demandé, cette frame suivante n'arrive jamais toute seule et
+        // l'appli semble ne pas vouloir quitter : on force donc un réveil
+        // continu jusqu'à ce qu'eframe ait fini de traiter la fermeture.
+        if self.quit_confirmed {
+            ctx.request_repaint();
+            return;
+        }
+        if ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.show_license_nag = true;
+            self.exit_pending = true;
+        }
+    }
+
+    /// Entre 25 et 45 minutes : assez espacé pour ne pas agacer, comme
+    /// demandé. Pseudo-aléatoire via les nanosecondes de l'horloge système —
+    /// pas besoin d'une dépendance `rand` pour un simple délai d'agacement.
+    fn random_nag_interval() -> f64 {
+        const MIN_SECS: f64 = 25.0 * 60.0;
+        const SPAN_SECS: f64 = 20.0 * 60.0;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        MIN_SECS + (nanos as f64 / u32::MAX as f64) * SPAN_SECS
     }
 }
 
 // ---------- Helpers ----------
 
-/// Hauteur fixe de la ligne d'en-tête d'un panneau, pour aligner les
-/// séparateurs de tous les panneaux au même niveau (certains en-têtes ont des
-/// boutons/combos plus hauts qu'un simple libellé).
-pub(super) const HEADER_H: f32 = 24.0;
 
-/// En-tête de panneau à hauteur fixe : rend `content` (titre + éventuels
-/// contrôles) dans une ligne de `HEADER_H`, puis un séparateur. Tous les
-/// panneaux passent par ici → leurs séparateurs sont alignés.
-pub(super) fn panel_header(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(2.0);
-    // Bandeau de titre teinté (style dashboard) : remplace l'ancien séparateur ;
-    // hauteur constante ⇒ tous les bandeaux restent alignés d'un panneau à l'autre.
-    egui::Frame::none()
-        .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
-        .rounding(egui::Rounding::same(5.0))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), HEADER_H - 4.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                content,
-            );
-        });
-    ui.add_space(5.0);
-}
 
-/// Encadré « carte » moderne : fond légèrement teinté, coins arrondis et marge
-/// interne, sur toute la largeur disponible. Structure et aère le contenu
-/// (utile pour une app pédagogique).
-pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::none()
-        .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-        .rounding(egui::Rounding::same(6.0))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            content(ui);
-        });
-}
 
-/// Icône optionnelle + titre de section, à placer dans un `panel_header`.
-pub(super) fn header_title(ui: &mut egui::Ui, hdr: Color32, icon: Option<&egui::TextureHandle>, text: &str) {
-    icon_img(ui, icon, 15.0);
-    ui.label(RichText::new(text).strong().color(hdr).size(12.5));
-}
 
-/// Titre de section simple (sans contrôle) à hauteur fixe.
-pub(super) fn header(ui: &mut egui::Ui, hdr: Color32, text: &str) {
-    panel_header(ui, |ui| header_title(ui, hdr, None, text));
-}
 
-/// En-tête de section avec une icône optionnelle à gauche du titre.
-pub(super) fn header_icon(ui: &mut egui::Ui, hdr: Color32, icon: Option<&egui::TextureHandle>, text: &str) {
-    panel_header(ui, |ui| header_title(ui, hdr, icon, text));
-}
 
-/// Affiche une petite icône carrée (rien si `icon` est `None`).
-pub(super) fn icon_img(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, size: f32) {
-    if let Some(t) = icon {
-        ui.add(egui::Image::new((t.id(), egui::vec2(size, size))));
-    }
-}
 
-/// Alloue une colonne de largeur `w` et hauteur `h` puis y rend `add`.
-pub(super) fn col(ui: &mut egui::Ui, w: f32, h: f32, add: impl FnOnce(&mut egui::Ui)) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(w, h),
-        egui::Layout::top_down(egui::Align::Min),
-        add,
-    );
-}
 
-/// Petite colonne de pile (microscope) : adresse + valeur, à partir de `rsp`.
-pub(super) fn micro_stack(ui: &mut egui::Ui, addr_c: Color32, label: &str, rsp: u64, stack: &[u64]) {
-    ui.label(RichText::new(label).italics().weak());
-    egui::Grid::new(format!("micro_stack_{label}"))
-        .num_columns(2)
-        .spacing([8.0, 2.0])
-        .show(ui, |ui| {
-            for (i, val) in stack.iter().take(6).enumerate() {
-                let addr = rsp.wrapping_add((i as u64) * 8);
-                let mark = if i == 0 { "→" } else { " " };
-                ui.label(
-                    RichText::new(format!("{mark} 0x{addr:012X}"))
-                        .monospace()
-                        .color(addr_c),
-                );
-                ui.label(RichText::new(format!("0x{val:016X}")).monospace());
-                ui.end_row();
-            }
-        });
-}
 
-/// Flags positionnés (info statique) quand l'instruction n'a pas d'avant/après.
-pub(super) fn micro_static_flags(ui: &mut egui::Ui, hdr: Color32, e: &explain::Explanation, set_label: &str, none_label: &str) {
-    ui.add_space(4.0);
-    if e.affects_flags.is_empty() {
-        ui.weak(none_label);
-    } else {
-        ui.label(RichText::new(set_label).strong().color(hdr));
-        ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
-    }
-}
 
-pub(super) fn parse_hex(s: &str) -> Option<u64> {
-    let s = s.trim();
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
-    u64::from_str_radix(s, 16).ok()
-}
 
-/// Analyse une valeur dans la base donnée (2, 8, 10 ou 16).
-/// Base 10 : signé (`i64`), supporte le signe `-`. Autres bases : bit-pattern `u64` casté.
-/// Renvoie `None` si vide ou hors plage.
-pub(super) fn calc_parse(s: &str, base: u32) -> Option<i64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    if base == 10 {
-        return s.parse::<i64>().ok();
-    }
-    u64::from_str_radix(s, base).ok().map(|v| v as i64)
-}
 
-/// Formate `v` dans la base donnée, avec préfixe (`0x`/`0o`/`0b`) sauf en base 10.
-/// Hex/Oct/Bin : affiche le motif de bits en non-signé. Dec : affiche signé.
-pub(super) fn calc_format(v: i64, base: u32) -> String {
-    match base {
-        16 => format!("0x{:X}", v as u64),
-        8 => format!("0o{:o}", v as u64),
-        2 => format!("0b{:b}", v as u64),
-        _ => format!("{v}"),
-    }
-}
 
-/// Analyse une suite d'octets hexadécimaux (« 48 65 6C » ou « 48656C »).
-pub(super) fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
-    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..cleaned.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).ok())
-        .collect()
-}
 
-/// Nom d'affichage d'un chemin (dernier segment).
-pub(super) fn file_name(p: &Path) -> String {
-    p.file_name().unwrap_or_default().to_string_lossy().into_owned()
-}
 
-/// Entrées d'un dossier : (sous-dossiers, tous les fichiers), triés, en masquant
-/// les entrées cachées (préfixe `.`). Pour l'explorateur en arbre.
-pub(super) fn list_entries(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if file_name(&p).starts_with('.') {
-                continue;
-            }
-            if p.is_dir() {
-                dirs.push(p);
-            } else {
-                files.push(p);
-            }
-        }
-    }
-    dirs.sort();
-    files.sort();
-    (dirs, files)
-}
 
-/// True si le fichier est une source assembleur (`.asm`/`.s`).
-pub(super) fn is_asm(p: &Path) -> bool {
-    p.extension().is_some_and(|e| e == "asm" || e == "s")
-}
 
-/// Rend récursivement l'arbre d'un dossier (style explorateur d'IDE) : dossiers
-/// repliables (`CollapsingHeader`), puis fichiers cliquables. Le fichier ouvert
-/// est surligné ; le clic sur un fichier renseigne `to_open`.
-pub(super) fn dir_tree(
-    ui: &mut egui::Ui,
-    dir: &Path,
-    current: &Path,
-    asm_col: Color32,
-    other_col: Color32,
-    to_open: &mut Option<PathBuf>,
-) {
-    let (dirs, files) = list_entries(dir);
-    for d in dirs {
-        egui::CollapsingHeader::new(RichText::new(format!("🗀  {}", file_name(&d))).color(asm_col))
-            .id_salt(&d)
-            .default_open(false)
-            .show(ui, |ui| dir_tree(ui, &d, current, asm_col, other_col, to_open));
-    }
-    for f in files {
-        let is_cur = f == current;
-        let col = if is_cur {
-            CHANGED
-        } else if is_asm(&f) {
-            asm_col
-        } else {
-            other_col
-        };
-        let label = RichText::new(format!("🗎  {}", file_name(&f))).color(col);
-        if ui.add(egui::SelectableLabel::new(is_cur, label)).clicked() {
-            *to_open = Some(f);
-        }
-    }
-}
 
-/// Bouton avec bordure verte (actif/disponible) ou rouge (inactif).
-pub(super) fn bordered_button(
-    ui: &mut egui::Ui,
-    icon: Option<&egui::TextureHandle>,
-    label: &str,
-    enabled: bool,
-) -> egui::Response {
-    let color = if enabled { FLAG_ON } else { FALSE_COL };
-    let btn = match btn_icon(icon) {
-        Some(img) => egui::Button::image_and_text(img, label),
-        None => egui::Button::new(label),
-    }
-    .stroke(egui::Stroke::new(1.5_f32, color));
-    ui.add_enabled(enabled, btn)
-}
 
-/// Construit un widget bouton (icône + libellé) sans l'ajouter — pour
-/// `ui.add_enabled(...)`. La source d'image est `'static` (TextureId).
-pub(super) fn icon_btn_widget(icon: Option<&egui::TextureHandle>, label: &'static str) -> egui::Button<'static> {
-    match btn_icon(icon) {
-        Some(img) => egui::Button::image_and_text(img, label),
-        None => egui::Button::new(label),
-    }
-}
 
-/// Source d'image dimensionnée pour un bouton (16px), à partir d'une icône.
-pub(super) fn btn_icon(icon: Option<&egui::TextureHandle>) -> Option<egui::load::SizedTexture> {
-    icon.map(|t| egui::load::SizedTexture::new(t.id(), egui::vec2(16.0, 16.0)))
-}
 
-/// Bouton d'accent (fond ACCENT si actif, grisé sinon) — pour Run et Step.
-pub(super) fn accent_button(
-    ui: &mut egui::Ui,
-    icon: Option<&egui::TextureHandle>,
-    label: &str,
-    enabled: bool,
-) -> egui::Response {
-    let btn = match (enabled, btn_icon(icon)) {
-        (true, Some(img)) => {
-            egui::Button::image_and_text(img, RichText::new(label).color(Color32::WHITE)).fill(ACTION)
-        }
-        (true, None) => egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACTION),
-        (false, Some(img)) => egui::Button::image_and_text(img, label),
-        (false, None) => egui::Button::new(label),
-    };
-    ui.add_enabled(enabled, btn)
-}
 
-/// Bouton ordinaire avec icône optionnelle à gauche du libellé.
-pub(super) fn icon_button(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, label: &str) -> egui::Response {
-    match btn_icon(icon) {
-        Some(img) => ui.add(egui::Button::image_and_text(img, label)),
-        None => ui.button(label),
-    }
-}
 
-/// Onglet sélectionnable avec l'icône DANS le bouton (respecte le padding).
-/// Remplace `icon_img(...) + selectable_label(...)` où l'icône débordait.
-pub(super) fn icon_tab(
-    ui: &mut egui::Ui,
-    icon: Option<&egui::TextureHandle>,
-    label: &str,
-    selected: bool,
-) -> egui::Response {
-    let btn = match btn_icon(icon) {
-        Some(img) => egui::Button::image_and_text(img, label),
-        None => egui::Button::new(label),
-    }
-    .selected(selected)
-    .rounding(egui::Rounding::same(6.0));
-    ui.add(btn)
-}
 
-/// Petit badge coloré (texte sur fond semi-transparent).
-pub(super) fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
-    egui::Frame::default()
-        .fill(color.linear_multiply(0.22))
-        .inner_margin(egui::Margin::symmetric(5.0, 2.0))
-        .rounding(egui::Rounding::same(4.0))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).small().strong().color(color));
-        });
-}
 
-/// Chemin du fichier de réglages persistants (XDG : ~/.config/asm_studio/settings.conf).
-pub(super) fn settings_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("asm_studio").join("settings.conf"))
-}
 
-/// Répertoire contenant l'`asmstd.inc` fourni, s'il est trouvable.
-pub(super) fn asmstd_dir() -> Option<PathBuf> {
-    let dir = PathBuf::from("examples");
-    dir.join("asmstd.inc").exists().then_some(dir)
-}
 
-/// Répertoire absolu contenant `path` (remonte à `current_dir` si besoin).
-pub(super) fn abs_dir_of(path: &Path) -> PathBuf {
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-    };
-    abs.parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("/"))
-}
 
-/// Affiche `rows` lignes de 16 octets (hex + ASCII) à partir de `base`.
-pub(super) fn hex_dump_rows(ui: &mut egui::Ui, addr_c: Color32, bytes_c: Color32, dbg: &Debugger, base: u64, rows: u64) {
-    for row in 0..rows {
-        let addr = base.wrapping_add(row * 16);
-        let (hex, ascii) = match dbg.read_mem(addr, 16) {
-            Ok(bytes) => {
-                let hex = bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
-                let ascii: String = bytes
-                    .iter()
-                    .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
-                    .collect();
-                (hex, ascii)
-            }
-            Err(_) => ("?? ".repeat(16).trim_end().to_string(), ".".repeat(16)),
-        };
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("0x{addr:08X}")).monospace().color(addr_c));
-            ui.label(RichText::new(hex).monospace().color(bytes_c));
-            ui.label(RichText::new(ascii).monospace().weak());
-        });
-    }
-}
+
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Le compteur reflète bien chaque boîte de dialogue, une par une.
     #[test]
-    fn abs_dir_is_absolute_and_navigable() {
-        // À partir d'un chemin relatif, on obtient un dossier absolu dont on
-        // peut remonter le parent (ce qui faisait échouer le navigateur avant).
-        let dir = abs_dir_of(Path::new("examples/test.asm"));
-        assert!(dir.is_absolute(), "le dossier doit être absolu");
-        assert!(dir.ends_with("examples"));
-        assert!(dir.parent().is_some(), "on doit pouvoir remonter (..)");
+    fn open_dialog_count_tracks_each_window() {
+        let mut app = App::new();
+        assert_eq!(app.open_dialog_count(), 0, "aucune boîte au départ");
+        app.show_settings = true;
+        assert_eq!(app.open_dialog_count(), 1);
+        app.microscope = Some(0x1000);
+        assert_eq!(app.open_dialog_count(), 2);
+        app.show_settings = false;
+        app.microscope = None;
+        assert_eq!(app.open_dialog_count(), 0);
     }
 
+    /// Fermer une boîte pendant l'image doit forcer un rendu : sinon, en mode
+    /// rendu à la demande, l'ancienne image resterait « collée » à l'écran
+    /// jusqu'au prochain événement. C'est le cœur du correctif.
     #[test]
-    fn list_entries_finds_asm_example() {
-        let (_dirs, files) = list_entries(&abs_dir_of(Path::new("examples/test.asm")));
-        assert!(
-            files.iter().any(|f| f.file_name().unwrap() == "test.asm"),
-            "test.asm doit apparaître dans l'explorateur"
-        );
+    fn closing_a_dialog_requests_a_repaint() {
+        use std::time::Duration;
+        let app = App::new(); // plus aucune boîte ouverte (0)
+        let opened_before = 1; // ... alors qu'une l'était en début d'image
+
+        let ctx = egui::Context::default();
+        let out = ctx.run(Default::default(), |ctx| {
+            app.repaint_on_dialog_close(ctx, opened_before);
+        });
+        let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        assert_eq!(delay, Duration::ZERO, "la fermeture doit replanifier un rendu");
     }
 
+    /// À l'inverse, sans fermeture, on ne réveille pas l'application pour rien :
+    /// le mode rendu à la demande doit rester économe.
     #[test]
-    fn calc_parse_reads_each_base() {
-        assert_eq!(calc_parse("101", 2), Some(0b101));
-        assert_eq!(calc_parse("777", 8), Some(0o777));
-        assert_eq!(calc_parse("42", 10), Some(42));
-        assert_eq!(calc_parse("dead", 16), Some(0xDEAD));
-        assert_eq!(calc_parse("  ff  ", 16), Some(0xFF), "espaces tolérés");
-        assert_eq!(calc_parse("", 10), None, "vide → None");
-        assert_eq!(calc_parse("-42", 10), Some(-42), "décimal négatif supporté");
-    }
+    fn a_stable_frame_does_not_force_a_repaint() {
+        use std::time::Duration;
+        let mut app = App::new();
+        app.show_settings = true; // une boîte ouverte, et elle le reste
+        let opened_before = app.open_dialog_count();
 
-    #[test]
-    fn calc_format_roundtrips_with_prefix() {
-        assert_eq!(calc_format(255, 10), "255");
-        assert_eq!(calc_format(255, 16), "0xFF");
-        assert_eq!(calc_format(255, 8), "0o377");
-        assert_eq!(calc_format(255, 2), "0b11111111");
-        // Aller-retour parse ∘ format (sans le préfixe, retiré par le filtre UI).
-        let v = 0xCAFE;
-        assert_eq!(calc_parse("CAFE", 16), Some(v));
-        assert_eq!(calc_format(v, 16), "0xCAFE");
-    }
-
-    #[test]
-    fn parse_hex_bytes_accepts_spaced_and_contiguous() {
-        assert_eq!(parse_hex_bytes("48 65 6C"), Some(vec![0x48, 0x65, 0x6C]));
-        assert_eq!(parse_hex_bytes("48656C"), Some(vec![0x48, 0x65, 0x6C]));
-        assert_eq!(parse_hex_bytes("4"), None, "longueur impaire invalide");
-        assert_eq!(parse_hex_bytes("zz"), None, "non-hexa invalide");
+        let ctx = egui::Context::default();
+        // La première image d'un contexte neuf demande toujours un rendu de plus
+        // (stabilisation polices/layout) : on stabilise avant de mesurer.
+        for _ in 0..4 {
+            let _ = ctx.run(Default::default(), |_| {});
+        }
+        let out = ctx.run(Default::default(), |ctx| {
+            app.repaint_on_dialog_close(ctx, opened_before);
+        });
+        let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        assert!(delay > Duration::from_secs(1), "aucune fermeture ⇒ pas de repaint forcé");
     }
 
     /// Vérifie que la logique timeline (head-follow + clamp min/max) est correcte,
     /// indépendamment du rendu egui.
+    /// Un plantage doit produire un diagnostic affichable, et la fenêtre doit se
+    /// rendre sans paniquer. C'est le remplacement de l'ancien « Terminé (signal) ».
+    #[test]
+    fn crash_produces_renderable_diagnosis() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/crash-test.asm");
+        app.out_dir = PathBuf::from("build/crash");
+        app.source = "section .text\n global _start\n_start:\n xor rax, rax\n \
+                       mov rbx, [rax]\n mov rax,60\n xor rdi,rdi\n syscall\n"
+            .to_string();
+
+        app.launch();
+        assert!(app.dbg.is_some(), "le programme doit être lancé");
+        for _ in 0..6 {
+            app.step();
+        }
+
+        let diag = app.diagnosis.as_ref().expect("un diagnostic doit être produit");
+        assert_eq!(diag.cause, crate::diagnostic::Cause::NullPointer);
+        assert!(!diag.title.is_empty() && !diag.hint.is_empty());
+        // La barre d'état ne dit plus juste « signal ».
+        assert!(app.status.contains(&diag.title), "statut = {}", app.status);
+
+        // La fenêtre se rend sans paniquer.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.diagnosis_window(ctx));
+        assert!(app.diagnosis.is_some(), "la fenêtre reste ouverte tant qu'on ne ferme pas");
+    }
+
     #[test]
     fn timeline_view_index_clamps_and_follows_head() {
         let mut app = App::new();
@@ -1021,5 +1189,140 @@ mod tests {
             app.syscalls.is_empty(),
             "après resume avant le syscall, la trace ne doit pas rester figée"
         );
+    }
+
+    // ---------- Rappel de licence (nag) ----------
+
+    fn run_at(app: &mut App, ctx: &egui::Context, time: f64) {
+        let input = egui::RawInput { time: Some(time), ..Default::default() };
+        let _ = ctx.run(input, |ctx| app.check_license_nag(ctx));
+    }
+
+    #[test]
+    fn first_check_schedules_a_future_nag_without_opening_it() {
+        let mut app = App::new();
+        assert!(!app.is_licensed());
+        let ctx = egui::Context::default();
+        run_at(&mut app, &ctx, 0.0);
+        assert!(!app.show_license_nag, "pas d'ouverture au premier lancement");
+        assert!(app.nag_next_at.is_some_and(|t| t > 0.0), "une échéance future doit être tirée");
+    }
+
+    #[test]
+    fn nag_opens_once_the_deadline_is_reached_and_schedules_the_next_one() {
+        let mut app = App::new();
+        let ctx = egui::Context::default();
+        run_at(&mut app, &ctx, 0.0);
+        let first_deadline = app.nag_next_at.unwrap();
+
+        // Juste avant l'échéance : rien ne s'ouvre encore.
+        run_at(&mut app, &ctx, first_deadline - 1.0);
+        assert!(!app.show_license_nag);
+
+        // À l'échéance (ou après) : la fenêtre s'ouvre, et une nouvelle
+        // échéance future est tirée pour le prochain rappel.
+        run_at(&mut app, &ctx, first_deadline);
+        assert!(app.show_license_nag, "l'échéance est atteinte : le rappel s'ouvre");
+        let second_deadline = app.nag_next_at.unwrap();
+        assert!(second_deadline > first_deadline, "un nouveau délai est programmé");
+    }
+
+    #[test]
+    fn a_valid_license_never_triggers_the_nag() {
+        let mut app = App::new();
+        app.license = crate::license::valid_for_tests();
+        let ctx = egui::Context::default();
+        run_at(&mut app, &ctx, 0.0);
+        run_at(&mut app, &ctx, 1_000_000.0);
+        assert!(!app.show_license_nag, "licencié : jamais de rappel");
+        assert!(app.nag_next_at.is_none(), "aucune échéance n'est même tirée");
+    }
+
+    // ---------- Blocage de la fermeture tant que non licencié ----------
+
+    /// Simule un événement de fermeture (croix de fenêtre, ou `ViewportCommand::Close`
+    /// envoyé par Fichier ▸ Quitter — les deux se traduisent par le même événement).
+    fn close_requested_input() -> egui::RawInput {
+        let mut input = egui::RawInput::default();
+        input.viewports.insert(
+            input.viewport_id,
+            egui::ViewportInfo { events: vec![egui::ViewportEvent::Close], ..Default::default() },
+        );
+        input
+    }
+
+    #[test]
+    fn unlicensed_close_is_cancelled_and_opens_the_nag() {
+        let mut app = App::new();
+        assert!(!app.is_licensed());
+        let ctx = egui::Context::default();
+        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+
+        assert!(app.show_license_nag, "la fermeture doit ouvrir la carte de rappel");
+        assert!(app.exit_pending, "on doit savoir que c'est une tentative de fermeture");
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(
+            commands.contains(&egui::ViewportCommand::CancelClose),
+            "la fermeture doit être annulée le temps de montrer le rappel"
+        );
+    }
+
+    #[test]
+    fn licensed_close_is_never_intercepted() {
+        let mut app = App::new();
+        app.license = crate::license::valid_for_tests();
+        let ctx = egui::Context::default();
+        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+
+        assert!(!app.show_license_nag, "licencié : la fermeture doit se dérouler normalement");
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+    }
+
+    /// Régression : après avoir cliqué « Quitter quand même », le `Close`
+    /// qu'on envoie soi-même ne doit plus être réintercepté à la frame
+    /// suivante — sinon le bouton n'a visiblement aucun effet (la carte se
+    /// rouvre en boucle au lieu de laisser l'appli se fermer).
+    #[test]
+    fn confirmed_quit_is_never_intercepted_again() {
+        let mut app = App::new();
+        app.quit_confirmed = true; // posé par le bouton « Quitter quand même »
+        let ctx = egui::Context::default();
+        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+
+        assert!(!app.show_license_nag, "la carte ne doit pas se rouvrir après confirmation");
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(
+            !commands.contains(&egui::ViewportCommand::CancelClose),
+            "la fermeture confirmée ne doit plus jamais être annulée"
+        );
+    }
+
+    /// Régression : `ViewportCommand::Close` ne fait que programmer un
+    /// événement pour la frame suivante (voir la doc de `check_close_request`).
+    /// Sans repaint forcé tant que `quit_confirmed`, en rendu à la demande
+    /// cette frame n'arrive jamais et l'appli ne quitte jamais vraiment —
+    /// c'est ce qui rendait le bouton « Quitter quand même » silencieusement
+    /// inopérant.
+    #[test]
+    fn quit_confirmed_keeps_requesting_a_repaint_until_eframe_closes() {
+        use std::time::Duration;
+        let mut app = App::new();
+        app.quit_confirmed = true;
+        let ctx = egui::Context::default();
+        // Même sans nouvel événement de fermeture, tant qu'on n'a pas
+        // effectivement quitté on continue à réclamer un rendu immédiat.
+        let out = ctx.run(Default::default(), |ctx| app.check_close_request(ctx));
+        let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        assert_eq!(delay, Duration::ZERO, "un réveil immédiat doit être programmé");
+    }
+
+    #[test]
+    fn a_frame_without_close_event_touches_nothing() {
+        let mut app = App::new();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.check_close_request(ctx));
+        assert!(!app.show_license_nag);
+        assert!(!app.exit_pending);
     }
 }

@@ -4,3 +4,6 @@
 /.junie
 /examples
 
+/.claude/worktrees
+# Archives de distribution produites par install/package.sh
+/dist
