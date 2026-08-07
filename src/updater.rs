@@ -8,8 +8,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use serde::Deserialize;
 
-/// Dépôt GitHub source des releases (modifier avant distribution).
-const GITHUB_REPO: &str = "FredericZ/asm-studio";
+/// Dépôt GitHub source des releases.
+const GITHUB_REPO: &str = "fredza/asm-studio";
 
 /// URL de l'API GitHub Releases.
 fn api_url() -> String {

@@ -1,6 +1,6 @@
 # ASM Studio
 
-[English](README.md) | **Français**
+[English](README.md) | **Français** | [Español](README.es.md)
 
 > IDE pédagogique pour apprendre l'assembleur **NASM x86-64** sous Linux.
 
@@ -18,6 +18,7 @@ l'état authentique du processus, pas une approximation.
 - [Fonctionnalités](#fonctionnalités)
 - [Installation](#installation)
 - [Démarrage rapide](#démarrage-rapide)
+- [Raccourcis clavier](#raccourcis-clavier)
 - [Compiler depuis les sources](#compiler-depuis-les-sources)
 - [Dépendances](#dépendances)
 - [Structure du projet](#structure-du-projet)
@@ -65,7 +66,7 @@ l'état authentique du processus, pas une approximation.
 ### Binaire précompilé
 
 Téléchargez la dernière archive depuis les
-[Releases GitHub](https://github.com/FredericZ/asm-studio/releases), puis :
+[Releases GitHub](https://github.com/fredza/asm-studio/releases), puis :
 
 ```bash
 tar xzf asm-studio-*-linux-x86_64.tar.gz
@@ -110,6 +111,33 @@ complets dans le [guide de démarrage rapide](doc/GUIDE-DEMARRAGE-RAPIDE.md).
 
 ---
 
+## Raccourcis clavier
+
+Les principaux ; `F1` affiche la liste complète dans l'application.
+
+| Touche | Action |
+|---|---|
+| `F1` | Afficher / masquer l'aide des raccourcis |
+| `Ctrl+B` | Assembler et lier |
+| `F5` | Lancer / relancer |
+| `F10` (ou `F8`) | Instruction suivante |
+| `Maj+F10` | Pas par-dessus : exécute l'appel d'un bloc |
+| `F9` | Continuer jusqu'au prochain point d'arrêt |
+| `Ctrl+F8` | Point d'arrêt sur la ligne du curseur (ou clic dans la gouttière) |
+| `Échap` (ou `Maj+F5`) | Arrêter le programme |
+| `←` / `→` | Timeline : étape précédente / suivante |
+| `Début` / `Fin` | Timeline : début / fin |
+| `Ctrl+N` / `Ctrl+O` / `Ctrl+S` | Nouveau / Ouvrir / Enregistrer |
+| `Ctrl+F` / `Ctrl+H` | Rechercher / rechercher et remplacer |
+| `Ctrl+Maj+P` | Palette de commandes — toute l'application au clavier |
+| `Ctrl+1` … `Ctrl+5` | Afficher / masquer un panneau |
+| `F6` / `Maj+F6` | Panneau suivant / précédent |
+
+Toute l'interface est pilotable au clavier : la palette de commandes
+(`Ctrl+Maj+P`) donne accès à chaque action sans passer par les menus.
+
+---
+
 ## Compiler depuis les sources
 
 Prérequis : Rust (édition 2024), `nasm`, `binutils` (`ld`), et les bibliothèques
@@ -117,7 +145,7 @@ listées dans [`DEPENDENCIES.md`](DEPENDENCIES.md) (Wayland/EGL, `libxkbcommon`,
 portail XDG).
 
 ```bash
-git clone https://github.com/FredericZ/asm-studio.git
+git clone https://github.com/fredza/asm-studio.git
 cd asm-studio
 cargo build --release
 ./target/release/asm_studio

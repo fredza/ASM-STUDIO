@@ -1,6 +1,6 @@
 # ASM Studio
 
-**English** | [Français](README.fr.md)
+**English** | [Français](README.fr.md) | [Español](README.es.md)
 
 > A pedagogical IDE for learning **NASM x86-64** assembly on Linux.
 
@@ -18,6 +18,7 @@ memory — is the genuine process state, not an approximation.
 - [Features](#features)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Keyboard shortcuts](#keyboard-shortcuts)
 - [Building from source](#building-from-source)
 - [Dependencies](#dependencies)
 - [Project layout](#project-layout)
@@ -64,7 +65,7 @@ memory — is the genuine process state, not an approximation.
 ### Prebuilt binary
 
 Download the latest archive from the
-[GitHub Releases](https://github.com/FredericZ/asm-studio/releases), then:
+[GitHub Releases](https://github.com/fredza/asm-studio/releases), then:
 
 ```bash
 tar xzf asm-studio-*-linux-x86_64.tar.gz
@@ -110,6 +111,33 @@ Workflow: **Assemble → Run → Step → Timeline**. Full details in the
 
 ---
 
+## Keyboard shortcuts
+
+The main ones; `F1` shows the complete list inside the application.
+
+| Key | Action |
+|---|---|
+| `F1` | Show / hide the shortcut help |
+| `Ctrl+B` | Assemble and link |
+| `F5` | Run / restart |
+| `F10` (or `F8`) | Next instruction |
+| `Shift+F10` | Step over: run the call in one go |
+| `F9` | Continue to the next breakpoint |
+| `Ctrl+F8` | Breakpoint on the cursor's line (or click the gutter) |
+| `Esc` (or `Shift+F5`) | Stop the program |
+| `←` / `→` | Timeline: previous / next step |
+| `Home` / `End` | Timeline: start / end |
+| `Ctrl+N` / `Ctrl+O` / `Ctrl+S` | New / Open / Save |
+| `Ctrl+F` / `Ctrl+H` | Find / find and replace |
+| `Ctrl+Shift+P` | Command palette — the whole app from the keyboard |
+| `Ctrl+1` … `Ctrl+5` | Show / hide a panel |
+| `F6` / `Shift+F6` | Next / previous panel |
+
+The whole interface is keyboard-drivable: the command palette
+(`Ctrl+Shift+P`) reaches every action without going through the menus.
+
+---
+
 ## Building from source
 
 Requirements: Rust (2024 edition), `nasm`, `binutils` (`ld`), and the
@@ -117,7 +145,7 @@ libraries listed in [`DEPENDENCIES.md`](DEPENDENCIES.md) (Wayland/EGL,
 `libxkbcommon`, XDG portal).
 
 ```bash
-git clone https://github.com/FredericZ/asm-studio.git
+git clone https://github.com/fredza/asm-studio.git
 cd asm-studio
 cargo build --release
 ./target/release/asm_studio
