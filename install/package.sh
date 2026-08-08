@@ -7,7 +7,11 @@
 # à publier.
 #
 #   ./install/package.sh
-#   → dist/asm-studio-0.3.0-linux-x86_64.tar.gz
+#   → dist/asm-studio-<version de Cargo.toml>-linux-x86_64.tar.gz
+#
+# Le numéro est toujours celui de Cargo.toml : cet en-tête a affiché « 0.3.0 »
+# pendant deux versions, ce qui est précisément ce que le script évite partout
+# ailleurs.
 #
 set -euo pipefail
 
@@ -131,18 +135,40 @@ echo
 dim "Contenu :"
 tar -tzf "${DIST}/${PKG}.tar.gz" | sed 's/^/    /'
 echo
-dim "Pour publier une release GitHub :"
-dim "  gh release create v${VERSION} dist/${PKG}.tar.gz dist/${PKG}.tar.gz.sha256 \\"
-if [ -f "${NOTES}" ]; then
-    dim "     --title \"ASM Studio ${VERSION}\" --notes-file \"${NOTES#"${ROOT}"/}\""
+# Publier ou compléter : une release déjà créée (tag poussé plus tôt, notes
+# rédigées à la main) refuse `gh release create` avec « already exists ». Le
+# script regarde donc laquelle des deux commandes s'applique, plutôt que d'en
+# proposer une qui échouera une fois sur deux.
+readonly TAG="v${VERSION}"
+if gh release view "${TAG}" >/dev/null 2>&1; then
+    dim "La release ${TAG} existe déjà — pour y joindre l'archive :"
+    dim "  gh release upload ${TAG} dist/${PKG}.tar.gz dist/${PKG}.tar.gz.sha256 --clobber"
 else
-    dim "     --title \"ASM Studio ${VERSION}\" --notes \"…\""
+    dim "Pour publier une release GitHub :"
+    PRERELEASE=""
+    case "${VERSION}" in *-*) PRERELEASE=" --prerelease" ;; esac
+    dim "  gh release create ${TAG}${PRERELEASE} dist/${PKG}.tar.gz dist/${PKG}.tar.gz.sha256 \\"
+    if [ -f "${NOTES}" ]; then
+        dim "     --title \"ASM Studio ${VERSION}\" --notes-file \"${NOTES#"${ROOT}"/}\""
+    else
+        dim "     --title \"ASM Studio ${VERSION}\" --notes \"…\""
+    fi
+    case "${VERSION}" in
+        *-*) dim "  (--prerelease est déjà là : sans lui, la mise à jour automatique"
+             dim "   proposerait cette bêta à tous les utilisateurs stables.)" ;;
+    esac
 fi
-case "${VERSION}" in
-    *-*) echo
-         dim "Version de pré-publication : ajoutez --prerelease, sinon la mise à"
-         dim "jour automatique la proposera à tous les utilisateurs stables." ;;
-esac
+
+# Pousser le tag depuis cette machine : l'agent SSH accepte la clé puis ne rend
+# jamais la main sur la signature. Le jeton de `gh` passe, et `-c` ne modifie
+# pas la configuration (`origin` reste en SSH).
+if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+    echo
+    dim "Le tag ${TAG} n'existe pas encore :"
+    dim "  git tag -a ${TAG} -m \"ASM Studio ${VERSION}\""
+    dim "  git -c credential.helper='!gh auth git-credential' \\"
+    dim "      push https://github.com/fredza/ASM-STUDIO.git ${TAG}"
+fi
 echo
 dim "Rappel : le dépôt interrogé par la mise à jour automatique est défini par"
 dim "GITHUB_REPO dans src/updater.rs — actuellement :"
