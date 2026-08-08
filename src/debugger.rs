@@ -562,9 +562,13 @@ impl Debugger {
         self.io.is_some()
     }
 
-    /// Enchaîne les pas jusqu'à ce que `stop` accepte le RIP atteint, que le
+    /// Enchaîne les pas jusqu'à ce que `stop` accepte l'état atteint, que le
     /// programme se termine, ou que `budget` instructions soient écoulées.
     /// Renvoie le nombre d'instructions exécutées.
+    ///
+    /// `stop` reçoit tous les registres et non le seul RIP : c'est ce qui
+    /// permet aux points d'arrêt conditionnels de trancher (« RCX == 0 »)
+    /// sans que le débogueur ait à connaître leur grammaire.
     ///
     /// Le single-step est conservé plutôt qu'un vrai `int3` : chaque étape doit
     /// entrer dans l'historique, sans quoi la timeline aurait des trous entre
@@ -573,7 +577,7 @@ impl Debugger {
     pub fn run_until(
         &mut self,
         budget: usize,
-        stop: impl Fn(u64) -> bool,
+        stop: impl Fn(&Registers) -> bool,
     ) -> Result<usize, String> {
         let mut done = 0;
         while done < budget {
@@ -587,7 +591,7 @@ impl Debugger {
             if !self.is_ready() {
                 return Ok(done); // terminé, tué ou en faute
             }
-            if stop(self.regs().rip) {
+            if stop(self.regs()) {
                 return Ok(done);
             }
         }
@@ -1169,7 +1173,7 @@ mod tests {
         let target = probe.regs().rip;
         drop(probe);
 
-        let done = dbg.run_until(1000, |rip| rip == target).expect("run_until");
+        let done = dbg.run_until(1000, |regs| regs.rip == target).expect("run_until");
         assert_eq!(done, 3, "trois instructions exécutées");
         assert_eq!(dbg.regs().rip, target, "arrêt sur l'adresse visée");
         assert_eq!(dbg.history.len(), 4, "un snapshot par pas, aucun trou");

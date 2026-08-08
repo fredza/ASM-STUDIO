@@ -23,7 +23,7 @@ impl App {
         let hdr = self.c_header();
         ui.horizontal(|ui| {
             let name = self.src_path.file_name().unwrap_or_default().to_string_lossy();
-            let mark = if self.dirty { " ●" } else { "" };
+            let mark = if self.dirty() { " ●" } else { "" };
             ui.label(RichText::new(format!("{name}{mark}")).color(hdr));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.rip_banner(ui);
@@ -241,7 +241,6 @@ impl App {
         let matches = self.find_matches();
         let Some(&(s, e)) = matches.get(self.find_current) else { return };
         self.source.replace_range(s..e, &self.find_replace_text);
-        self.dirty = true;
     }
 
     /// Remplace toutes les correspondances. Parcourt de la fin vers le début
@@ -254,7 +253,6 @@ impl App {
         for &(s, e) in matches.iter().rev() {
             self.source.replace_range(s..e, &self.find_replace_text);
         }
-        self.dirty = true;
         self.find_current = 0;
     }
 
@@ -364,25 +362,34 @@ impl App {
         let pre_edit_source = self.source.clone();
 
         // Ligne cliquée dans la gouttière, traitée après le rendu : `self` y
-        // est emprunté par le layouter et les zones défilantes.
+        // est emprunté par le layouter et les zones défilantes. Le clic droit
+        // ouvre la condition de la ligne au lieu de basculer le point d'arrêt.
         let mut gutter_click: Option<usize> = None;
+        let mut gutter_right_click: Option<usize> = None;
 
         // Points d'arrêt à peindre, résolus avant le rendu pour la même raison
         // (ligne, porte du code). Tant que rien n'a été assemblé, aucune ligne
         // n'a d'adresse : on ne peut pas encore dire lesquelles portent du
         // code, et tout point d'arrêt est plausible.
         let mapped = !self.src_map.is_empty();
-        let bp_marks: Vec<(usize, bool)> = self
+        // (ligne, porte du code, condition affichable).
+        let bp_marks: Vec<(usize, bool, Option<String>)> = self
             .breakpoints
             .iter()
-            .map(|l| (*l, !mapped || self.line_is_executable(*l)))
+            .map(|(line, cond)| {
+                (
+                    *line,
+                    !mapped || self.line_is_executable(*line),
+                    cond.as_ref().map(|c| c.to_string()),
+                )
+            })
             .collect();
 
         // `layouter` emprunte `self.find_query` via `find_highlight` : tant
         // qu'il est capturé par les fermetures ci-dessous, `self` ne peut pas
         // être remprunté en `&mut` — l'auto-fermeture des paires doit donc
         // attendre la sortie de `ui.horizontal_top` pour s'exécuter.
-        let (changed, cursor_range) = ui
+        let (changed, cursor_range, hover_char) = ui
             .horizontal_top(|ui| {
                 // Gouttière : défilement vertical synchronisé, sans barre ni scroll direct.
                 egui::ScrollArea::vertical()
@@ -399,13 +406,21 @@ impl App {
                                 .selectable(false)
                                 .sense(egui::Sense::click()),
                         );
+                        // Ligne sous le pointeur, pour l'infobulle comme pour
+                        // les clics : la gouttière est un seul widget, c'est la
+                        // hauteur de rangée qui dit de quelle ligne il s'agit.
+                        let line_at = |pos: egui::Pos2| {
+                            let line = ((pos.y - resp.rect.top()) / row_h) as usize + 1;
+                            (line <= line_count).then_some(line)
+                        };
                         // Pastilles peintes par-dessus les numéros plutôt
                         // qu'insérées dans le texte : un glyphe de plus dans la
                         // gouttière décalerait les numéros des seules lignes qui
                         // en portent un.
+                        let hole = ui.visuals().extreme_bg_color;
                         let painter = ui.painter();
                         let x = resp.rect.left() + row_h * 0.35;
-                        for (line, executable) in &bp_marks {
+                        for (line, executable, condition) in &bp_marks {
                             let y = resp.rect.top() + (*line as f32 - 0.5) * row_h;
                             let c = egui::pos2(x, y);
                             let r = row_h * 0.24;
@@ -417,19 +432,43 @@ impl App {
                             } else {
                                 painter.circle_stroke(c, r, (1.5, BREAKPOINT));
                             }
+                            // Anneau : la ligne ne s'arrête que si sa condition
+                            // tient. Le trou au centre se voit d'un coup d'œil
+                            // et ne demande aucun glyphe supplémentaire.
+                            if condition.is_some() && *executable {
+                                painter.circle_filled(c, r * 0.45, hole);
+                            }
                         }
                         // Clic dans la gouttière : bascule le point d'arrêt de la
-                        // ligne visée, si elle porte du code exécutable.
-                        if resp.clicked()
-                            && let Some(pos) = resp.interact_pointer_pos()
-                        {
-                            let line = ((pos.y - resp.rect.top()) / row_h) as usize + 1;
-                            if line <= line_count {
-                                gutter_click = Some(line);
+                        // ligne visée, si elle porte du code exécutable. Clic
+                        // droit : sa condition.
+                        if let Some(pos) = resp.interact_pointer_pos() {
+                            if resp.clicked() {
+                                gutter_click = line_at(pos);
+                            }
+                            if resp.secondary_clicked() {
+                                gutter_right_click = line_at(pos);
                             }
                         }
                         if resp.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            // Ce que la ligne survolée fera, dit noir sur blanc :
+                            // une pastille à trou n'explique pas d'elle-même
+                            // quelle condition la retient.
+                            if let Some(line) = ui.ctx().pointer_latest_pos().and_then(line_at)
+                                && let Some((_, _, Some(cond))) =
+                                    bp_marks.iter().find(|(l, _, _)| *l == line)
+                            {
+                                egui::Tooltip::always_open(
+                                    ui.ctx().clone(),
+                                    ui.layer_id(),
+                                    egui::Id::new("bp_cond_tip"),
+                                    egui::PopupAnchor::Pointer,
+                                )
+                                .show(|ui| {
+                                    ui.label(RichText::new(format!("⏸ {cond}")).monospace());
+                                });
+                            }
                         }
                     });
                 ui.separator();
@@ -451,9 +490,15 @@ impl App {
                         .layouter(&mut layouter)
                         .show(ui);
                     let changed = out.response.changed();
-                    if changed {
-                        self.dirty = true;
-                    }
+                    // Caractère sous le pointeur, pour l'inspection au survol.
+                    // Il faut le relever ici : la galley qui traduit une
+                    // position à l'écran en position dans le texte ne survit
+                    // pas à cette fermeture. `hover_pos` est `None` dès que le
+                    // pointeur est ailleurs, ce qui éteint l'infobulle.
+                    let hover_char = out
+                        .response
+                        .hover_pos()
+                        .map(|p| out.galley.cursor_from_pos(p - out.galley_pos).index);
                     // Position du curseur (Ln/Col) pour la barre d'état.
                     if let Some(range) = out.cursor_range {
                         // Le curseur ne donne plus qu'un index de caractère :
@@ -465,7 +510,7 @@ impl App {
                         self.editor_col = before.chars().rev().take_while(|&c| c != '\n').count() + 1;
                         self.editor_cursor_byte = before.len();
                     }
-                    (changed, out.cursor_range)
+                    (changed, out.cursor_range, hover_char)
                 });
                 // Synchronise la gouttière sur le défilement vertical de l'éditeur.
                 self.editor_scroll_y = out.state.offset.y;
@@ -473,11 +518,17 @@ impl App {
             })
             .inner;
 
+        if let Some(index) = hover_char {
+            self.inspect_tooltip(ui, index);
+        }
         if changed {
             self.auto_pair_after_edit(&pre_edit_source, cursor_range);
         }
         if let Some(line) = gutter_click {
             self.toggle_breakpoint(line);
+        }
+        if let Some(line) = gutter_right_click {
+            self.open_breakpoint_condition(line);
         }
     }
 
@@ -1130,7 +1181,7 @@ mod tests {
         app.find_current = 1; // la seconde occurrence
         app.find_replace_current();
         assert_eq!(app.source, "mov rax, rbx\n");
-        assert!(app.dirty);
+        assert!(app.dirty(), "un remplacement laisse du travail à enregistrer");
     }
 
     #[test]

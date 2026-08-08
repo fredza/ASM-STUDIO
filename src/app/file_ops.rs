@@ -86,7 +86,7 @@ impl App {
         }
         match std::fs::write(&self.src_path, &self.source) {
             Ok(_) => {
-                self.dirty = false;
+                self.mark_saved();
                 self.status = format!("{} {}", i18n::tr(self.lang, "Enregistré :", "Saved:"), self.src_path.display());
                 true
             }
@@ -181,7 +181,14 @@ impl App {
                         }
                         self.explorer_dir = abs_dir_of(&path);
                         self.src_path = path;
-                        self.save_source();
+                        // Le fichier n'existe qu'après l'écriture : les récents
+                        // ne l'enregistrent donc qu'en cas de succès, sinon
+                        // `prune_recent` le retirerait aussitôt.
+                        if self.save_source() {
+                            let saved = self.src_path.clone();
+                            self.push_recent(&saved);
+                            self.save_settings();
+                        }
                     }
                 }
                 Err(TryRecvError::Empty) => {}
@@ -195,35 +202,73 @@ impl App {
         self.pending_open.is_some() || self.pending_saveas.is_some()
     }
 
+    /// Ouvre un fichier, après s'être assuré que le travail en cours ne part
+    /// pas avec (voir [`super::unsaved`]).
     pub(super) fn open_file(&mut self, path: PathBuf) {
+        self.guarded(super::unsaved::PendingAction::OpenFile(path));
+    }
+
+    pub(super) fn open_file_now(&mut self, path: PathBuf) {
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 self.source = content;
                 // L'explorateur reflète le dossier du fichier ouvert.
                 self.explorer_dir = abs_dir_of(&path);
                 self.src_path = path;
-                self.dirty = false;
+                self.mark_saved();
                 self.dbg = None;
                 self.disasm.clear();
                 self.binary = None;
                 self.show_panel(super::dock::Panel::Editor);
                 self.reload_exercise();
+                let opened = self.src_path.clone();
+                self.push_recent(&opened);
+                self.save_settings();
                 self.status = format!("{} {}", i18n::tr(self.lang, "Ouvert :", "Opened:"), self.src_path.display());
             }
             Err(e) => self.log(&format!("{} {}: {e}", i18n::tr(self.lang, "Impossible d'ouvrir", "Cannot open"), path.display())),
         }
     }
 
+    /// Repart d'un squelette vierge, après s'être assuré que le travail en
+    /// cours ne part pas avec (voir [`super::unsaved`]).
     pub(super) fn new_file(&mut self) {
+        self.guarded(super::unsaved::PendingAction::NewFile);
+    }
+
+    pub(super) fn new_file_now(&mut self) {
         self.source = "section .data\n\nsection .text\n    global _start\n_start:\n    mov rax, 60      ; sys_exit\n    xor rdi, rdi     ; code 0\n    syscall\n".to_string();
         // Le nouveau fichier vise le dossier actuellement affiché dans l'explorateur.
         self.src_path = self.explorer_dir.join("sans-titre.asm");
-        self.dirty = true;
+        // Le squelette n'est pas du travail : tant que l'élève n'y a pas
+        // touché, fermer ou changer de fichier ne lui coûte rien, et il serait
+        // absurde de lui poser la question.
+        self.mark_saved();
         self.dbg = None;
         self.disasm.clear();
         self.binary = None;
         self.show_panel(super::dock::Panel::Editor);
         self.status = i18n::tr(self.lang, "Nouveau fichier", "New file").to_string();
+    }
+
+    /// Inscrit un fichier en tête des récents. Le même chemin ne s'y trouve
+    /// qu'une fois : le rouvrir le remonte au lieu de l'y ajouter deux fois.
+    ///
+    /// Les chemins sont rendus absolus avant d'entrer : la liste survit à la
+    /// session, alors qu'un chemin relatif ne veut plus rien dire dès que le
+    /// répertoire courant a changé.
+    pub(super) fn push_recent(&mut self, path: &std::path::Path) {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.recent_files.retain(|p| p != &path);
+        self.recent_files.insert(0, path);
+        self.recent_files.truncate(super::MAX_RECENT);
+    }
+
+    /// Récents encore ouvrables. Un fichier renommé, déplacé ou supprimé entre
+    /// deux séances est retiré ici plutôt que proposé pour rien : cliquer une
+    /// entrée morte n'apprend rien à personne.
+    pub(super) fn prune_recent(&mut self) {
+        self.recent_files.retain(|p| p.is_file());
     }
 
     /// Répertoires de recherche `%include` pour nasm : dossier du fichier, et
@@ -242,6 +287,84 @@ impl App {
             dirs.push(d);
         }
         dirs
+    }
+}
+
+#[cfg(test)]
+mod recent_tests {
+    use super::super::{App, MAX_RECENT};
+    use std::path::PathBuf;
+
+    #[test]
+    fn the_last_opened_file_comes_first() {
+        let mut app = App::new();
+        app.push_recent(&PathBuf::from("/tmp/a.asm"));
+        app.push_recent(&PathBuf::from("/tmp/b.asm"));
+        assert_eq!(app.recent_files[0], PathBuf::from("/tmp/b.asm"));
+        assert_eq!(app.recent_files.len(), 2);
+    }
+
+    /// Rouvrir un fichier le remonte, il ne s'ajoute pas une seconde fois.
+    #[test]
+    fn reopening_moves_the_entry_up_without_duplicating_it() {
+        let mut app = App::new();
+        for p in ["/tmp/a.asm", "/tmp/b.asm", "/tmp/a.asm"] {
+            app.push_recent(&PathBuf::from(p));
+        }
+        assert_eq!(app.recent_files, vec![PathBuf::from("/tmp/a.asm"), PathBuf::from("/tmp/b.asm")]);
+    }
+
+    #[test]
+    fn the_list_never_outgrows_the_menu() {
+        let mut app = App::new();
+        for i in 0..(MAX_RECENT + 7) {
+            app.push_recent(&PathBuf::from(format!("/tmp/ex{i}.asm")));
+        }
+        assert_eq!(app.recent_files.len(), MAX_RECENT);
+        assert_eq!(
+            app.recent_files[0],
+            PathBuf::from(format!("/tmp/ex{}.asm", MAX_RECENT + 6)),
+            "le plus récent reste en tête"
+        );
+    }
+
+    /// Un fichier supprimé ou déplacé entre deux séances quitte la liste.
+    #[test]
+    fn vanished_files_are_pruned() {
+        let mut app = App::new();
+        let alive = std::env::temp_dir().join("asm-studio-recent-test.asm");
+        std::fs::write(&alive, "; test\n").expect("écriture du fichier témoin");
+        app.push_recent(&alive);
+        app.push_recent(&PathBuf::from("/tmp/asm-studio-jamais-existe-1234.asm"));
+
+        app.prune_recent();
+
+        assert_eq!(app.recent_files.len(), 1, "seul le fichier réel survit");
+        let _ = std::fs::remove_file(&alive);
+    }
+
+    /// Aller-retour par le fichier de réglages : c'est ce qui fait que la liste
+    /// survit à la fermeture de l'application.
+    #[test]
+    fn the_list_survives_a_settings_round_trip() {
+        let mut app = App::new();
+        // Un chemin contenant une espace et un « = » : le format une-ligne-par-
+        // fichier doit les rendre tels quels, sans échappement.
+        app.push_recent(&PathBuf::from("/tmp/mes exercices/tp=1.asm"));
+        app.push_recent(&PathBuf::from("/tmp/b.asm"));
+        let content = app.settings_content();
+
+        let mut reloaded = App::new();
+        reloaded.apply_settings(&content);
+        assert_eq!(reloaded.recent_files, app.recent_files);
+    }
+
+    /// Le fichier ouvert au lancement ne doit pas se retrouver dans la liste
+    /// sans qu'on l'ait ouvert : elle raconte ce que l'élève a fait.
+    #[test]
+    fn a_fresh_install_has_an_empty_list() {
+        let app = App::new();
+        assert!(app.recent_files.is_empty());
     }
 }
 

@@ -18,6 +18,20 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(4.0);
 }
 
+/// Numéro de bêta lu dans la version du paquet (`0.4.3-beta.3` → « 3 »).
+///
+/// Le bandeau de la fenêtre « À propos » l'écrivait en toutes lettres, et il
+/// est resté sur « BÊTA 2 » toute une version : une information affichée à
+/// deux endroits finit toujours par se contredire. `Cargo.toml` fait seul foi.
+/// Une version sans suffixe `-beta.N` — une finale — renvoie une chaîne vide,
+/// et le bandeau ne prétend alors plus rien.
+fn beta_number() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+        .split_once("-beta.")
+        .map(|(_, n)| n)
+        .unwrap_or_default()
+}
+
 /// Retire le balisage gras `**…**` d'une ligne Markdown, pour un affichage
 /// propre dans la fenêtre de licence (on ne conserve pas le gras inline, mais
 /// le texte reste lisible sans les astérisques parasites).
@@ -392,9 +406,13 @@ impl App {
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             ui.label(
-                                RichText::new(tr("🔷  VERSION BÊTA 2", "🔷  BETA 2 VERSION", "🔷  VERSIÓN BETA 2"))
-                                    .strong()
-                                    .color(egui::Color32::WHITE),
+                                RichText::new(match lang {
+                                    i18n::Lang::Fr => format!("🔷  VERSION BÊTA {}", beta_number()),
+                                    i18n::Lang::En => format!("🔷  BETA {} VERSION", beta_number()),
+                                    i18n::Lang::Es => format!("🔷  VERSIÓN BETA {}", beta_number()),
+                                })
+                                .strong()
+                                .color(egui::Color32::WHITE),
                             );
                             ui.label(
                                 RichText::new(tr(
@@ -422,9 +440,9 @@ impl App {
                             if ui
                                 .small_button("📋")
                                 .on_hover_text(tr(
-                                    "Copier version+build (à communiquer pour la licence)",
-                                    "Copy version+build (needed when requesting a license)",
-                                    "Copiar versión+build (necesario para solicitar una licencia)",
+                                    "Copier (à communiquer pour la licence)",
+                                    "Copy (needed when requesting a license)",
+                                    "Copiar (necesario para solicitar una licencia)",
                                 ))
                                 .clicked()
                             {
@@ -436,7 +454,7 @@ impl App {
                         ui.label(RichText::new(env!("BUILD_DATE")).monospace());
                         ui.end_row();
                         ui.label(tr("Auteur", "Author", "Autor"));
-                        ui.label(RichText::new("Frédéric Z.").strong());
+                        ui.label(RichText::new("Frédéric Zawalski.").strong());
                         ui.end_row();
                         ui.label(tr("Activation", "Activation", "Activación"));
                         match &self.license {
@@ -542,6 +560,158 @@ impl App {
     /// l'appli, ni récupérable une fois `license.txt` supprimé — il faut le
     /// redemander à l'auteur. La fenêtre annonce donc aussi ce qui se passe
     /// juste après, qui dépend du délai d'essai.
+    /// Ouvre l'éditeur de condition d'une ligne, en posant le point d'arrêt
+    /// s'il n'y en avait pas : le clic droit vaut alors « pose-le, et ne
+    /// t'arrête que dans ce cas », ce qui est le geste attendu.
+    pub(super) fn open_breakpoint_condition(&mut self, line: usize) {
+        self.bp_cond_input = self
+            .breakpoint_condition(line)
+            .map(|c| c.to_string())
+            .unwrap_or_default();
+        self.bp_cond_error = None;
+        self.bp_cond_focus = true;
+        self.bp_cond_line = Some(line);
+        self.breakpoints.entry(line).or_insert(None);
+    }
+
+    /// Saisie d'une condition de point d'arrêt.
+    ///
+    /// La fenêtre montre la ligne visée : sans elle, on ne sait plus laquelle
+    /// on avait cliquée dès qu'on lit l'aide de syntaxe.
+    pub(super) fn breakpoint_condition_window(&mut self, ctx: &egui::Context) {
+        let Some(line) = self.bp_cond_line else { return };
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let source_line = self
+            .source
+            .lines()
+            .nth(line.saturating_sub(1))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        let mut validate = false;
+        let mut close = false;
+        let mut remove_breakpoint = false;
+        let mut open = true;
+        egui::Window::new(format!(
+            "{} {line}",
+            tr("Condition d'arrêt — ligne", "Break condition — line", "Condición de parada — línea")
+        ))
+        .collapsible(false)
+        .resizable(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.add_space(4.0);
+            ui.label(RichText::new(source_line).monospace().color(ACCENT));
+            ui.add_space(8.0);
+            ui.label(tr(
+                "L'exécution ne s'arrêtera ici que si :",
+                "Execution will only stop here if:",
+                "La ejecución solo se detendrá aquí si:",
+            ));
+            ui.add_space(4.0);
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut self.bp_cond_input)
+                    .id(egui::Id::new("kb_bp_cond"))
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("RCX == 0")
+                    .desired_width(f32::INFINITY),
+            );
+            if std::mem::take(&mut self.bp_cond_focus) {
+                field.request_focus();
+            }
+            validate = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(tr(
+                    "Registres RAX…R15, RIP, moitiés basses EAX/R8D ; drapeaux ZF, CF, OF, SF, PF, AF (0 ou 1).\n\
+                     Comparateurs == != < <= > >=. Nombres : 42, -1, 0x2A, 0b1010.\n\
+                     Exemples : RCX == 0 · RAX > 0x100 · ZF == 1 · RSI != RDI",
+                    "Registers RAX…R15, RIP, low halves EAX/R8D; flags ZF, CF, OF, SF, PF, AF (0 or 1).\n\
+                     Comparators == != < <= > >=. Numbers: 42, -1, 0x2A, 0b1010.\n\
+                     Examples: RCX == 0 · RAX > 0x100 · ZF == 1 · RSI != RDI",
+                    "Registros RAX…R15, RIP, mitades bajas EAX/R8D; flags ZF, CF, OF, SF, PF, AF (0 o 1).\n\
+                     Comparadores == != < <= > >=. Números: 42, -1, 0x2A, 0b1010.\n\
+                     Ejemplos: RCX == 0 · RAX > 0x100 · ZF == 1 · RSI != RDI",
+                ))
+                .small()
+                .weak(),
+            );
+            if let Some(err) = &self.bp_cond_error {
+                ui.add_space(6.0);
+                ui.colored_label(FALSE_COL, RichText::new(format!("✘ {err}")).small());
+            }
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let spacing = 8.0;
+                let btn_w = (ui.available_width() - 2.0 * spacing) / 3.0;
+                if ui
+                    .add_sized(
+                        [btn_w, 28.0],
+                        egui::Button::new(RichText::new(tr("Valider", "Apply", "Aplicar")).strong())
+                            .fill(ACTION),
+                    )
+                    .clicked()
+                {
+                    validate = true;
+                }
+                // Retirer le point d'arrêt entier, et pas seulement sa
+                // condition : c'est ce qu'on veut faire une fois sur deux en
+                // rouvrant cette fenêtre, et le clic droit ne le permet pas.
+                if ui
+                    .add_sized(
+                        [btn_w, 28.0],
+                        egui::Button::new(tr(
+                            "Retirer le point d'arrêt",
+                            "Remove breakpoint",
+                            "Quitar el punto de parada",
+                        )),
+                    )
+                    .clicked()
+                {
+                    remove_breakpoint = true;
+                }
+                if ui
+                    .add_sized([btn_w, 28.0], egui::Button::new(tr("Annuler", "Cancel", "Cancelar")))
+                    .clicked()
+                {
+                    close = true;
+                }
+            });
+            ui.add_space(4.0);
+        });
+
+        if remove_breakpoint {
+            self.breakpoints.remove(&line);
+            self.bp_cond_line = None;
+            return;
+        }
+        if validate {
+            // Un champ vidé retire la condition sans toucher au point d'arrêt :
+            // c'est la façon de revenir à un arrêt à chaque passage.
+            let text = self.bp_cond_input.clone();
+            match self.set_breakpoint_condition(line, &text) {
+                Ok(()) => {
+                    self.bp_cond_error = None;
+                    self.bp_cond_line = None;
+                }
+                // La syntaxe refusée garde la fenêtre ouverte : le texte est
+                // encore là, à un caractère près de la bonne condition.
+                Err(e) => self.bp_cond_error = Some(e),
+            }
+            return;
+        }
+        if close || !open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.bp_cond_line = None;
+        }
+    }
+
     pub(super) fn license_reset_confirm_window(&mut self, ctx: &egui::Context) {
         if !self.confirm_license_reset {
             return;
@@ -974,6 +1144,7 @@ impl App {
                     ("Maj+F10", tr("Pas par-dessus : exécute l'appel d'un bloc", "Step over: run the call in one go", "Paso por encima: ejecuta la llamada de una vez")),
                     ("F9", tr("Continuer jusqu'au prochain point d'arrêt", "Continue to the next breakpoint", "Continuar hasta el próximo punto de interrupción")),
                     ("Ctrl+F8", tr("Point d'arrêt sur la ligne du curseur (ou clic dans la gouttière)", "Breakpoint on the cursor's line (or click the gutter)", "Punto de interrupción en la línea del cursor (o clic en el margen)")),
+                    ("Ctrl+Maj+F8", tr("Condition du point d'arrêt (ou clic droit dans la gouttière)", "Breakpoint condition (or right-click the gutter)", "Condición del punto de interrupción (o clic derecho en el margen)")),
                     ("Échap / Maj+F5", tr("Stop", "Stop", "Detener")),
                     ("Ctrl+B", tr("Assembler + Lier", "Assemble + Link", "Ensamblar + Enlazar")),
                     ("Ctrl+S", tr("Enregistrer", "Save", "Guardar")),
@@ -1002,6 +1173,7 @@ impl App {
                     ("← / →", tr("Timeline, ou traverser la ligne dans les registres", "Timeline, or move across the row in registers", "Línea de tiempo, o cruzar la fila en los registros")),
                     ("Entrée", tr("Valider : microscope, ouvrir le fichier, éditer le registre", "Confirm: microscope, open the file, edit the register", "Confirmar: microscopio, abrir el archivo, editar el registro")),
                     ("Échap", tr("Quitter le champ de saisie, sinon arrêter le programme", "Leave the text field, otherwise stop the program", "Salir del campo de texto, si no detener el programa")),
+                    (tr("Survol", "Hover", "Cursor encima"), tr("Dans l'éditeur : valeur du registre, du drapeau, du label ou du nombre sous le pointeur", "In the editor: value of the register, flag, label or number under the pointer", "En el editor: valor del registro, flag, etiqueta o número bajo el puntero")),
                 ];
                 egui::Grid::new("shortcuts_grid")
                     .num_columns(2)
@@ -1813,6 +1985,90 @@ impl App {
         if !open {
             self.show_license_gate = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod about_tests {
+    use super::*;
+
+    /// Le bandeau suit `Cargo.toml` : c'est ce qui l'a empêché de rester sur
+    /// « BÊTA 2 » alors que la version en annonçait une autre.
+    #[test]
+    fn the_beta_number_comes_from_the_package_version() {
+        let version = env!("CARGO_PKG_VERSION");
+        match version.split_once("-beta.") {
+            Some((_, n)) => assert_eq!(beta_number(), n),
+            None => assert!(beta_number().is_empty(), "une version finale n'annonce pas de bêta"),
+        }
+    }
+
+    /// La fenêtre se rend dans les trois langues sans paniquer.
+    #[test]
+    fn the_about_window_renders_in_every_language() {
+        for lang in [i18n::Lang::Fr, i18n::Lang::En, i18n::Lang::Es] {
+            let mut app = App::new();
+            app.lang = lang;
+            app.show_about = true;
+            let ctx = egui::Context::default();
+            let _ = ctx.run(Default::default(), |ctx| app.about_window(ctx));
+        }
+    }
+}
+
+#[cfg(test)]
+mod breakpoint_condition_tests {
+    use super::*;
+
+    /// Le clic droit sur une ligne nue pose le point d'arrêt en même temps
+    /// qu'il ouvre sa condition : c'est le geste attendu, en un temps.
+    #[test]
+    fn opening_the_condition_arms_the_breakpoint() {
+        let mut app = App::new();
+        app.open_breakpoint_condition(12);
+        assert_eq!(app.bp_cond_line, Some(12));
+        assert!(app.breakpoints.contains_key(&12));
+        assert!(app.bp_cond_input.is_empty(), "rien à reprendre sur une ligne nue");
+    }
+
+    /// Rouvrir une condition existante la remet dans le champ : on la corrige,
+    /// on ne la réécrit pas de mémoire.
+    #[test]
+    fn reopening_shows_the_condition_already_set() {
+        let mut app = App::new();
+        app.set_breakpoint_condition(7, "rcx==0x10").expect("condition valide");
+        app.open_breakpoint_condition(7);
+        assert_eq!(app.bp_cond_input, "RCX == 0x10", "reprise sous forme normalisée");
+    }
+
+    #[test]
+    fn the_window_renders_and_stays_open_until_a_button_is_pressed() {
+        let mut app = App::new();
+        app.source = "section .text\n_start:\n    mov rax, 1\n".to_string();
+        app.open_breakpoint_condition(3);
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.breakpoint_condition_window(ctx));
+        assert_eq!(app.bp_cond_line, Some(3));
+    }
+
+    #[test]
+    fn a_closed_window_paints_nothing() {
+        let mut app = App::new();
+        app.bp_cond_line = None;
+        let ctx = egui::Context::default();
+        let out = ctx.run(Default::default(), |ctx| app.breakpoint_condition_window(ctx));
+        assert!(out.shapes.is_empty());
+    }
+
+    /// Une ligne au-delà de la fin du fichier ne doit pas faire paniquer le
+    /// rendu (le source a pu raccourcir depuis la pose du point d'arrêt).
+    #[test]
+    fn a_line_past_the_end_of_the_file_is_harmless() {
+        let mut app = App::new();
+        app.source = "nop\n".to_string();
+        app.open_breakpoint_condition(999);
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.breakpoint_condition_window(ctx));
     }
 }
 

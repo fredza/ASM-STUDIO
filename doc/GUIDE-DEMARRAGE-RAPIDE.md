@@ -1,7 +1,7 @@
 # ASM Studio — Guide de démarrage rapide
 
 > IDE pédagogique pour l'assembleur **NASM x86-64** sous Linux.
-> Version 0.4.0-bêta 1 · interface en français / anglais / espagnol.
+> Version 0.4.3-bêta 3 · interface en français / anglais / espagnol.
 
 ASM Studio n'est pas un simulateur : votre programme est **réellement assemblé**
 (`nasm`), **lié** (`ld`) et **exécuté par le vrai noyau Linux** sous `ptrace`.
@@ -131,6 +131,13 @@ ASM Studio distingue **assembler** (traduire le texte en binaire) et **exécuter
      ▲                                          │
      └──────────── corriger ◀── plantage / résultat inattendu
 ```
+
+Un point « ● » à côté du nom du fichier signale que vous avez tapé quelque
+chose depuis le dernier enregistrement. Rien ne peut plus l'emporter en
+silence : créer un fichier, en ouvrir un autre, charger une leçon ou quitter
+demande d'abord quoi faire de ce travail — enregistrer, abandonner, ou
+renoncer. Et `Fichier ▸ Récents` garde la trace des dix derniers fichiers
+ouverts, pour reprendre l'exercice de la veille sans le rechercher.
 
 ### La Timeline : avancer **et reculer**
 
@@ -291,6 +298,34 @@ fonctionne depuis n'importe quel dossier.
 
 ## 11. Les outils
 
+- **Points d'arrêt conditionnels** — un clic dans la gouttière pose un point
+  d'arrêt ; un **clic droit** (ou `Ctrl+Maj+F8`) lui attache une condition.
+  L'exécution ne s'y arrête alors que si elle est vraie :
+
+  ```
+  RCX == 0        arrête-toi au dernier tour de la boucle
+  RAX > 0x100     … quand la valeur dépasse ce seuil
+  ZF == 1         … quand la comparaison précédente a trouvé l'égalité
+  RSI != RDI      … quand les deux pointeurs ont divergé
+  ```
+
+  On peut comparer des registres (`RAX`…`R15`, `RIP`, et les moitiés basses
+  `EAX`, `R8D`), les six drapeaux (`ZF`, `CF`, `OF`, `SF`, `PF`, `AF`, qui
+  valent 0 ou 1), et des nombres écrits en décimal, en hexadécimal (`0x2A`) ou
+  en binaire (`0b1010`). Une pastille **à trou** dans la gouttière signale un
+  point d'arrêt conditionnel, et son infobulle rappelle la condition.
+
+  > À savoir : les registres se comparent en non signé, sauf si un nombre
+  > négatif apparaît dans la condition — `RAX == -1` reconnaît donc bien
+  > `0xFFFFFFFFFFFFFFFF`. Pour « ce registre est-il négatif ? », écrivez
+  > `SF == 1`.
+
+- **Inspection au survol** — posez la souris sur un mot de votre code, sans
+  rien cliquer : un registre affiche sa valeur en hexadécimal, en décimal, en
+  signé, en caractère, et les huit octets qu'il pointe quand c'est une adresse ;
+  un drapeau affiche son état ; un label, sa ligne de définition et son
+  adresse ; un nombre, ses trois bases. De quoi vérifier qu'un pointeur vise
+  bien sa chaîne sans quitter le code des yeux.
 - **Palette de commandes** (`Ctrl+Maj+P`) — toute l'application au clavier :
   tapez quelques lettres, lancez n'importe quelle commande sans la souris.
 - **Microscope** — sélectionnez une instruction : identité, **encodage machine
@@ -336,6 +371,10 @@ vient la valeur qui a tout fait dérailler.
 | `Ctrl+B`         | Assembler + Lier                   |
 | `F5`             | Lancer / Relancer                  |
 | `F10` / `F8`     | Instruction suivante (pas à pas)   |
+| `Maj+F10`        | Pas par-dessus (franchit un `call`) |
+| `F9`             | Continuer jusqu'au point d'arrêt   |
+| `Ctrl+F8`        | Point d'arrêt sur la ligne du curseur |
+| `Ctrl+Maj+F8`    | Condition du point d'arrêt         |
 | `Échap` / `Maj+F5` | Arrêter                          |
 
 ### Timeline

@@ -18,6 +18,20 @@ use super::{App, SyscallLog};
 /// une seconde, au-delà de laquelle la barre d'état invite à relancer.
 const RUN_BUDGET: usize = 100_000;
 
+/// Adresses d'arrêt et condition à y vérifier (`None` : arrêt inconditionnel).
+type StopMap = std::collections::HashMap<u64, Option<crate::breakpoint::Condition>>;
+
+/// Faut-il s'arrêter dans cet état ? Une condition posée sur une ligne n'est
+/// évaluée que lorsque l'exécution y arrive : rien ne sert de la vérifier
+/// ailleurs, et c'est ce qui garde le pas à une dizaine de microsecondes.
+fn stops_here(stops: &StopMap, regs: &crate::debugger::Registers) -> bool {
+    match stops.get(&regs.rip) {
+        None => false,
+        Some(None) => true,
+        Some(Some(cond)) => cond.eval(regs, &crate::debugger::Flags::from_eflags(regs.eflags)),
+    }
+}
+
 impl App {
     /// Enregistre puis assemble (nasm) et lie (ld) le programme de l'utilisateur.
     pub(super) fn build(&mut self) {
@@ -175,9 +189,8 @@ impl App {
             && self.dbg.as_ref().is_none_or(|d| !d.is_waiting())
         {
             self.run_pending = None;
-            let at_stop = self
-                .view_rip()
-                .is_some_and(|rip| self.stop_addresses(extra).contains(&rip));
+            let stops = self.stop_addresses(extra);
+            let at_stop = self.snap().is_some_and(|s| stops_here(&stops, &s.regs));
             if !at_stop && self.dbg.as_ref().is_some_and(|d| d.is_ready()) {
                 self.run_until(extra);
             }
@@ -295,7 +308,7 @@ impl App {
         // très bien être celui qui exécute un appel système.
         self.pending_syscall = None;
         let done = match self.dbg.as_mut() {
-            Some(d) => match d.run_until(RUN_BUDGET, |rip| stops.contains(&rip)) {
+            Some(d) => match d.run_until(RUN_BUDGET, |regs| stops_here(&stops, regs)) {
                 Ok(n) => n,
                 Err(e) => {
                     self.log(&e);
@@ -329,15 +342,26 @@ impl App {
         }
     }
 
-    /// Adresses où l'exécution doit s'interrompre : les lignes marquées par
-    /// l'élève, plus une éventuelle cible ponctuelle (retour d'un `call`).
-    fn stop_addresses(&self, extra: Option<u64>) -> std::collections::HashSet<u64> {
-        self.src_map
+    /// Adresses où l'exécution doit s'interrompre, avec la condition à y
+    /// vérifier : les lignes marquées par l'élève, plus une éventuelle cible
+    /// ponctuelle inconditionnelle (retour d'un `call`, pour le pas
+    /// par-dessus).
+    ///
+    /// Les conditions sont copiées ici plutôt que consultées à travers `self` :
+    /// la fermeture d'arrêt est passée au débogueur, qui est lui-même emprunté
+    /// en `&mut` sur `self` pendant tout l'enchaînement.
+    fn stop_addresses(&self, extra: Option<u64>) -> StopMap {
+        let mut stops: StopMap = self
+            .src_map
             .iter()
-            .filter(|(_, line)| self.breakpoints.contains(line))
-            .map(|(addr, _)| *addr)
-            .chain(extra)
-            .collect()
+            .filter_map(|(addr, line)| {
+                self.breakpoints.get(line).map(|cond| (*addr, cond.clone()))
+            })
+            .collect();
+        if let Some(addr) = extra {
+            stops.insert(addr, None);
+        }
+        stops
     }
 
     /// Exécute jusqu'au prochain point d'arrêt (ou la fin du programme).
@@ -358,11 +382,36 @@ impl App {
         }
     }
 
-    /// Pose ou retire un point d'arrêt sur une ligne source (1-based).
+    /// Pose ou retire un point d'arrêt sur une ligne source (1-based). Le
+    /// retirer emporte sa condition : la reposer repart d'une ligne vierge.
     pub(super) fn toggle_breakpoint(&mut self, line: usize) {
-        if !self.breakpoints.remove(&line) {
-            self.breakpoints.insert(line);
+        if self.breakpoints.remove(&line).is_none() {
+            self.breakpoints.insert(line, None);
         }
+    }
+
+    /// Attache une condition à une ligne (le point d'arrêt est posé au besoin),
+    /// ou la retire si le texte est vide.
+    ///
+    /// Renvoie le message d'analyse en cas de syntaxe refusée — la condition
+    /// précédente reste alors en place, plutôt que d'être perdue au profit de
+    /// rien.
+    pub(super) fn set_breakpoint_condition(
+        &mut self,
+        line: usize,
+        text: &str,
+    ) -> Result<(), String> {
+        let cond = crate::breakpoint::parse(text, self.lang)?;
+        self.breakpoints.insert(line, cond);
+        Ok(())
+    }
+
+    /// Condition posée sur une ligne, s'il y en a une.
+    pub(super) fn breakpoint_condition(
+        &self,
+        line: usize,
+    ) -> Option<&crate::breakpoint::Condition> {
+        self.breakpoints.get(&line)?.as_ref()
     }
 
     /// Vrai si cette ligne source (1-based) porte du code exécutable, donc
@@ -603,6 +652,120 @@ mod tests {
             matches!(app.dbg.as_ref().map(|d| d.state), Some(RunState::Exited(0))),
             "plus de point d'arrêt, plus d'arrêt"
         );
+    }
+
+    // ---------- Points d'arrêt conditionnels ----------
+
+    /// Une boucle qui décompte : la ligne 5 est franchie dix fois, et c'est
+    /// exactement le cas qu'un point d'arrêt nu ne sait pas traiter.
+    const LOOP10: &str = "section .text\n\
+                          global _start\n\
+                          _start:\n\
+                          mov rcx,10\n\
+                          .tour:\n\
+                          dec rcx\n\
+                          jnz .tour\n\
+                          mov rax,60\n\
+                          xor rdi,rdi\n\
+                          syscall\n";
+
+    /// Le cœur de la fonctionnalité : dix passages, un seul arrêt.
+    #[test]
+    fn a_condition_holds_the_stop_until_it_is_true() {
+        let mut app = app_with("bp-cond", LOOP10);
+        app.toggle_breakpoint(6); // « dec rcx », exécutée dix fois
+        app.set_breakpoint_condition(6, "RCX == 3").expect("condition valide");
+        app.cont();
+
+        let regs = app.dbg.as_ref().expect("dbg").regs();
+        assert_eq!(app.current_source_line(), Some(5), "arrêt sur « dec rcx »");
+        assert_eq!(regs.rcx, 3, "et seulement au tour où RCX vaut 3");
+    }
+
+    /// Une condition jamais vraie ne retient rien : le programme va au bout,
+    /// au lieu de s'arrêter au premier passage comme un point d'arrêt nu.
+    #[test]
+    fn a_condition_that_never_holds_never_stops() {
+        let mut app = app_with("bp-cond-never", LOOP10);
+        app.toggle_breakpoint(6);
+        app.set_breakpoint_condition(6, "RCX == 0x1234").expect("condition valide");
+        app.cont();
+
+        assert!(
+            matches!(app.dbg.as_ref().map(|d| d.state), Some(RunState::Exited(0))),
+            "condition jamais remplie ⇒ aucun arrêt"
+        );
+    }
+
+    /// Les drapeaux sont utilisables, et c'est souvent ce qu'on veut observer :
+    /// « arrête-toi quand la comparaison a mis ZF ».
+    #[test]
+    fn a_flag_condition_works_too() {
+        let mut app = app_with("bp-cond-flag", LOOP10);
+        app.toggle_breakpoint(7); // « jnz .tour »
+        app.set_breakpoint_condition(7, "ZF == 1").expect("condition valide");
+        app.cont();
+
+        let regs = app.dbg.as_ref().expect("dbg").regs().clone();
+        assert_eq!(regs.rcx, 0, "ZF n'est levé que quand le décompte atteint zéro");
+    }
+
+    /// Vider le champ retire la condition sans retirer le point d'arrêt.
+    #[test]
+    fn an_empty_condition_restores_a_plain_breakpoint() {
+        let mut app = app_with("bp-cond-clear", LOOP10);
+        app.toggle_breakpoint(6);
+        app.set_breakpoint_condition(6, "RCX == 3").expect("condition valide");
+        assert!(app.breakpoint_condition(6).is_some());
+
+        app.set_breakpoint_condition(6, "  ").expect("vider n'est pas une erreur");
+        assert!(app.breakpoint_condition(6).is_none());
+        assert!(app.breakpoints.contains_key(&6), "le point d'arrêt, lui, reste");
+
+        app.cont();
+        // L'arrêt a lieu AVANT d'exécuter la ligne : au premier tour, le
+        // décompte n'a pas encore été touché.
+        assert_eq!(app.dbg.as_ref().expect("dbg").regs().rcx, 10, "arrêt dès le premier tour");
+    }
+
+    /// Une syntaxe refusée ne doit pas emporter la condition qui marchait.
+    #[test]
+    fn a_refused_condition_leaves_the_previous_one_in_place() {
+        let mut app = app_with("bp-cond-bad", LOOP10);
+        app.toggle_breakpoint(6);
+        app.set_breakpoint_condition(6, "RCX == 3").expect("condition valide");
+
+        let err = app.set_breakpoint_condition(6, "RCX <> 3").unwrap_err();
+        assert!(!err.is_empty(), "l'erreur doit s'expliquer");
+        assert_eq!(
+            app.breakpoint_condition(6).map(|c| c.to_string()),
+            Some("RCX == 3".to_string()),
+            "l'ancienne condition tient toujours"
+        );
+    }
+
+    /// Retirer le point d'arrêt emporte sa condition : le reposer repart d'une
+    /// ligne vierge, sans condition fantôme héritée d'une session précédente.
+    #[test]
+    fn taking_a_breakpoint_back_forgets_its_condition() {
+        let mut app = app_with("bp-cond-forget", LOOP10);
+        app.toggle_breakpoint(6);
+        app.set_breakpoint_condition(6, "RCX == 3").expect("condition valide");
+        app.toggle_breakpoint(6); // retiré
+        app.toggle_breakpoint(6); // reposé
+        assert!(app.breakpoint_condition(6).is_none());
+    }
+
+    /// Le pas par-dessus s'arrête au retour du `call` quoi qu'il arrive : sa
+    /// cible ponctuelle n'est pas soumise aux conditions de l'élève.
+    #[test]
+    fn step_over_is_never_held_back_by_a_condition() {
+        let mut app = app_with("bp-cond-over", LOOP10);
+        app.toggle_breakpoint(6);
+        app.set_breakpoint_condition(6, "RCX == 0x1234").expect("condition valide");
+        let before = app.dbg.as_ref().expect("dbg").steps();
+        app.step_over(); // « mov rcx,10 » : pas un call, donc un pas simple
+        assert_eq!(app.dbg.as_ref().expect("dbg").steps(), before + 1);
     }
 
     /// Un point d'arrêt sur une ligne sans code ne fait rien, et l'interface

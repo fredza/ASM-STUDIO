@@ -33,8 +33,15 @@ impl App {
         self.save_settings();
     }
 
-    /// Charge une leçon : programme de départ, panneaux, et mise au point.
+    /// Charge une leçon, après s'être assuré que le travail en cours ne part
+    /// pas avec (voir [`super::unsaved`]) : le programme de départ d'une leçon
+    /// écrase l'éditeur, et l'exercice à moitié écrit qui s'y trouvait avec.
     pub(super) fn load_lesson(&mut self, lesson: &Lesson) {
+        self.guarded(super::unsaved::PendingAction::LoadLesson(lesson.id.to_string()));
+    }
+
+    /// Charge une leçon : programme de départ, panneaux, et mise au point.
+    pub(super) fn load_lesson_now(&mut self, lesson: &Lesson) {
         self.tutorial_current = Some(lesson.id.to_string());
 
         if let Some(src) = lesson.starter {
@@ -47,7 +54,9 @@ impl App {
             if let Some(dir) = self.src_path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            self.dirty = true;
+            // Le programme de départ n'est pas encore du travail : c'est ce que
+            // l'élève va en faire qui le deviendra.
+            self.mark_saved();
             self.dbg = None;
             self.disasm.clear();
             self.binary = None;

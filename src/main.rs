@@ -1,6 +1,7 @@
 mod abi;
 mod app;
 mod assemble;
+mod breakpoint;
 mod debugger;
 mod diagnostic;
 mod disasm;

@@ -74,11 +74,12 @@ impl App {
         // Pas par-dessus, continuer, point d'arrêt. Maj+F10 prolonge le F10 du
         // pas simple ; F9 et Ctrl+F8 reprennent les touches de JetBrains, dont
         // vient le public de cet IDE.
-        let (step_over, cont, toggle_bp) = ctx.input(|i| {
+        let (step_over, cont, toggle_bp, edit_bp) = ctx.input(|i| {
             (
                 i.modifiers.shift && i.key_pressed(Key::F10),
                 i.key_pressed(Key::F9),
-                i.modifiers.ctrl && i.key_pressed(Key::F8),
+                i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::F8),
+                i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(Key::F8),
             )
         });
         if step_over {
@@ -90,6 +91,13 @@ impl App {
         if toggle_bp {
             let line = self.editor_ln;
             self.toggle_breakpoint(line);
+        }
+        // Ctrl+Maj+F8 : la condition de la ligne du curseur, comme le clic
+        // droit dans la gouttière — c'est aussi la touche de JetBrains pour
+        // aller voir ses points d'arrêt.
+        if edit_bp {
+            let line = self.editor_ln;
+            self.open_breakpoint_condition(line);
         }
         // Ctrl+F ouvre la recherche, Ctrl+H la recherche-remplacement —
         // toujours actifs même si l'éditeur a le focus (comme Ctrl+S/O/N/B).
@@ -448,6 +456,7 @@ impl App {
                     if item(ui, tr("Ouvrir…", "Open…", "Abrir…"), "Ctrl+O") {
                         self.open_browser();
                     }
+                    self.recent_menu(ui);
                     if item(
                         ui,
                         tr(
@@ -549,6 +558,63 @@ impl App {
                 });
             });
         });
+    }
+
+    /// Sous-menu « Récents ». Grisé tant que rien n'a été ouvert : une entrée
+    /// qui s'ouvre sur le vide déroute plus qu'elle ne renseigne.
+    ///
+    /// Chaque ligne montre le nom du fichier puis son dossier en gris — deux
+    /// exercices portent souvent le même nom dans deux dossiers différents, et
+    /// le seul nom ne permettrait pas de les distinguer.
+    fn recent_menu(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        // Les chemins morts sont retirés à l'ouverture du menu : c'est le seul
+        // moment où l'on regarde la liste, et le seul où toucher au disque pour
+        // la vérifier ne coûte rien.
+        self.prune_recent();
+        let recent = self.recent_files.clone();
+        let mut to_open = None;
+        let mut clear = false;
+
+        ui.add_enabled_ui(!recent.is_empty(), |ui| {
+            ui.menu_button(tr("Récents", "Recent", "Recientes"), |ui| {
+                for path in &recent {
+                    let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+                    let parent = path
+                        .parent()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
+                    let mut text = egui::text::LayoutJob::default();
+                    text.append(&name, 0.0, egui::TextFormat::default());
+                    text.append(
+                        &format!("   {parent}"),
+                        0.0,
+                        egui::TextFormat {
+                            color: ui.visuals().weak_text_color(),
+                            ..Default::default()
+                        },
+                    );
+                    if ui.button(text).on_hover_text(path.display().to_string()).clicked() {
+                        to_open = Some(path.clone());
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button(tr("Vider la liste", "Clear the list", "Vaciar la lista")).clicked() {
+                    clear = true;
+                    ui.close();
+                }
+            });
+        });
+
+        if let Some(path) = to_open {
+            self.open_file(path);
+        }
+        if clear {
+            self.recent_files.clear();
+            self.save_settings();
+        }
     }
 
     /// Contenu du menu Affichage : mode d'abord, puis panneaux, puis disposition.
@@ -1277,9 +1343,10 @@ mod keyboard_tests {
         app.palette_open = false;
 
         // --- Fichier ---
-        app.dirty = true;
+        app.source.push_str("\n    nop\n");
+        assert!(app.dirty());
         frame(&mut app, &ctx, ctrl(egui::Key::S));
-        assert!(!app.dirty, "Ctrl+S : enregistre");
+        assert!(!app.dirty(), "Ctrl+S : enregistre");
         frame(&mut app, &ctx, ctrl(egui::Key::N));
         assert!(app.source.contains("sys_exit"), "Ctrl+N : nouveau fichier");
         assert!(app.dbg.is_none(), "Ctrl+N : remet le débogueur à zéro");

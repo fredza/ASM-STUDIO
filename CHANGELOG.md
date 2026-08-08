@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3-beta.3] - 2026-08-08
+
+### Added
+- **Unsaved-work guard**: Four actions used to replace the editor's contents without a word — New, Open (dialog or explorer), loading a lesson, and quitting. None of them looked at whether anything had been typed, so a half-written exercise could vanish for good. Each now goes through one dialog: save, discard, or cancel, with the file name and the number of changed lines. On close, the question comes before the license reminder — the work is the only thing that cannot be given back afterwards.
+- **Conditional breakpoints**: A breakpoint can carry a condition — `RCX == 0`, `RAX > 0x100`, `ZF == 1`, `RSI != RDI` — and execution only stops when it holds. Stopping at the four-thousandth turn of a loop used to take four thousand `Continue`. Registers (including their low halves `EAX`, `R8D`), the six flags, and numbers in decimal, hex or binary are all accepted; a conditional breakpoint shows as a ring in the gutter, and the condition itself in a tooltip. Right-click the gutter or press `Ctrl+Shift+F8`.
+- **Hover inspection**: Hovering a word in the editor shows what it is worth right now — a register in hex, decimal, signed decimal, as a character, and with the eight bytes it points at when it is an address; a flag with its state; a label with the line where it is defined and its address; a number in all three bases. The answer to “and what does RSI hold at this point?” no longer costs a round trip to another panel.
+- **Recent files**: `File ▸ Recent` lists the last ten files opened, most recent first, persisted between sessions. Entries that no longer exist are dropped when the menu opens rather than offered for nothing.
+
+### Changed
+- The “modified” state is now derived from the text itself instead of a flag each editing path had to remember to raise — which is exactly how changes went unsignalled, and therefore lost. Undoing your way back to the saved text now clears the `●` marker, as it should.
+- `Debugger::run_until` hands the whole register set to its stop condition instead of just RIP, which is what lets a breakpoint condition decide without the debugger knowing anything about its grammar.
+- Settings reading and writing are separated from the disk, so the file format is covered by tests instead of being exercised only against the user's real settings.
+
 ## [0.4.0-beta.2] - 2026-08-07
 
 ### Added

@@ -34,6 +34,7 @@ pub(crate) enum Command {
     StepOver,
     Continue,
     ToggleBreakpoint,
+    BreakpointCondition,
     ClearBreakpoints,
     Stop,
     ResumeHere,
@@ -94,6 +95,12 @@ impl Command {
                 "Punto de interrupción en la línea actual",
             )
             .into(),
+            Command::BreakpointCondition => t(
+                "Condition du point d'arrêt de la ligne courante",
+                "Breakpoint condition on current line",
+                "Condición del punto de interrupción de la línea actual",
+            )
+            .into(),
             Command::ClearBreakpoints => t(
                 "Retirer tous les points d'arrêt",
                 "Remove all breakpoints",
@@ -152,6 +159,7 @@ impl Command {
             Command::StepOver => "Maj+F10",
             Command::Continue => "F9",
             Command::ToggleBreakpoint => "Ctrl+F8",
+            Command::BreakpointCondition => "Ctrl+Maj+F8",
             Command::Stop => "Échap",
             Command::TimelineStart => "Home",
             Command::TimelineEnd => "End",
@@ -174,6 +182,7 @@ impl Command {
             Command::Stop,
             Command::ResumeHere,
             Command::ToggleBreakpoint,
+            Command::BreakpointCondition,
             Command::ClearBreakpoints,
             Command::New,
             Command::Open,
@@ -317,6 +326,10 @@ impl App {
             Command::ToggleBreakpoint => {
                 let line = self.editor_ln;
                 self.toggle_breakpoint(line);
+            }
+            Command::BreakpointCondition => {
+                let line = self.editor_ln;
+                self.open_breakpoint_condition(line);
             }
             Command::ClearBreakpoints => self.breakpoints.clear(),
             Command::Stop => self.stop(),

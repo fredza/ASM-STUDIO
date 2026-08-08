@@ -2,7 +2,7 @@
 ; Assemble : nasm -f elf64 test.asm -o test.o ; ld -o test test.o
 
 section .data
-    msg db "Bonjour de la part de frédéric ASM", 10           ; 10 = \n
+    msg db "Bonjour de la part de ASM-STUDIO", 10           ; 10 = \n
 
 section .text
     global _start

@@ -31,9 +31,17 @@ memory — is the genuine process state, not an approximation.
 - **Real debugger** — step-by-step execution of a NASM binary via `ptrace`
   (registers, `SETREGS`, reading/writing `/proc/pid/mem`), not a simulated
   virtual machine.
-- **Breakpoints** — click the gutter (or `Ctrl+F8`) to mark a line, then
-  `Continue` (`F9`) runs up to it. `Step over` (`Shift+F10`) runs a whole
-  `call` in one go. Every instruction still lands in the timeline.
+- **Breakpoints, conditional when needed** — click the gutter (or `Ctrl+F8`) to
+  mark a line, then `Continue` (`F9`) runs up to it. Right-click (or
+  `Ctrl+Shift+F8`) attaches a condition — `RCX == 0`, `RAX > 0x100`, `ZF == 1`
+  — and execution only stops when it holds: enough to reach the four
+  thousandth turn of a loop without four thousand “Continue”. `Step over`
+  (`Shift+F10`) runs a whole `call` in one go. Every instruction still lands in
+  the timeline.
+- **Hover inspection** — hovering a word in the code shows what it is worth at
+  that moment: a register in hex, decimal, signed decimal, as a character and
+  with the bytes it points at; a flag with its state; a label with its line and
+  address; a number in all three bases.
 - **Real console** — what the program writes to stdout/stderr shows up in the
   IDE, and you can type into its standard input: a program blocked on `read`
   waits for you instead of freezing the interface.
@@ -124,6 +132,7 @@ The main ones; `F1` shows the complete list inside the application.
 | `Shift+F10` | Step over: run the call in one go |
 | `F9` | Continue to the next breakpoint |
 | `Ctrl+F8` | Breakpoint on the cursor's line (or click the gutter) |
+| `Ctrl+Shift+F8` | Breakpoint condition (or right-click the gutter) |
 | `Esc` (or `Shift+F5`) | Stop the program |
 | `←` / `→` | Timeline: previous / next step |
 | `Home` / `End` | Timeline: start / end |

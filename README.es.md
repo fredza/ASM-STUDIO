@@ -32,10 +32,17 @@ aproximación.
 - **Depurador real** — ejecución paso a paso de un binario NASM mediante
   `ptrace` (registros, `SETREGS`, lectura/escritura de `/proc/pid/mem`), no
   una máquina virtual simulada.
-- **Puntos de interrupción** — un clic en el margen (o `Ctrl+F8`) marca una
-  línea, y `Continuar` (`F9`) llega hasta ella de una vez. `Paso por encima`
-  (`Mayús+F10`) ejecuta una `call` entera de golpe. Cada instrucción sigue
-  entrando en la línea de tiempo.
+- **Puntos de interrupción, condicionales si hace falta** — un clic en el
+  margen (o `Ctrl+F8`) marca una línea, y `Continuar` (`F9`) llega hasta ella
+  de una vez. Un clic derecho (o `Ctrl+Mayús+F8`) le añade una condición —
+  `RCX == 0`, `RAX > 0x100`, `ZF == 1` — y la ejecución solo se detiene si se
+  cumple: así se llega a la vuelta cuatro mil de un bucle sin cuatro mil
+  «Continuar». `Paso por encima` (`Mayús+F10`) ejecuta una `call` entera de
+  golpe. Cada instrucción sigue entrando en la línea de tiempo.
+- **Inspección al pasar el cursor** — pasar el ratón por una palabra del código
+  muestra cuánto vale en ese instante: un registro en hexadecimal, en decimal,
+  con signo, como carácter y con los bytes a los que apunta; un flag con su
+  estado; una etiqueta con su línea y su dirección; un número en las tres bases.
 - **Consola de verdad** — lo que el programa escribe en su salida estándar
   llega al IDE, y usted puede enviarle entrada: un programa detenido en un
   `read` le espera en lugar de congelar la interfaz.
@@ -129,6 +136,7 @@ Los principales; `F1` muestra la lista completa dentro de la aplicación.
 | `Mayús+F10` | Paso por encima: ejecuta la llamada de una vez |
 | `F9` | Continuar hasta el próximo punto de interrupción |
 | `Ctrl+F8` | Punto de interrupción en la línea del cursor (o clic en el margen) |
+| `Ctrl+Mayús+F8` | Condición del punto de interrupción (o clic derecho en el margen) |
 | `Esc` (o `Mayús+F5`) | Detener el programa |
 | `←` / `→` | Línea de tiempo: paso anterior / siguiente |
 | `Inicio` / `Fin` | Línea de tiempo: inicio / fin |

@@ -31,9 +31,17 @@ l'état authentique du processus, pas une approximation.
 - **Débogueur réel** — exécution pas à pas d'un binaire NASM via `ptrace`
   (registres, `SETREGS`, lecture/écriture de `/proc/pid/mem`), pas une machine
   virtuelle simulée.
-- **Points d'arrêt** — un clic dans la gouttière (ou `Ctrl+F8`) marque une
-  ligne, `Continuer` (`F9`) y mène d'une traite. `Par-dessus` (`Maj+F10`)
-  franchit un `call` d'un bloc. Chaque instruction reste dans la timeline.
+- **Points d'arrêt, conditionnels au besoin** — un clic dans la gouttière (ou
+  `Ctrl+F8`) marque une ligne, `Continuer` (`F9`) y mène d'une traite. Un clic
+  droit (ou `Ctrl+Maj+F8`) y attache une condition — `RCX == 0`, `RAX > 0x100`,
+  `ZF == 1` — et l'exécution ne s'arrête que si elle est vraie : de quoi
+  atteindre le quatre millième tour d'une boucle sans quatre mille
+  « Continuer ». `Par-dessus` (`Maj+F10`) franchit un `call` d'un bloc. Chaque
+  instruction reste dans la timeline.
+- **Inspection au survol** — passer la souris sur un mot du code montre ce
+  qu'il vaut à cet instant : un registre en hexa, en décimal, en signé, en
+  caractère et avec les octets qu'il pointe ; un drapeau avec son état ; un
+  label avec sa ligne et son adresse ; un nombre dans les trois bases.
 - **Vraie console** — ce que le programme écrit sur sa sortie standard arrive
   dans l'IDE, et l'on peut lui envoyer de l'entrée : un programme suspendu sur
   un `read` vous attend au lieu de figer l'interface.
@@ -124,6 +132,7 @@ Les principaux ; `F1` affiche la liste complète dans l'application.
 | `Maj+F10` | Pas par-dessus : exécute l'appel d'un bloc |
 | `F9` | Continuer jusqu'au prochain point d'arrêt |
 | `Ctrl+F8` | Point d'arrêt sur la ligne du curseur (ou clic dans la gouttière) |
+| `Ctrl+Maj+F8` | Condition du point d'arrêt (ou clic droit dans la gouttière) |
 | `Échap` (ou `Maj+F5`) | Arrêter le programme |
 | `←` / `→` | Timeline : étape précédente / suivante |
 | `Début` / `Fin` | Timeline : début / fin |

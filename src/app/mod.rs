@@ -24,6 +24,8 @@ mod pedagogy;
 mod dock;
 mod palette;
 mod predict;
+mod inspect;
+mod unsaved;
 mod ui_exercise;
 mod ui_tutorial;
 mod widgets;
@@ -119,6 +121,9 @@ pub(super) const BREAKPOINT: Color32 = Color32::from_rgb(0xE0, 0x4A, 0x4A);
 // bien plus que ce qu'un élève relit.
 pub(super) const CONSOLE_MAX: usize = 512 * 1024;
 pub(super) const CONSOLE_KEEP: usize = 384 * 1024;
+/// Longueur de la liste des fichiers récents. Dix tient dans un menu sans
+/// défilement et couvre largement les allers-retours d'une séance de travail.
+pub(super) const MAX_RECENT: usize = 10;
 // Animation « CPU vivant ».
 pub(super) const FLASH_DUR: f64 = 0.7; // durée du fondu (secondes)
 pub(super) const FLASH_BRIGHT: Color32 = Color32::from_rgb(0xFF, 0xF2, 0x9A); // pic de pulsation
@@ -268,8 +273,14 @@ pub struct App {
     pub(super) out_dir: PathBuf,
     /// Contenu de l'éditeur (source NASM en cours d'édition).
     pub(super) source: String,
-    /// Modifications non enregistrées.
-    pub(super) dirty: bool,
+    /// Contenu de référence : ce que `source` valait au dernier enregistrement,
+    /// à l'ouverture du fichier, ou au chargement d'un squelette. L'état
+    /// « modifié » ([`App::dirty`]) s'en déduit par comparaison, au lieu d'être
+    /// un drapeau que chaque chemin d'édition doit penser à lever — c'est ce
+    /// qui laissait passer des modifications non signalées, et donc perdues
+    /// sans un mot au moment de fermer. Corollaire gratuit : revenir à la main
+    /// au texte enregistré efface le marqueur « ● », comme dans un vrai IDE.
+    pub(super) saved_source: String,
     pub(super) binary: Option<PathBuf>,
 
     pub(super) dbg: Option<Debugger>,
@@ -310,10 +321,22 @@ pub struct App {
     /// il ne sera pas repris tant que le programme n'aura pas de nouveau
     /// besoin d'une entrée.
     pub(super) stdin_focus_claimed: bool,
-    /// Points d'arrêt, par numéro de ligne source (1-based). Posés sur la
+    /// Points d'arrêt, par numéro de ligne source (1-based), avec leur
+    /// condition éventuelle (`None` = s'arrêter à chaque passage). Posés sur la
     /// ligne et non sur l'adresse : c'est ce que l'élève voit, et ça survit à
     /// un réassemblage qui déplace le code.
-    pub(super) breakpoints: std::collections::BTreeSet<usize>,
+    pub(super) breakpoints: std::collections::BTreeMap<usize, Option<crate::breakpoint::Condition>>,
+    /// Ligne dont on est en train d'éditer la condition (fenêtre dédiée),
+    /// avec le texte saisi et l'erreur d'analyse à afficher.
+    pub(super) bp_cond_line: Option<usize>,
+    pub(super) bp_cond_input: String,
+    pub(super) bp_cond_error: Option<String>,
+    /// Demande de focus du champ au premier frame d'ouverture.
+    pub(super) bp_cond_focus: bool,
+    /// Derniers fichiers ouverts, le plus récent en tête (menu Fichier ▸
+    /// Récents). Persisté avec les réglages : reprendre son exercice de la
+    /// veille ne devrait pas demander de renaviguer dans l'arborescence.
+    pub(super) recent_files: Vec<PathBuf>,
     /// Dossier affiché dans l'explorateur de fichiers (panneau de gauche).
     pub(super) explorer_dir: PathBuf,
     /// Fichier retenu au clavier dans l'explorateur (surligné, ouvert par Entrée).
@@ -476,6 +499,16 @@ pub struct App {
     /// `check_close_request` l'interceptait alors une seconde fois et
     /// annulait sa propre fermeture (bouton visiblement sans effet).
     pub(super) quit_confirmed: bool,
+    /// Action réclamée par l'élève, mise en attente le temps de lui demander
+    /// quoi faire du travail non enregistré qu'elle écraserait (voir
+    /// [`unsaved`]). `None` : rien en suspens, la boîte est fermée.
+    pub(super) unsaved_prompt: Option<unsaved::PendingAction>,
+    /// L'abandon des modifications a été confirmé pour la fermeture en cours :
+    /// le `Close` qu'on réémet soi-même ne doit pas rouvrir la question.
+    pub(super) discard_confirmed: bool,
+    /// Fermeture à réémettre au prochain frame. La boîte « non enregistré »
+    /// décide de quitter, mais c'est `update` qui a le viewport sous la main.
+    pub(super) quit_requested: bool,
     /// Prochain rappel de licence (ouvre `show_license_nag` tout seul),
     /// en secondes de l'horloge egui (`ctx.input(|i| i.time)`). `None` tant
     /// qu'aucune échéance n'a encore été tirée pour cette session.
@@ -495,8 +528,8 @@ impl App {
         let mut app = App {
             src_path,
             out_dir,
+            saved_source: source.clone(),
             source,
-            dirty: false,
             binary: None,
             dbg: None,
             disasm: Vec::new(),
@@ -513,7 +546,12 @@ impl App {
             pending_syscall: None,
             stdin_input: String::new(),
             stdin_focus_claimed: false,
-            breakpoints: std::collections::BTreeSet::new(),
+            breakpoints: std::collections::BTreeMap::new(),
+            bp_cond_line: None,
+            bp_cond_input: String::new(),
+            bp_cond_error: None,
+            bp_cond_focus: false,
+            recent_files: Vec::new(),
             explorer_dir,
             explorer_selected: None,
             view_index: 0,
@@ -598,6 +636,9 @@ impl App {
             confirm_license_reset: false,
             exit_pending: false,
             quit_confirmed: false,
+            unsaved_prompt: None,
+            discard_confirmed: false,
+            quit_requested: false,
             nag_next_at: None,
         };
         app.load_settings();
@@ -620,7 +661,6 @@ impl App {
     // ---------- Persistance des réglages ----------
 
     pub(super) fn load_settings(&mut self) {
-        use egui::ThemePreference;
         // Les tests ne doivent pas dépendre de la configuration de la machine :
         // sinon leur résultat change selon la langue choisie par l'utilisateur.
         if cfg!(test) {
@@ -628,6 +668,14 @@ impl App {
         }
         let Some(path) = settings_path() else { return };
         let Ok(content) = std::fs::read_to_string(&path) else { return };
+        self.apply_settings(&content);
+    }
+
+    /// Applique un fichier de réglages déjà lu. Séparé de [`load_settings`]
+    /// pour que le format se teste sans toucher au disque de l'utilisateur —
+    /// ni dépendre de ce qui s'y trouve.
+    pub(super) fn apply_settings(&mut self, content: &str) {
+        use egui::ThemePreference;
         // La disposition est appliquée en dernier : elle dépend des autres
         // réglages (langue pour les titres) et remplace l'arbre par défaut.
         let mut saved_dock: Option<String> = None;
@@ -656,6 +704,14 @@ impl App {
                 "pedagogy_memview" => self.pedagogy_memview = v == "true",
                 "pedagogy_predict" => self.pedagogy_predict = v == "true",
                 "welcome_dismissed" => self.welcome_dismissed = v == "true",
+                // Une ligne par fichier, dans l'ordre où elles ont été
+                // écrites : pas de séparateur à choisir, donc rien à échapper
+                // dans un chemin qui en contiendrait un.
+                "recent" => {
+                    if !v.is_empty() {
+                        self.recent_files.push(PathBuf::from(v));
+                    }
+                }
                 "dock" => saved_dock = Some(v.to_string()),
                 _ => {}
             }
@@ -669,7 +725,6 @@ impl App {
     }
 
     pub(super) fn save_settings(&self) {
-        use egui::ThemePreference;
         // Et surtout, ils ne doivent RIEN écrire dedans : plusieurs exécutent des
         // commandes qui persistent (changement de langue, fermeture de panneau),
         // ce qui modifiait pour de bon les réglages de l'utilisateur.
@@ -680,16 +735,29 @@ impl App {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
+        let _ = std::fs::write(&path, self.settings_content());
+    }
+
+    /// Le fichier de réglages, tel qu'il sera écrit. Séparé de
+    /// [`save_settings`] pour la même raison que [`apply_settings`] : le format
+    /// se vérifie alors sans écrire nulle part.
+    pub(super) fn settings_content(&self) -> String {
+        use egui::ThemePreference;
         let theme = match self.theme_pref {
             ThemePreference::System => "system",
             ThemePreference::Light => "light",
             _ => "dark",
         };
-        let content = format!(
+        let recent: String = self
+            .recent_files
+            .iter()
+            .map(|p| format!("recent={}\n", p.display()))
+            .collect();
+        format!(
             "theme={theme}\nlang={}\nmode={}\ntooltips={}\nasmstd={}\nanimate={}\n\
              pedagogy_anim={}\npedagogy_memview={}\npedagogy_predict={}\n\
              tutorial={}\ntutorial_done={}\ntutorial_current={}\n\
-             welcome_dismissed={}\ndock={}\n",
+             welcome_dismissed={}\n{recent}dock={}\n",
             self.lang.key(),
             self.mode.key(),
             self.show_tooltips,
@@ -703,8 +771,22 @@ impl App {
             self.tutorial_current.clone().unwrap_or_default(),
             self.welcome_dismissed,
             self.dock_layout_string(),
-        );
-        let _ = std::fs::write(&path, content);
+        )
+    }
+
+    // ---------- Travail non enregistré ----------
+
+    /// Le tampon d'édition diffère de ce qui est sur le disque.
+    pub(super) fn dirty(&self) -> bool {
+        self.source != self.saved_source
+    }
+
+    /// Prend le contenu courant pour référence : il n'y a plus rien à
+    /// enregistrer. À appeler après une écriture réussie, une lecture de
+    /// fichier, ou l'insertion d'un texte de départ que l'élève n'a pas encore
+    /// touché — un squelette vierge n'est pas du travail à sauver.
+    pub(super) fn mark_saved(&mut self) {
+        self.saved_source = self.source.clone();
     }
 
     // ---------- Accès à l'état affiché ----------
@@ -853,6 +935,8 @@ impl App {
             self.show_license_nag,
             self.confirm_license_reset,
             self.palette_open,
+            self.unsaved_prompt.is_some(),
+            self.bp_cond_line.is_some(),
             self.pedagogy_predict,
             self.microscope.is_some(),
             self.diagnosis.is_some(),
@@ -923,6 +1007,7 @@ impl eframe::App for App {
         self.shortcuts_window(ctx);
         self.settings_window(ctx);
         self.microscope_window(ctx);
+        self.breakpoint_condition_window(ctx);
         self.calculator_window(ctx);
         self.palette_window(ctx);
         self.predict_window(ctx);
@@ -930,6 +1015,13 @@ impl eframe::App for App {
         self.update_window(ctx);
         self.check_license_nag(ctx);
         self.check_close_request(ctx);
+        self.unsaved_window(ctx);
+        // La boîte « non enregistré » décide de quitter, mais c'est ici qu'on
+        // tient le viewport : la fermeture est réémise au frame suivant, une
+        // fois `discard_confirmed` posé pour ne pas reposer la question.
+        if std::mem::take(&mut self.quit_requested) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         self.license_nag_window(ctx);
         self.license_gate_window(ctx);
         self.license_reset_confirm_window(ctx);
@@ -964,12 +1056,29 @@ impl App {
         }
     }
 
-    /// Bloque une tentative de fermeture (croix de la fenêtre ou Fichier ▸
-    /// Quitter, les deux passent par le même événement) tant qu'aucune
-    /// licence n'est active : la carte de rappel s'ouvre une dernière fois,
-    /// avec un geste explicite pour quitter quand même plutôt qu'une
-    /// fermeture silencieuse qui ne rappelle jamais rien à personne.
+    /// Intercepte une tentative de fermeture (croix de la fenêtre ou Fichier ▸
+    /// Quitter, les deux passent par le même événement) pour deux motifs, dans
+    /// cet ordre :
+    ///
+    /// 1. du travail non enregistré — c'est irréversible, et c'est la seule
+    ///    chose qu'on ne peut pas rendre à l'élève après coup ;
+    /// 2. l'absence de licence : la carte de rappel s'ouvre une dernière fois,
+    ///    avec un geste explicite pour quitter quand même plutôt qu'une
+    ///    fermeture silencieuse qui ne rappelle jamais rien à personne.
+    ///
+    /// L'ordre compte : les deux boîtes s'ouvriraient sinon l'une par-dessus
+    /// l'autre sur le même événement.
     fn check_close_request(&mut self, ctx: &egui::Context) {
+        // Travail à perdre : la question passe avant tout le reste, y compris
+        // pour un utilisateur licencié (qui sortirait sinon d'ici sans contrôle).
+        if !self.discard_confirmed
+            && self.dirty()
+            && ctx.input(|i| i.viewport().close_requested())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.unsaved_prompt = Some(unsaved::PendingAction::Quit);
+            return;
+        }
         if self.is_licensed() {
             return;
         }
@@ -1322,6 +1431,87 @@ mod tests {
         let out = ctx.run(Default::default(), |ctx| app.check_close_request(ctx));
         let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
         assert_eq!(delay, Duration::ZERO, "un réveil immédiat doit être programmé");
+    }
+
+    // ---------- Blocage de la fermeture tant qu'il reste du travail ----------
+
+    /// Une application dont le tampon diffère de ce qui est sur le disque.
+    fn app_with_unsaved_work() -> App {
+        let mut app = App::new();
+        app.source.push_str("\n    nop      ; le travail de l'élève\n");
+        assert!(app.dirty());
+        app
+    }
+
+    /// Le cas qui faisait perdre du travail : fermer avec un exercice à moitié
+    /// écrit partait sans un mot.
+    #[test]
+    fn closing_with_unsaved_work_is_cancelled_and_asks() {
+        let mut app = app_with_unsaved_work();
+        let ctx = egui::Context::default();
+        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+
+        assert_eq!(
+            app.unsaved_prompt,
+            Some(unsaved::PendingAction::Quit),
+            "la question doit porter sur la fermeture"
+        );
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+    }
+
+    /// Le travail passe avant la licence : les deux boîtes s'ouvriraient sinon
+    /// l'une par-dessus l'autre sur le même événement de fermeture.
+    #[test]
+    fn unsaved_work_takes_precedence_over_the_license_nag() {
+        let mut app = app_with_unsaved_work();
+        assert!(!app.is_licensed());
+        let ctx = egui::Context::default();
+        let _ = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        assert!(!app.show_license_nag, "une seule question à la fois");
+        assert!(app.unsaved_prompt.is_some());
+    }
+
+    /// Une licence en règle ne dispense pas de la question : c'est le travail
+    /// qu'on protège, pas l'enregistrement du produit.
+    #[test]
+    fn a_licensed_user_is_asked_too() {
+        let mut app = app_with_unsaved_work();
+        app.license = crate::license::valid_for_tests();
+        let ctx = egui::Context::default();
+        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        assert!(app.unsaved_prompt.is_some());
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+    }
+
+    /// Régression : « Abandonner » réémet un `Close` qui repasse ici. Sans
+    /// `discard_confirmed`, le tampon étant toujours modifié, la question se
+    /// reposerait indéfiniment et l'application ne quitterait jamais.
+    #[test]
+    fn a_confirmed_discard_lets_the_close_through() {
+        let mut app = app_with_unsaved_work();
+        app.license = crate::license::valid_for_tests();
+        app.discard_confirmed = true;
+        let ctx = egui::Context::default();
+        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+
+        assert!(app.unsaved_prompt.is_none(), "la question ne doit pas se reposer");
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
+    }
+
+    /// Rien à perdre : la fermeture d'un tampon propre n'est pas interceptée.
+    #[test]
+    fn closing_a_clean_buffer_is_never_intercepted_for_that_reason() {
+        let mut app = App::new();
+        app.license = crate::license::valid_for_tests();
+        assert!(!app.dirty());
+        let ctx = egui::Context::default();
+        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        assert!(app.unsaved_prompt.is_none());
+        let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+        assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
     }
 
     #[test]
