@@ -9,7 +9,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use serde::Deserialize;
 
 /// Dépôt GitHub source des releases.
-const GITHUB_REPO: &str = "fredza/asm-studio";
+///
+/// Orthographié exactement comme le dépôt. L'API GitHub est insensible à la
+/// casse et acceptait donc `fredza/asm-studio`, mais une constante qui ne
+/// ressemble pas à sa cible n'invite pas à être vérifiée — et rien ne garantit
+/// cette tolérance aux redirections près (un dépôt renommé répond en 301, que
+/// `ureq` ne suit pas forcément avec la même méthode).
+const GITHUB_REPO: &str = "fredza/ASM-STUDIO";
 
 /// URL de l'API GitHub Releases.
 fn api_url() -> String {
