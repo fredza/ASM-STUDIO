@@ -116,6 +116,10 @@ impl App {
         self.pending_syscall = None;
         self.stdin_input.clear();
         self.stdin_focus_claimed = false;
+        // La boîte montre la sortie de CETTE exécution : garder celle d'avant
+        // ferait lire à l'élève un résultat qui n'est plus le sien. La console,
+        // elle, garde tout — c'est son rôle de raconter la séance.
+        self.program_output.clear();
         self.diagnosis = None;
         self.prediction = None;
         self.pred_input.clear();
@@ -210,7 +214,7 @@ impl App {
             None => return,
         };
         if !out.is_empty() {
-            self.console_push(&out);
+            self.program_out_push(&out);
         }
     }
 
@@ -219,8 +223,10 @@ impl App {
         let mut line = std::mem::take(&mut self.stdin_input);
         line.push('\n');
         // Écho dans la console : sinon l'élève ne garde aucune trace de ce
-        // qu'il a saisi, un terminal l'affichant d'ordinaire de lui-même.
-        self.console_push(&line);
+        // qu'il a saisi, un terminal l'affichant d'ordinaire de lui-même. Il
+        // compte donc aussi dans la sortie « telle qu'au terminal » — c'est
+        // précisément le terminal qui produirait cet écho.
+        self.program_out_push(&line);
         if let Some(d) = self.dbg.as_mut()
             && let Err(e) = d.write_stdin(&line)
         {
@@ -612,6 +618,64 @@ mod tests {
                            mov rax,60\n\
                            xor rdi,rdi\n\
                            syscall\n";
+
+    /// Un programme qui écrit vraiment, exécuté vraiment : c'est le seul test
+    /// qui prouve que la boîte « Sortie du programme » montre bien ce qu'un
+    /// terminal montrerait. La console, elle, y ajoute son journal — et c'est
+    /// tout l'intérêt de les avoir séparées.
+    const GREETER: &str = "section .data\n\
+                           msg db \"Bonjour\",10\n\
+                           section .text\n\
+                           global _start\n\
+                           _start:\n\
+                           mov rax,1\n\
+                           mov rdi,1\n\
+                           mov rsi,msg\n\
+                           mov rdx,8\n\
+                           syscall\n\
+                           mov rax,60\n\
+                           xor rdi,rdi\n\
+                           syscall\n";
+
+    #[test]
+    fn the_program_output_holds_exactly_what_the_program_wrote() {
+        let mut app = app_with("stdout", GREETER);
+        app.cont();
+
+        assert!(
+            matches!(app.dbg.as_ref().map(|d| d.state), Some(RunState::Exited(0))),
+            "le programme doit aller jusqu'au bout"
+        );
+        assert_eq!(
+            app.program_output, "Bonjour\n",
+            "la sortie doit être celle du programme, au caractère près"
+        );
+        // La console montre la même chose, mais noyée dans le journal : c'est
+        // précisément ce dont la boîte débarrasse l'élève.
+        assert!(app.console.contains("Bonjour\n"));
+        assert!(
+            app.console.contains("Running..."),
+            "la console garde le journal de l'IDE, la sortie non"
+        );
+        assert!(
+            !app.program_output.contains("Running..."),
+            "aucun message de l'IDE ne doit passer dans la sortie du programme"
+        );
+    }
+
+    /// Relancer repart d'une sortie vierge : sinon l'élève lirait le résultat
+    /// de l'exécution précédente en croyant lire le sien.
+    #[test]
+    fn a_new_run_starts_from_a_blank_output() {
+        let mut app = app_with("stdout-again", GREETER);
+        app.cont();
+        assert_eq!(app.program_output, "Bonjour\n");
+
+        app.launch();
+        assert!(app.program_output.is_empty(), "la sortie repart à zéro au lancement");
+        app.cont();
+        assert_eq!(app.program_output, "Bonjour\n", "et se remplit à nouveau, une fois");
+    }
 
     #[test]
     fn continue_stops_on_the_marked_line() {

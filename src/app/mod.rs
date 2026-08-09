@@ -360,6 +360,15 @@ pub struct App {
     /// Demande de focus au premier frame d'édition d'un registre.
     pub(super) edit_focus: bool,
     pub(super) console: String,
+    /// Ce que le programme a écrit, et rien d'autre : ni « Running… », ni les
+    /// appels système journalisés, ni les erreurs de l'IDE. C'est le texte
+    /// qu'un utilisateur verrait en lançant le binaire depuis un terminal, et
+    /// que la boîte « Sortie du programme » montre tel quel.
+    ///
+    /// Doublon assumé d'une partie de `console` : la console mêle les deux flux
+    /// pour raconter le déroulement, on ne peut donc pas l'y démêler après coup.
+    pub(super) program_output: String,
+    pub(super) show_program_output: bool,
     pub(super) status: String,
     /// Décalage vertical de l'éditeur (pour synchroniser la gouttière).
     pub(super) editor_scroll_y: f32,
@@ -564,6 +573,8 @@ impl App {
             edit_buf: String::new(),
             edit_focus: false,
             console: String::new(),
+            program_output: String::new(),
+            show_program_output: false,
             status: String::new(),
             editor_scroll_y: 0.0,
             editor_ln: 1,
@@ -931,6 +942,7 @@ impl App {
             self.show_shortcuts,
             self.show_settings,
             self.show_calculator,
+            self.show_program_output,
             self.show_license_gate,
             self.show_license_nag,
             self.confirm_license_reset,
@@ -1009,6 +1021,7 @@ impl eframe::App for App {
         self.microscope_window(ctx);
         self.breakpoint_condition_window(ctx);
         self.calculator_window(ctx);
+        self.program_output_window(ctx);
         self.palette_window(ctx);
         self.predict_window(ctx);
         self.diagnosis_window(ctx);

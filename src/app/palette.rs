@@ -75,6 +75,7 @@ pub(crate) enum Command {
     TogglebPrediction,
     ToggleTutorial,
     ResetTutorial,
+    ProgramOutput,
     Calculator,
     Settings,
     Shortcuts,
@@ -202,6 +203,12 @@ impl Command {
                 "Réinitialiser la progression du tutoriel",
                 "Reset the tutorial progress",
                 "Reiniciar el progreso del tutorial",
+            )
+            .into(),
+            Command::ProgramOutput => t(
+                "Sortie du programme (sans les messages de l'IDE)",
+                "Program output (without the IDE's messages)",
+                "Salida del programa (sin los mensajes del IDE)",
             )
             .into(),
             Command::Calculator => t("Calculatrice multi-base", "Multi-base calculator", "Calculadora multibase").into(),
@@ -343,6 +350,7 @@ impl Command {
             Command::TogglebPrediction,
             Command::ToggleTutorial,
             Command::ResetTutorial,
+            Command::ProgramOutput,
             Command::Calculator,
             Command::Settings,
             Command::Shortcuts,
@@ -556,6 +564,7 @@ impl App {
             }
             // `reset_tutorial` enregistre déjà, et remet l'élève devant l'accueil.
             Command::ResetTutorial => self.reset_tutorial(),
+            Command::ProgramOutput => self.show_program_output = true,
             Command::Calculator => self.show_calculator = true,
             Command::Settings => self.show_settings = true,
             Command::Shortcuts => self.show_shortcuts = true,
@@ -874,6 +883,12 @@ mod tests {
         app.run_command(Command::FocusPanel(Panel::Syscalls));
         assert!(app.panel_is_open(Panel::Syscalls), "le panneau doit être rouvert");
         assert_eq!(app.focused_panel(), Some(Panel::Syscalls));
+
+        // La sortie du programme s'ouvre aussi au clavier, pas seulement par le
+        // bouton de l'en-tête de la console.
+        assert!(!app.show_program_output);
+        app.run_command(Command::ProgramOutput);
+        assert!(app.show_program_output);
 
         // Fenêtres et langue.
         assert!(!app.show_settings);

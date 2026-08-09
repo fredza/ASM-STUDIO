@@ -1280,6 +1280,153 @@ impl App {
         changed
     }
 
+    /// « Sortie du programme » : ce que l'élève verrait s'il lançait son binaire
+    /// depuis un terminal, et **rien d'autre**.
+    ///
+    /// La console du panneau raconte le déroulement — assemblage, appels
+    /// système, diagnostics — et c'est ce qu'on lui demande. Mais quand la
+    /// question est « qu'est-ce que mon programme affiche, au juste ? », ces
+    /// lignes-là sont du bruit : l'élève doit trier ce qui vient de lui de ce
+    /// qui vient de l'IDE. Cette boîte répond à cette question seule, sur fond
+    /// de terminal pour qu'on ne s'y trompe pas.
+    pub(super) fn program_output_window(&mut self, ctx: &egui::Context) {
+        if !self.show_program_output {
+            return;
+        }
+        use crate::debugger::RunState;
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let hdr = self.c_header();
+
+        // État de l'exécution, dans les mots du terminal : c'est ce qui donne
+        // son sens à une sortie vide (rien écrit ? ou pas encore lancé ?).
+        let (state_txt, state_col) = match self.dbg.as_ref().map(|d| d.state) {
+            None => (
+                tr("Aucune exécution", "No run", "Ninguna ejecución").to_string(),
+                hdr,
+            ),
+            Some(RunState::Exited(0)) => (
+                format!("{} 0", tr("Terminé — code de sortie", "Finished — exit code", "Terminado — código de salida")),
+                FLAG_ON,
+            ),
+            Some(RunState::Exited(c)) => (
+                format!("{} {c}", tr("Terminé — code de sortie", "Finished — exit code", "Terminado — código de salida")),
+                FALSE_COL,
+            ),
+            Some(RunState::Signaled) => (
+                tr("Tué par un signal", "Killed by a signal", "Terminado por una señal").to_string(),
+                FALSE_COL,
+            ),
+            Some(RunState::Faulted(_)) => (
+                tr("Arrêté sur une faute", "Stopped on a fault", "Detenido por un fallo").to_string(),
+                FALSE_COL,
+            ),
+            Some(RunState::Running) => (
+                tr("En attente d'une saisie…", "Waiting for input…", "Esperando entrada…").to_string(),
+                ACTION,
+            ),
+            Some(RunState::Stopped) => (
+                tr("En cours d'exécution", "Running", "En ejecución").to_string(),
+                ACTION,
+            ),
+        };
+
+        let mut open = true;
+        let mut copy = false;
+        egui::Window::new(tr("Sortie du programme", "Program output", "Salida del programa"))
+            .collapsible(false)
+            .resizable(true)
+            .default_width(560.0)
+            .min_width(360.0)
+            .default_height(360.0)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(state_txt).color(state_col).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        copy = ui
+                            .button(tr("Copier", "Copy", "Copiar"))
+                            .on_hover_text(tr(
+                                "Copie la sortie dans le presse-papiers",
+                                "Copy the output to the clipboard",
+                                "Copiar la salida al portapapeles",
+                            ))
+                            .clicked();
+                    });
+                });
+                ui.add_space(4.0);
+
+                // Fond sombre et texte clair quel que soit le thème : c'est un
+                // terminal qu'on montre, et l'élève doit le reconnaître comme
+                // tel plutôt que comme un panneau de l'IDE de plus.
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(0x12, 0x14, 0x18))
+                    .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x2A, 0x2F, 0x38)))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_min_height(140.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("program_output_scroll")
+                            .stick_to_bottom(true)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                if self.program_output.is_empty() {
+                                    // Une zone vide sans un mot laisserait croire
+                                    // à une panne de l'IDE plutôt qu'à un
+                                    // programme qui n'a rien écrit.
+                                    ui.label(
+                                        RichText::new(tr(
+                                            "(le programme n'a rien écrit)",
+                                            "(the program wrote nothing)",
+                                            "(el programa no escribió nada)",
+                                        ))
+                                        .monospace()
+                                        .color(egui::Color32::from_rgb(0x6A, 0x72, 0x80)),
+                                    );
+                                } else {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&self.program_output)
+                                                .monospace()
+                                                .color(egui::Color32::from_rgb(0xD8, 0xDE, 0xE6)),
+                                        )
+                                        .selectable(true)
+                                        .wrap(),
+                                    );
+                                }
+                            });
+                    });
+
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(tr(
+                        "Ce que votre programme a écrit, sans les messages de l'IDE.",
+                        "What your program wrote, without the IDE's own messages.",
+                        "Lo que su programa escribió, sin los mensajes del IDE.",
+                    ))
+                    .small()
+                    .color(hdr),
+                );
+                ui.separator();
+                ui.vertical_centered(|ui| {
+                    if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
+                        self.show_program_output = false;
+                    }
+                });
+            });
+
+        if copy {
+            ctx.copy_text(self.program_output.clone());
+        }
+        if !open {
+            self.show_program_output = false;
+        }
+    }
+
     pub(super) fn calculator_window(&mut self, ctx: &egui::Context) {
         if !self.show_calculator {
             return;
@@ -2141,6 +2288,32 @@ mod settings_tests {
         let ctx = egui::Context::default();
         let _ = ctx.run(Default::default(), |ctx| app.license_window(ctx));
         assert!(app.show_license, "la fenêtre reste ouverte tant qu'on ne la ferme pas");
+    }
+
+    /// La boîte doit se peindre dans ses deux états — sortie vide (où elle dit
+    /// pourquoi) et sortie remplie — et rester ouverte tant qu'on ne la ferme
+    /// pas. Sans exécution en cours, elle annonce « aucune exécution » plutôt
+    /// que de laisser croire à un programme muet.
+    #[test]
+    fn program_output_window_renders_empty_and_filled() {
+        for out in ["", "Hello, world!\n42\n"] {
+            let mut app = App::new();
+            app.show_program_output = true;
+            app.program_output = out.to_string();
+            let ctx = egui::Context::default();
+            let _ = ctx.run(Default::default(), |ctx| app.program_output_window(ctx));
+            assert!(app.show_program_output, "la boîte reste ouverte sans geste de fermeture");
+        }
+    }
+
+    /// Fermée, elle ne peint rien : c'est ce qui la distingue d'un panneau.
+    #[test]
+    fn program_output_window_stays_closed() {
+        let mut app = App::new();
+        app.program_output = "invisible".into();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.program_output_window(ctx));
+        assert!(!app.show_program_output);
     }
 
     /// La fenêtre « À propos » doit se rendre sans paniquer, qu'une licence

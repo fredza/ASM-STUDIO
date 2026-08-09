@@ -4,7 +4,7 @@ use crate::debugger::Flags;
 use crate::i18n;
 
 use super::{
-    App, ACTION, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, FLASH_BRIGHT, GUTTER,
+    App, ACCENT, ACTION, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, FLASH_BRIGHT, GUTTER,
     PUSH_COL, POP_COL,
     changed_color, changed_color2, lerp_color,
     panel_header, icon_img, icon_tab,
@@ -13,6 +13,11 @@ use super::{
 };
 use super::pedagogy::bit_diff_strip;
 
+/// Bouton « voir la sortie seule » de l'en-tête de console. Nommé plutôt
+/// qu'écrit sur place : un test vérifie que ce caractère précis a bien un
+/// glyphe, faute de quoi il s'afficherait en carré vide (le sort de `❯`, déjà
+/// absent des polices par défaut).
+const CONSOLE_OUTPUT_ICON: &str = "🖵";
 
 impl App {
     // ---------- Bande basse ----------
@@ -241,6 +246,12 @@ impl App {
     pub(super) fn console_ui(&mut self, ui: &mut egui::Ui) {
         let console_ic = self.icons.as_ref().map(|i| i.console.clone());
         let clear = i18n::tr3(self.lang, "Effacer la console", "Clear the console", "Borrar la consola");
+        let see_output = i18n::tr3(
+            self.lang,
+            "Voir la sortie du programme seule, comme au terminal",
+            "See the program's output alone, as in a terminal",
+            "Ver solo la salida del programa, como en un terminal",
+        );
         panel_header(ui, |ui| {
             icon_img(ui, console_ic.as_ref(), 15.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -254,6 +265,17 @@ impl App {
                 }
                 if resp.clicked() {
                     self.console.clear();
+                }
+                // Ouvre la sortie du programme démêlée du journal de l'IDE.
+                // Au même endroit que la corbeille : les deux actions portent
+                // sur ce qu'affiche la console, pas sur le programme.
+                let btn = egui::Button::new(RichText::new(CONSOLE_OUTPUT_ICON).size(15.0).color(ACCENT)).frame(false);
+                let resp = ui.add(btn).on_hover_text(see_output);
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if resp.clicked() {
+                    self.show_program_output = true;
                 }
             });
         });
@@ -1067,6 +1089,20 @@ impl App {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Un bouton dont le glyphe manque s'affiche en carré vide, et l'élève ne
+    /// peut pas deviner ce qu'il ouvre. Le contrôle porte sur les polices
+    /// *par défaut* d'egui, sans les polices système ajoutées par
+    /// `install_fallback_font` : elles, on ne les a pas sur toutes les machines.
+    #[test]
+    fn the_console_output_button_has_a_real_glyph() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |_| {});
+        let has = ctx.fonts_mut(|f| {
+            f.has_glyphs(&egui::FontId::proportional(15.0), CONSOLE_OUTPUT_ICON)
+        });
+        assert!(has, "{CONSOLE_OUTPUT_ICON} n'a pas de glyphe : il s'afficherait en tofu");
+    }
 
     /// Le panneau SYSCALLS doit se rendre sans paniquer avec des arguments
     /// longs, et la trace doit bien contenir les appels — c'est ce contenu

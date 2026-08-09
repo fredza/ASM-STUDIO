@@ -4,6 +4,35 @@ use crate::i18n;
 
 use super::{abs_dir_of, asmstd_dir, data_dir, App};
 
+/// Ajoute du texte à un tampon d'affichage en le gardant borné, et ne conserve
+/// que la fin — c'est là qu'est le plus récent, donc le plus utile.
+///
+/// On coupe par gros blocs plutôt qu'octet par octet : chaque troncature décale
+/// tout le reste de la chaîne, et le faire à chaque écriture coûterait plus cher
+/// que le débordement qu'on évite.
+fn push_bounded(buf: &mut String, s: &str, lang: i18n::Lang) {
+    buf.push_str(s);
+    if buf.len() <= super::CONSOLE_MAX {
+        return;
+    }
+    let cut = buf.len() - super::CONSOLE_KEEP;
+    // Repart sur une frontière de caractère, puis sur un début de ligne :
+    // couper au milieu d'un caractère multi-octets ferait paniquer le
+    // découpage, et au milieu d'une ligne tromperait la lecture.
+    let cut = (cut..buf.len()).find(|i| buf.is_char_boundary(*i)).unwrap_or(buf.len());
+    let cut = buf[cut..].find('\n').map_or(cut, |i| cut + i + 1);
+    let kept = buf.split_off(cut);
+    *buf = format!(
+        "{}\n{kept}",
+        i18n::tr3(
+            lang,
+            "[…] début de la console tronqué",
+            "[…] start of the console truncated",
+            "[…] inicio de la consola truncado",
+        )
+    );
+}
+
 impl App {
     pub(super) fn log(&mut self, s: &str) {
         self.console_push(s);
@@ -21,37 +50,20 @@ impl App {
     /// et egui, qui remet en page tout le texte à chaque frame, rendrait l'IDE
     /// injouable bien avant que la mémoire ne manque.
     pub(super) fn console_push(&mut self, s: &str) {
-        self.console.push_str(s);
-        if self.console.len() > super::CONSOLE_MAX {
-            self.trim_console();
-        }
+        let lang = self.lang;
+        push_bounded(&mut self.console, s, lang);
     }
 
-    /// Ne conserve que la fin de la console — c'est là qu'est le plus récent,
-    /// donc le plus utile. On coupe par gros blocs plutôt qu'octet par octet :
-    /// chaque troncature décale tout le reste de la chaîne, et le faire à
-    /// chaque écriture coûterait plus cher que le débordement qu'on évite.
-    fn trim_console(&mut self) {
-        let cut = self.console.len() - super::CONSOLE_KEEP;
-        // Repart sur une frontière de caractère, puis sur un début de ligne :
-        // couper au milieu d'un caractère multi-octets ferait paniquer le
-        // découpage, et au milieu d'une ligne tromperait la lecture.
-        let cut = (cut..self.console.len())
-            .find(|i| self.console.is_char_boundary(*i))
-            .unwrap_or(self.console.len());
-        let cut = self.console[cut..]
-            .find('\n')
-            .map_or(cut, |i| cut + i + 1);
-        let kept = self.console.split_off(cut);
-        self.console = format!(
-            "{}\n{kept}",
-            i18n::tr3(
-                self.lang,
-                "[…] début de la console tronqué",
-                "[…] start of the console truncated",
-                "[…] inicio de la consola truncado",
-            )
-        );
+    /// Écrit ce qui vient du programme lui-même : la console (mêlée au journal,
+    /// pour le déroulement) et le tampon de sortie pure (pour la boîte
+    /// « Sortie du programme »).
+    ///
+    /// Les deux destinations sont indissociables — écrire dans l'une sans
+    /// l'autre ferait diverger silencieusement ce que montrent les deux vues.
+    pub(super) fn program_out_push(&mut self, s: &str) {
+        let lang = self.lang;
+        push_bounded(&mut self.program_output, s, lang);
+        push_bounded(&mut self.console, s, lang);
     }
 
     /// Pointe l'explorateur INTERNE de l'IDE sur le dossier où sont écrits les
@@ -390,6 +402,43 @@ mod console_tests {
             app.console.len() >= CONSOLE_KEEP,
             "on jette le début, on ne vide pas tout"
         );
+    }
+
+    /// Le partage des eaux : le journal de l'IDE ne doit jamais atterrir dans
+    /// la sortie du programme, sinon la boîte « Sortie du programme » ne
+    /// répondrait plus à la question qu'elle pose. Dans l'autre sens, ce que le
+    /// programme écrit va bien dans les deux — la console raconte tout.
+    #[test]
+    fn the_ide_log_never_reaches_the_program_output() {
+        let mut app = App::new();
+        app.log("Running...");
+        app.program_out_push("Hello, world!\n");
+        app.log("✘ SIGSEGV");
+
+        assert_eq!(
+            app.program_output, "Hello, world!\n",
+            "seule la sortie du programme doit s'y trouver"
+        );
+        for msg in ["Running...", "Hello, world!", "SIGSEGV"] {
+            assert!(app.console.contains(msg), "la console garde tout : {msg} manque");
+        }
+    }
+
+    /// Le tampon de sortie hérite du plafond de la console : une boucle `write`
+    /// étourdie le ferait enfler tout autant.
+    #[test]
+    fn the_program_output_stays_bounded_too() {
+        let mut app = App::new();
+        let line = "boucle sans condition d'arret\n";
+        for _ in 0..(CONSOLE_MAX / line.len() + 500) {
+            app.program_out_push(line);
+        }
+        assert!(
+            app.program_output.len() <= CONSOLE_MAX,
+            "sortie à {} octets, au-delà du plafond de {CONSOLE_MAX}",
+            app.program_output.len()
+        );
+        assert!(app.program_output.len() >= CONSOLE_KEEP, "on jette le début, pas tout");
     }
 
     /// Ce qui est gardé est la fin — la partie récente, celle que l'élève
