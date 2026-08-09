@@ -1,11 +1,16 @@
 //! Emplacements sur disque et parcours de l'arborescence.
 //!
-//! ASM Studio suit la spécification XDG : les réglages vont dans
-//! `~/.config/asm_studio/`, les exemples et les artefacts d'assemblage dans
-//! `~/.local/share/asm_studio/`. Ces dossiers sont toujours inscriptibles, quel
-//! que soit l'endroit d'où l'exécutable est lancé — c'est pourquoi on n'utilise
-//! pas le répertoire de l'exécutable (`target/debug/examples/`, créé par Cargo,
-//! provoquait un faux positif à la création des exemples).
+//! ASM Studio suit la spécification XDG là où elle a cours : les réglages vont
+//! dans `~/.config/asm_studio/`, les exemples et les artefacts d'assemblage
+//! dans `~/.local/share/asm_studio/`. Ailleurs ce sont les conventions du
+//! système qui s'appliquent — `~/Library/…` sur macOS, `%APPDATA%` et
+//! `%LOCALAPPDATA%` sur Windows. [`base`] est le seul endroit où ces
+//! différences sont écrites ; tout le reste du fichier les ignore.
+//!
+//! Ces dossiers sont toujours inscriptibles, quel que soit l'endroit d'où
+//! l'exécutable est lancé — c'est pourquoi on n'utilise pas le répertoire de
+//! l'exécutable (`target/debug/examples/`, créé par Cargo, provoquait un faux
+//! positif à la création des exemples).
 
 use std::path::{Path, PathBuf};
 
@@ -42,20 +47,117 @@ pub(super) fn is_asm(p: &Path) -> bool {
     p.extension().is_some_and(|e| e == "asm" || e == "s")
 }
 
-/// Répertoire de données utilisateur XDG : `~/.local/share/asm_studio/`.
-/// Cohérent avec les settings dans `~/.config/asm_studio/`, toujours accessible
-/// en écriture quelle que soit la position de l'exécutable.
-pub(super) fn data_dir() -> PathBuf {
+/// Les quatre familles de répertoires personnels que l'application utilise.
+///
+/// Elles restent distinctes sur tous les systèmes : les marqueurs de première
+/// utilisation ([`trial_marker_paths`]) comptent sur le fait que trois d'entre
+/// elles ne tombent pas au même endroit.
+enum Base {
+    /// Exemples, exercices, artefacts d'assemblage.
+    Data,
+    /// Réglages et licence.
+    Config,
+    Cache,
+    State,
+}
+
+/// Nom du dossier applicatif, partout le même.
+const APP: &str = "asm_studio";
+
+/// Emplacement d'une famille de répertoires, selon les usages du système.
+///
+/// C'est le seul endroit du programme qui sait où écrit chaque système :
+///
+/// * **Linux** (et les autres unix) suit la spécification XDG ;
+/// * **macOS** a ses propres conventions, et un `~/.config` y ferait tache :
+///   les réglages vont dans `Library/Preferences`, les données dans
+///   `Library/Application Support`, le cache dans `Library/Caches` ;
+/// * **Windows** sépare non par usage mais par itinérance — `%APPDATA%` suit
+///   l'élève d'un poste à l'autre d'un domaine, `%LOCALAPPDATA%` reste sur la
+///   machine. Le travail et la licence méritent de suivre, pas le cache.
+///
+/// La variable XDG correspondante l'emporte partout, y compris là où elle n'est
+/// pas d'usage : c'est le dépannage qui permet de tout déplacer sans recompiler
+/// (installation portable, poste d'examen, banc de test).
+///
+/// `None` quand ni cette variable ni le répertoire personnel ne sont lisibles :
+/// à l'appelant de décider s'il abandonne (les réglages) ou s'il se rabat sur le
+/// répertoire courant (les données, où ne rien écrire du tout serait pire).
+fn base(kind: Base) -> Option<PathBuf> {
     // La spec XDG Base Directory impose de traiter une variable *définie mais
     // vide* comme absente : sans le `.filter`, une variable exportée vide
     // (fréquent selon la session de bureau) donne un chemin relatif au
-    // répertoire courant du process au lieu du vrai chemin absolu.
-    std::env::var_os("XDG_DATA_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("asm_studio")
+    // répertoire courant du process au lieu du vrai chemin absolu. La règle vaut
+    // pour toutes les variables lues ici, XDG ou non.
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+
+    let xdg = match kind {
+        Base::Data => "XDG_DATA_HOME",
+        Base::Config => "XDG_CONFIG_HOME",
+        Base::Cache => "XDG_CACHE_HOME",
+        Base::State => "XDG_STATE_HOME",
+    };
+    if let Some(dir) = var(xdg) {
+        return Some(dir.join(APP));
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let dir = var("HOME")?
+        .join(match kind {
+            Base::Data => ".local/share",
+            Base::Config => ".config",
+            Base::Cache => ".cache",
+            Base::State => ".local/state",
+        })
+        .join(APP);
+
+    #[cfg(target_os = "macos")]
+    let dir = var("HOME")?
+        .join("Library")
+        .join(match kind {
+            Base::Data => "Application Support",
+            Base::Config => "Preferences",
+            Base::Cache => "Caches",
+            // Pas de dossier d'état sur macOS : on le range sous les données, ce
+            // qui garde les quatre emplacements distincts.
+            Base::State => "Application Support/state",
+        })
+        .join(APP);
+
+    // Windows n'a pas de variable « maison » fiable (`%USERPROFILE%` peut
+    // pointer ailleurs que le profil réellement utilisé) : on lit directement
+    // les dossiers applicatifs, et on classe par usage au niveau du dessous,
+    // faute de convention native pour le faire au-dessus.
+    //
+    // L'état va hors du profil, dans `%PROGRAMDATA%`, et pas sous
+    // `%LOCALAPPDATA%` avec le cache : sinon deux des trois marqueurs de
+    // [`trial_marker_paths`] partageraient un dossier `asm_studio` qu'un seul
+    // effacement emporterait — l'invariant que ces marqueurs existent pour
+    // tenir. C'est la troisième racine que Windows offre, là où les unix ont
+    // trois dossiers distincts d'emblée.
+    #[cfg(windows)]
+    let dir = match kind {
+        Base::Data => var("APPDATA")?.join(APP).join("data"),
+        Base::Config => var("APPDATA")?.join(APP).join("config"),
+        Base::Cache => var("LOCALAPPDATA")?.join(APP).join("cache"),
+        Base::State => var("PROGRAMDATA")?.join(APP).join("state"),
+    };
+
+    Some(dir)
+}
+
+/// Comme [`base`], mais se rabat sur `./asm_studio` faute de `HOME` : pour les
+/// répertoires que l'application écrit sans pouvoir renoncer.
+fn base_or_cwd(kind: Base) -> PathBuf {
+    base(kind).unwrap_or_else(|| PathBuf::from(".").join("asm_studio"))
+}
+
+/// Répertoire de données utilisateur : `~/.local/share/asm_studio/` sous Linux,
+/// voir [`base`] pour les autres systèmes. Toujours accessible en écriture
+/// quelle que soit la position de l'exécutable — c'est pourquoi on n'utilise
+/// pas le répertoire de l'exécutable.
+pub(super) fn data_dir() -> PathBuf {
+    base_or_cwd(Base::Data)
 }
 
 /// Peuple `~/.local/share/asm_studio/examples/` avec les programmes de
@@ -104,49 +206,36 @@ pub(super) fn setup_examples() {
     }
 }
 
+/// Fichier de réglages : `~/.config/asm_studio/settings.conf` sous Linux, voir
+/// [`base`] pour les autres systèmes.
+///
+/// `None` faute de répertoire personnel : mieux vaut ne pas retenir les réglages
+/// que les écrire dans le répertoire d'où l'IDE a été lancé, où ils ne seraient
+/// pas relus au lancement suivant.
 pub(super) fn settings_path() -> Option<PathBuf> {
-    // Voir le commentaire de `data_dir` : une variable XDG vide doit être
-    // traitée comme absente, sous peine de chemin relatif au répertoire
-    // courant du process au lieu du vrai chemin absolu.
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("asm_studio").join("settings.conf"))
+    Some(base(Base::Config)?.join("settings.conf"))
 }
 
 /// Chemin de la licence collée par l'utilisateur, à côté de `settings.conf`.
 /// `pub(crate)` : lu depuis `crate::license`, hors du module `app`.
 pub(crate) fn license_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("asm_studio").join("license.txt"))
+    Some(base(Base::Config)?.join("license.txt"))
 }
 
-/// Répertoire de cache XDG : `~/.cache/asm_studio/`.
+/// Répertoire de cache : `~/.cache/asm_studio/` sous Linux, voir [`base`].
 fn cache_dir() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("asm_studio")
+    base_or_cwd(Base::Cache)
 }
 
-/// Répertoire d'état XDG : `~/.local/state/asm_studio/`.
+/// Répertoire d'état : `~/.local/state/asm_studio/` sous Linux. macOS n'a pas
+/// d'équivalent natif, voir [`base`].
 fn state_dir() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("asm_studio")
+    base_or_cwd(Base::State)
 }
 
 /// Marqueurs de premier lancement (période avant inscription gratuite),
-/// en **trois copies redondantes** sur des répertoires XDG distincts, sous
+/// en **trois copies redondantes** dans trois répertoires système distincts (un
+/// invariant que [`base`] doit tenir sur chaque plateforme), sous
 /// des noms neutres différents. Volontairement discrets : ni à côté de
 /// `settings.conf`/`license.txt` (déjà connus comme emplacements à
 /// chercher), ni tous au même endroit sous le même nom.
@@ -201,6 +290,36 @@ mod tests {
         assert!(dir.is_absolute(), "le dossier doit être absolu");
         assert!(dir.ends_with("examples"));
         assert!(dir.parent().is_some(), "on doit pouvoir remonter (..)");
+    }
+
+    #[test]
+    fn trial_markers_live_in_three_distinct_places() {
+        // `crate::trial::reconcile` ne recompose l'état d'essai que si les trois
+        // copies survivent séparément. Comparer les chemins ne prouve rien (les
+        // trois fichiers portent déjà des noms différents) ; ce qu'il faut
+        // comparer, c'est le dossier `asm_studio` dont chacun dépend — celui
+        // qu'un utilisateur voit et efface d'un seul geste. Deux marqueurs sous
+        // le même resteraient solidaires. Le piège est réel : macOS n'a pas de
+        // dossier d'état, et Windows n'offre que deux dossiers applicatifs.
+        let app_root = |p: &Path| {
+            let mut root = PathBuf::new();
+            for c in p.components() {
+                root.push(c);
+                if c.as_os_str() == APP {
+                    break;
+                }
+            }
+            root
+        };
+
+        let paths = trial_marker_paths();
+        let roots: Vec<_> = paths.iter().map(|p| app_root(p)).collect();
+        for r in &roots {
+            assert!(r.ends_with(APP), "{r:?} devrait passer par un dossier {APP}");
+        }
+        assert_ne!(roots[0], roots[1]);
+        assert_ne!(roots[1], roots[2]);
+        assert_ne!(roots[0], roots[2]);
     }
 
     #[test]
