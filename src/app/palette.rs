@@ -5,8 +5,19 @@
 //! ni « Ouvrir », ni les réglages, ni un panneau fermé.
 //!
 //! La palette contourne le problème par le haut : **Ctrl+Maj+P**, on tape
-//! quelques lettres, les flèches choisissent, Entrée exécute. Chaque action de
-//! l'application y figure, y compris celles qui n'ont pas de raccourci.
+//! quelques lettres, les flèches choisissent, Entrée exécute.
+//!
+//! Chaque action de l'application y figure, y compris celles qui n'ont pas de
+//! raccourci : les cinq menus jusqu'à « Quitter », la navigation entre panneaux
+//! et onglets, la recherche et le remplacement, et les bascules de la fenêtre
+//! Réglages. Ce qui s'ajoute ailleurs s'ajoute donc ici — sans quoi la promesse
+//! du module devient fausse en silence, et un utilisateur au clavier se
+//! retrouve devant une action qu'il ne peut pas atteindre.
+//!
+//! N'y figurent pas les gestes qui n'ont de sens que sur une cible désignée à
+//! la souris ou au curseur (ouvrir un fichier récent précis, éditer tel
+//! registre) : la palette exécute des commandes, elle ne remplace pas la
+//! sélection.
 
 use eframe::egui::{self, RichText};
 
@@ -20,11 +31,18 @@ pub(crate) enum Command {
     // Fichier
     New,
     Open,
+    OpenExamples,
     Save,
     SaveAs,
+    ClearRecent,
+    Quit,
     // Éditeur
     Find,
     FindReplace,
+    FindNext,
+    FindPrev,
+    ReplaceCurrent,
+    ReplaceAll,
     FoldAtCursor,
     UnfoldAll,
     // Exécution
@@ -46,18 +64,34 @@ pub(crate) enum Command {
     // Panneaux : afficher/masquer, ou donner le focus.
     TogglePanel(Panel),
     FocusPanel(Panel),
+    NextPanel,
+    PrevPanel,
+    ClosePanel,
+    NextTab,
+    PrevTab,
     ResetLayout,
     ShowAllPanels,
     // Fenêtres
     TogglebPrediction,
     ToggleTutorial,
+    ResetTutorial,
     Calculator,
     Settings,
     Shortcuts,
     About,
+    License,
+    ActivateLicense,
     CheckUpdates,
-    // Langue et mode d'affichage
+    // Préférences : les mêmes bascules que la fenêtre Réglages, à portée de
+    // frappe. Elles y restent aussi — la palette n'est pas le seul chemin.
+    ToggleTooltips,
+    ToggleAnimations,
+    ToggleAsmstd,
+    TogglePedagogyAnim,
+    TogglePedagogyMemView,
+    // Langue, thème et mode d'affichage
     SetLang(Lang),
+    SetTheme(egui::ThemePreference),
     SetMode(crate::app::UiMode),
 }
 
@@ -68,10 +102,37 @@ impl Command {
         match self {
             Command::New => t("Fichier : Nouveau", "File: New", "Archivo: Nuevo").into(),
             Command::Open => t("Fichier : Ouvrir…", "File: Open…", "Archivo: Abrir…").into(),
+            Command::OpenExamples => t(
+                "Fichier : Exemples et exercices",
+                "File: Examples and exercises",
+                "Archivo: Ejemplos y ejercicios",
+            )
+            .into(),
             Command::Save => t("Fichier : Enregistrer", "File: Save", "Archivo: Guardar").into(),
             Command::SaveAs => t("Fichier : Enregistrer sous…", "File: Save As…", "Archivo: Guardar como…").into(),
+            Command::ClearRecent => t(
+                "Fichier : Vider la liste des récents",
+                "File: Clear the recent list",
+                "Archivo: Vaciar la lista de recientes",
+            )
+            .into(),
+            Command::Quit => t("Fichier : Quitter", "File: Quit", "Archivo: Salir").into(),
             Command::Find => t("Rechercher dans l'éditeur", "Find in editor", "Buscar en el editor").into(),
             Command::FindReplace => t("Rechercher / remplacer dans l'éditeur", "Find / replace in editor", "Buscar / reemplazar en el editor").into(),
+            Command::FindNext => t("Correspondance suivante", "Next match", "Coincidencia siguiente").into(),
+            Command::FindPrev => t("Correspondance précédente", "Previous match", "Coincidencia anterior").into(),
+            Command::ReplaceCurrent => t(
+                "Remplacer la correspondance courante",
+                "Replace the current match",
+                "Reemplazar la coincidencia actual",
+            )
+            .into(),
+            Command::ReplaceAll => t(
+                "Remplacer toutes les correspondances",
+                "Replace every match",
+                "Reemplazar todas las coincidencias",
+            )
+            .into(),
             Command::FoldAtCursor => t("Replier le label sous le curseur", "Fold the label under the cursor", "Plegar la etiqueta bajo el cursor").into(),
             Command::UnfoldAll => t("Tout déplier", "Unfold all", "Desplegar todo").into(),
             Command::Build => t("Assembler", "Build", "Ensamblar").into(),
@@ -123,18 +184,75 @@ impl Command {
                 t("Aller au panneau", "Go to panel", "Ir al panel"),
                 p.title(lang)
             ),
+            Command::NextPanel => t("Panneau suivant", "Next panel", "Panel siguiente").into(),
+            Command::PrevPanel => t("Panneau précédent", "Previous panel", "Panel anterior").into(),
+            Command::ClosePanel => t(
+                "Fermer le panneau focalisé",
+                "Close the focused panel",
+                "Cerrar el panel enfocado",
+            )
+            .into(),
+            Command::NextTab => t("Onglet suivant", "Next tab", "Pestaña siguiente").into(),
+            Command::PrevTab => t("Onglet précédent", "Previous tab", "Pestaña anterior").into(),
             Command::ResetLayout => t("Réinitialiser la disposition", "Reset layout", "Restablecer disposición").into(),
             Command::ShowAllPanels => t("Afficher tous les panneaux", "Show all panels", "Mostrar todos los paneles").into(),
             Command::TogglebPrediction => t("Fenêtre Prédiction", "Prediction window", "Ventana Predicción").into(),
             Command::ToggleTutorial => t("Activer/désactiver le tutoriel", "Enable/disable the tutorial", "Activar/desactivar el tutorial").into(),
+            Command::ResetTutorial => t(
+                "Réinitialiser la progression du tutoriel",
+                "Reset the tutorial progress",
+                "Reiniciar el progreso del tutorial",
+            )
+            .into(),
             Command::Calculator => t("Calculatrice multi-base", "Multi-base calculator", "Calculadora multibase").into(),
             Command::Settings => t("Réglages…", "Settings…", "Configuración…").into(),
             Command::Shortcuts => t("Raccourcis clavier…", "Keyboard shortcuts…", "Atajos de teclado…").into(),
             Command::About => t("À propos", "About", "Acerca de").into(),
+            Command::License => t("Afficher la licence…", "Show the license…", "Mostrar la licencia…").into(),
+            Command::ActivateLicense => t("Activer une licence…", "Activate a license…", "Activar una licencia…").into(),
             Command::CheckUpdates => t("Vérifier les mises à jour", "Check for updates", "Buscar actualizaciones").into(),
+            Command::ToggleTooltips => t(
+                "Réglages : infobulles de raccourcis",
+                "Settings: shortcut tooltips",
+                "Configuración: información sobre atajos",
+            )
+            .into(),
+            Command::ToggleAnimations => t(
+                "Réglages : animations de l'interface",
+                "Settings: interface animations",
+                "Configuración: animaciones de la interfaz",
+            )
+            .into(),
+            Command::ToggleAsmstd => t(
+                "Réglages : bibliothèque asmstd",
+                "Settings: asmstd library",
+                "Configuración: biblioteca asmstd",
+            )
+            .into(),
+            Command::TogglePedagogyAnim => t(
+                "Réglages : animations pédagogiques",
+                "Settings: teaching animations",
+                "Configuración: animaciones pedagógicas",
+            )
+            .into(),
+            Command::TogglePedagogyMemView => t(
+                "Réglages : vue mémoire unifiée",
+                "Settings: unified memory view",
+                "Configuración: vista de memoria unificada",
+            )
+            .into(),
             Command::SetLang(Lang::Fr) => t("Langue : Français", "Language: French", "Idioma: Francés").into(),
             Command::SetLang(Lang::En) => t("Langue : Anglais", "Language: English", "Idioma: Inglés").into(),
             Command::SetLang(Lang::Es) => t("Langue : Espagnol", "Language: Spanish", "Idioma: Español").into(),
+            Command::SetTheme(p) => format!(
+                "{} : {}",
+                t("Thème", "Theme", "Tema"),
+                match p {
+                    egui::ThemePreference::Light => t("Clair", "Light", "Claro"),
+                    egui::ThemePreference::Dark => t("Sombre", "Dark", "Oscuro"),
+                    egui::ThemePreference::System => t("Système", "System", "Sistema"),
+                }
+            ),
             Command::SetMode(m) => format!(
                 "{} : {}",
                 t("Mode d'affichage", "Display mode", "Modo de visualización"),
@@ -152,6 +270,8 @@ impl Command {
             Command::Build => "Ctrl+B",
             Command::Find => "Ctrl+F",
             Command::FindReplace => "Ctrl+H",
+            Command::FindNext => "F3",
+            Command::FindPrev => "Maj+F3",
             Command::FoldAtCursor => "Ctrl+Maj+[",
             Command::UnfoldAll => "Ctrl+Maj+]",
             Command::Run => "F5",
@@ -165,6 +285,11 @@ impl Command {
             Command::TimelineEnd => "End",
             Command::TimelinePrev => "←",
             Command::TimelineNext => "→",
+            Command::NextPanel => "F6",
+            Command::PrevPanel => "Maj+F6",
+            Command::ClosePanel => "Ctrl+W",
+            Command::NextTab => "Ctrl+Tab",
+            Command::PrevTab => "Ctrl+Maj+Tab",
             Command::TogglebPrediction => "Ctrl+5",
             Command::Shortcuts => "F1",
             _ => return None,
@@ -186,10 +311,16 @@ impl Command {
             Command::ClearBreakpoints,
             Command::New,
             Command::Open,
+            Command::OpenExamples,
             Command::Save,
             Command::SaveAs,
+            Command::ClearRecent,
             Command::Find,
             Command::FindReplace,
+            Command::FindNext,
+            Command::FindPrev,
+            Command::ReplaceCurrent,
+            Command::ReplaceAll,
             Command::FoldAtCursor,
             Command::UnfoldAll,
             Command::TimelineStart,
@@ -202,20 +333,40 @@ impl Command {
         v.extend(Panel::ALL.map(Command::FocusPanel));
         v.extend(Panel::ALL.map(Command::TogglePanel));
         v.extend([
+            Command::NextPanel,
+            Command::PrevPanel,
+            Command::NextTab,
+            Command::PrevTab,
+            Command::ClosePanel,
             Command::ShowAllPanels,
             Command::ResetLayout,
             Command::TogglebPrediction,
             Command::ToggleTutorial,
+            Command::ResetTutorial,
             Command::Calculator,
             Command::Settings,
             Command::Shortcuts,
             Command::CheckUpdates,
             Command::About,
+            Command::License,
+            Command::ActivateLicense,
             Command::SetMode(crate::app::UiMode::Learning),
             Command::SetMode(crate::app::UiMode::Full),
             Command::SetLang(Lang::Fr),
             Command::SetLang(Lang::En),
             Command::SetLang(Lang::Es),
+            Command::SetTheme(egui::ThemePreference::Dark),
+            Command::SetTheme(egui::ThemePreference::Light),
+            Command::SetTheme(egui::ThemePreference::System),
+            Command::ToggleTooltips,
+            Command::ToggleAnimations,
+            Command::ToggleAsmstd,
+            Command::TogglePedagogyAnim,
+            Command::TogglePedagogyMemView,
+            // En dernier : c'est la seule entrée qui ferme l'application, et
+            // elle n'a rien à faire au milieu d'une liste qu'on parcourt aux
+            // flèches.
+            Command::Quit,
         ]);
         v
     }
@@ -300,10 +451,20 @@ impl App {
         match cmd {
             Command::New => self.new_file(),
             Command::Open => self.open_browser(),
+            Command::OpenExamples => self.open_examples_dir(),
             Command::Save => {
                 self.save_source();
             }
             Command::SaveAs => self.open_saveas(),
+            Command::ClearRecent => {
+                self.recent_files.clear();
+                self.save_settings();
+            }
+            // Pas de `ViewportCommand::Close` ici : `run_command` n'a pas le
+            // contexte egui sous la main, et surtout la fermeture doit passer
+            // par le même chemin que la croix de la fenêtre — celui qui
+            // s'arrête pour demander quoi faire du travail non enregistré.
+            Command::Quit => self.quit_requested = true,
             Command::FoldAtCursor => self.fold_label_at_cursor(),
             Command::UnfoldAll => self.unfold_all(),
             Command::Find => {
@@ -318,6 +479,21 @@ impl App {
                 self.show_panel(Panel::Editor);
                 self.focus_panel(Panel::Editor);
             }
+            // La barre de recherche se rouvre : sans le surlignage, on ne
+            // verrait pas où le curseur vient d'atterrir.
+            Command::FindNext | Command::FindPrev => {
+                if !self.find_query.is_empty() {
+                    self.show_find = true;
+                    self.show_panel(Panel::Editor);
+                    if cmd == Command::FindPrev {
+                        self.find_prev();
+                    } else {
+                        self.find_next();
+                    }
+                }
+            }
+            Command::ReplaceCurrent => self.find_replace_current(),
+            Command::ReplaceAll => self.find_replace_all(),
             Command::Build => self.build(),
             Command::Run => self.launch(),
             Command::Step => self.step(),
@@ -351,6 +527,16 @@ impl App {
                 }
                 self.focus_panel(p);
             }
+            Command::NextPanel => self.focus_next_panel(false),
+            Command::PrevPanel => self.focus_next_panel(true),
+            Command::ClosePanel => {
+                if let Some(p) = self.focused_panel() {
+                    self.hide_panel(p);
+                    self.save_settings();
+                }
+            }
+            Command::NextTab => self.cycle_tab(false),
+            Command::PrevTab => self.cycle_tab(true),
             Command::ResetLayout => self.reset_dock_layout(),
             Command::ShowAllPanels => {
                 for p in Panel::ALL {
@@ -368,13 +554,43 @@ impl App {
                 self.tutorial_enabled = !self.tutorial_enabled;
                 self.save_settings();
             }
+            // `reset_tutorial` enregistre déjà, et remet l'élève devant l'accueil.
+            Command::ResetTutorial => self.reset_tutorial(),
             Command::Calculator => self.show_calculator = true,
             Command::Settings => self.show_settings = true,
             Command::Shortcuts => self.show_shortcuts = true,
             Command::About => self.show_about = true,
+            Command::License => self.show_license = true,
+            Command::ActivateLicense => self.show_license_gate = true,
             Command::CheckUpdates => self.updater.check(),
+            Command::ToggleTooltips => {
+                self.show_tooltips = !self.show_tooltips;
+                self.save_settings();
+            }
+            Command::ToggleAnimations => {
+                self.animate = !self.animate;
+                self.save_settings();
+            }
+            Command::ToggleAsmstd => {
+                self.use_asmstd = !self.use_asmstd;
+                self.save_settings();
+            }
+            Command::TogglePedagogyAnim => {
+                self.pedagogy_anim = !self.pedagogy_anim;
+                self.save_settings();
+            }
+            Command::TogglePedagogyMemView => {
+                self.pedagogy_memview = !self.pedagogy_memview;
+                self.save_settings();
+            }
             Command::SetLang(l) => {
                 self.lang = l;
+                self.save_settings();
+            }
+            // `apply_theme` relit la préférence à chaque image : rien d'autre
+            // à faire pour que le changement se voie.
+            Command::SetTheme(p) => {
+                self.theme_pref = p;
                 self.save_settings();
             }
             Command::SetMode(m) => self.set_ui_mode(m),
@@ -547,6 +763,24 @@ mod tests {
         }
     }
 
+    /// Deux entrées de même libellé sont indiscernables une fois affichées :
+    /// l'utilisateur en choisirait une au hasard. Le piège est un copier-coller
+    /// de libellé en ajoutant une commande — d'où ce test plutôt qu'une
+    /// relecture.
+    #[test]
+    fn no_two_commands_share_a_label() {
+        for lang in [Lang::Fr, Lang::En, Lang::Es] {
+            let mut seen: Vec<(String, Command)> = Vec::new();
+            for c in Command::all() {
+                let l = c.label(lang);
+                if let Some((_, other)) = seen.iter().find(|(s, _)| *s == l) {
+                    panic!("{c:?} et {other:?} portent le même libellé en {lang:?} : {l}");
+                }
+                seen.push((l, c));
+            }
+        }
+    }
+
     /// La palette doit couvrir chaque panneau, dans les deux sens : y aller et
     /// l'afficher/masquer. C'est ce qui remplace les menus au clavier.
     #[test]
@@ -647,6 +881,87 @@ mod tests {
         assert!(app.show_settings);
         app.run_command(Command::SetLang(Lang::Es));
         assert_eq!(app.lang, Lang::Es);
+    }
+
+    /// Les bascules de la fenêtre Réglages sont exécutables depuis la palette,
+    /// et elles basculent bien la même chose — pas une case voisine.
+    #[test]
+    fn preference_toggles_flip_their_own_setting() {
+        let mut app = App::new();
+        let before = (
+            app.show_tooltips,
+            app.animate,
+            app.use_asmstd,
+            app.pedagogy_anim,
+            app.pedagogy_memview,
+        );
+        app.run_command(Command::ToggleTooltips);
+        app.run_command(Command::ToggleAnimations);
+        app.run_command(Command::ToggleAsmstd);
+        app.run_command(Command::TogglePedagogyAnim);
+        app.run_command(Command::TogglePedagogyMemView);
+        assert_eq!(
+            (
+                !app.show_tooltips,
+                !app.animate,
+                !app.use_asmstd,
+                !app.pedagogy_anim,
+                !app.pedagogy_memview
+            ),
+            before,
+            "chaque bascule doit inverser son propre réglage"
+        );
+
+        app.run_command(Command::SetTheme(egui::ThemePreference::Light));
+        assert_eq!(app.theme_pref, egui::ThemePreference::Light);
+    }
+
+    /// Quitter passe par le drapeau, donc par la garde du travail non
+    /// enregistré — et non par un `Close` immédiat qui l'aurait contournée.
+    #[test]
+    fn quitting_goes_through_the_unsaved_guard() {
+        let mut app = App::new();
+        assert!(!app.quit_requested);
+        app.run_command(Command::Quit);
+        assert!(app.quit_requested);
+    }
+
+    /// Les commandes de navigation entre panneaux agissent sans dépendre d'un
+    /// raccourci clavier : c'est tout l'intérêt de les avoir mises ici.
+    #[test]
+    fn panel_navigation_commands_move_the_focus() {
+        let mut app = App::new();
+        app.set_ui_mode(crate::app::UiMode::Full);
+        app.run_command(Command::FocusPanel(Panel::Editor));
+
+        app.run_command(Command::NextPanel);
+        let after_next = app.focused_panel();
+        assert_ne!(after_next, Some(Panel::Editor), "on doit avoir changé de panneau");
+
+        app.run_command(Command::PrevPanel);
+        assert_eq!(app.focused_panel(), Some(Panel::Editor), "et pouvoir revenir");
+
+        // Fermer le panneau focalisé, comme Ctrl+W.
+        let p = app.focused_panel().expect("un panneau focalisé");
+        app.run_command(Command::ClosePanel);
+        assert!(!app.panel_is_open(p), "{p:?} devrait être fermé");
+    }
+
+    /// Chercher « remplacer » ou « thème » doit trouver, sinon les commandes
+    /// ajoutées seraient présentes mais introuvables.
+    #[test]
+    fn the_new_commands_are_reachable_by_typing() {
+        let cases: [(&str, Command); 5] = [
+            ("remplacer toutes", Command::ReplaceAll),
+            ("theme sombre", Command::SetTheme(egui::ThemePreference::Dark)),
+            ("quitter", Command::Quit),
+            ("exemples", Command::OpenExamples),
+            ("onglet suivant", Command::NextTab),
+        ];
+        for (query, expected) in cases {
+            let r = filter(query, Lang::Fr);
+            assert_eq!(r.first(), Some(&expected), "« {query} » devrait remonter {expected:?}");
+        }
     }
 
     /// Rendu headless : ouverture, frappe, navigation, exécution par Entrée.
