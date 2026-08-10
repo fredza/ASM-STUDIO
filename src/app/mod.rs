@@ -1301,6 +1301,9 @@ mod tests {
     /// de bout en bout. C'est le test qui attrape un thème ajouté à la va-vite.
     #[test]
     fn every_theme_paints_the_whole_application() {
+        // Ce test écrit le thème global : il ne peut pas tourner pendant qu'un
+        // autre juge une couleur peinte.
+        let _theme = crate::theme::lock_for_test();
         for t in crate::theme::THEMES.iter() {
             let mut app = App::new();
             app.set_ui_mode(UiMode::Full);

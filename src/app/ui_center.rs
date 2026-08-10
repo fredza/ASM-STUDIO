@@ -1230,6 +1230,10 @@ _start:
     /// Peint le désassemblage dans un panneau de taille connue et renvoie
     /// (zone du panneau, rectangle du surlignage de la ligne sélectionnée).
     fn disasm_row_highlight(app: &mut App) -> (egui::Rect, egui::Rect) {
+        // La couleur cherchée vient du thème en vigueur, qui est global au
+        // processus : sans ce verrou, un test qui change de thème en parallèle
+        // fait chercher ici une couleur que plus rien ne peint.
+        let _theme = crate::theme::lock_for_test();
         let ctx = egui::Context::default();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0))),

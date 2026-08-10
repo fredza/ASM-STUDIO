@@ -561,6 +561,23 @@ pub fn set_current(theme: &Theme) {
     }
 }
 
+/// Verrou réservé aux tests : `CURRENT` est global au processus, et les tests
+/// s'exécutent en parallèle DANS ce processus. Un test qui parcourt les thèmes
+/// et un test qui juge une couleur à l'écran se marchent alors dessus — le
+/// second cherche un surlignage de la couleur lue à l'instant d'avant, que le
+/// premier vient de remplacer. L'échec est intermittent (environ une exécution
+/// sur cinq), donc particulièrement coûteux : il tombe au moment de publier.
+///
+/// Tout test qui CHANGE le thème, et tout test qui JUGE une couleur peinte,
+/// prennent ce verrou pour la durée de leur rendu.
+#[cfg(test)]
+pub fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Un test qui panique en tenant le verrou l'empoisonne : sans cela, un
+    // seul échec en entraînerait une cascade d'autres, sans rapport.
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
