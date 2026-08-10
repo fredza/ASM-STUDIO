@@ -10,7 +10,7 @@
 
 use eframe::egui::{self, RichText};
 
-use super::{ACCENT, App, CHANGED, FALSE_COL, FLAG_ON, card, parse_hex};
+use super::{accent, App, changed_col, false_col, flag_on, card, parse_hex};
 use crate::i18n::{self, Lang};
 
 /// Résultat d'une prédiction résolue.
@@ -363,12 +363,12 @@ impl App {
             let (icon, col, msg) = match v {
                 Verdict::Right => (
                     "✔",
-                    FLAG_ON,
+                    flag_on(),
                     tr("Bien vu !", "Well spotted!", "¡Bien visto!"),
                 ),
                 Verdict::Wrong => (
                     "✘",
-                    FALSE_COL,
+                    false_col(),
                     tr("Pas tout à fait.", "Not quite.", "No exactamente."),
                 ),
             };
@@ -419,7 +419,7 @@ impl App {
                             let got = p.got.unwrap_or(0);
                             let delta = got.wrapping_sub(p.expected) as i64;
                             ui.label(RichText::new(tr("Écart", "Off by", "Diferencia")).small().color(hdr));
-                            ui.label(RichText::new(format!("{delta:+}")).monospace().color(CHANGED));
+                            ui.label(RichText::new(format!("{delta:+}")).monospace().color(changed_col()));
                             ui.end_row();
                         }
                     });
@@ -448,8 +448,8 @@ impl App {
                     // Fond très discret : c'est le TEXTE qui doit ressortir, pas
                     // le cadre. À 0.10 d'accent, le texte par défaut passait
                     // sous le seuil de lisibilité.
-                    .fill(ACCENT.linear_multiply(0.045))
-                    .stroke(egui::Stroke::new(1.2_f32, ACCENT.linear_multiply(0.7)))
+                    .fill(accent().linear_multiply(0.045))
+                    .stroke(egui::Stroke::new(1.2_f32, accent().linear_multiply(0.7)))
                     .corner_radius(egui::CornerRadius::same(5))
                     .inner_margin(egui::Margin::symmetric(8, 6))
                     .show(ui, |ui| {
@@ -457,7 +457,7 @@ impl App {
                         ui.label(
                             RichText::new(format!("💡 {}", mistake.title(lang)))
                                 .strong()
-                                .color(ACCENT),
+                                .color(accent()),
                         );
                         ui.add_space(3.0);
                         ui.label(

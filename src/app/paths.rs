@@ -95,6 +95,37 @@ pub(super) fn setup_examples() {
         ("ex_bits.asm",         include_str!("../../examples_seed/ex_bits.asm")),
         ("ex_tableau.asm",      include_str!("../../examples_seed/ex_tableau.asm")),
         ("ex_moyenne.asm",      include_str!("../../examples_seed/ex_moyenne.asm")),
+        // Les exercices du livret « L'Assembleur x86-64 pour débutants », dans
+        // l'ordre de ses chapitres : le nom porte le numéro du cours, pour que
+        // l'élève qui lit le PDF retrouve l'exercice sans chercher. Ceux du
+        // chapitre 9 dont le sujet est déjà couvert (somme d'un tableau) ne sont
+        // pas dupliqués : ex_tableau.asm les traite.
+        ("ex_c1_bases.asm",              include_str!("../../examples_seed/ex_c1_bases.asm")),
+        ("ex_c2_1_code_retour.asm",      include_str!("../../examples_seed/ex_c2_1_code_retour.asm")),
+        ("ex_c2_2_mon_message.asm",      include_str!("../../examples_seed/ex_c2_2_mon_message.asm")),
+        ("ex_c3_1_tailles.asm",          include_str!("../../examples_seed/ex_c3_1_tailles.asm")),
+        ("ex_c3_2_copier_registres.asm", include_str!("../../examples_seed/ex_c3_2_copier_registres.asm")),
+        ("ex_c4_1_calculette.asm",       include_str!("../../examples_seed/ex_c4_1_calculette.asm")),
+        ("ex_c4_2_division_signee.asm",  include_str!("../../examples_seed/ex_c4_2_division_signee.asm")),
+        ("ex_c5_1_echange.asm",          include_str!("../../examples_seed/ex_c5_1_echange.asm")),
+        ("ex_c5_2_trois_valeurs.asm",    include_str!("../../examples_seed/ex_c5_2_trois_valeurs.asm")),
+        ("ex_c6_1_plus_petit.asm",       include_str!("../../examples_seed/ex_c6_1_plus_petit.asm")),
+        ("ex_c6_2_trois_nombres.asm",    include_str!("../../examples_seed/ex_c6_2_trois_nombres.asm")),
+        ("ex_c6_3_pair_impair.asm",      include_str!("../../examples_seed/ex_c6_3_pair_impair.asm")),
+        ("ex_c7_1_compte_rebours.asm",   include_str!("../../examples_seed/ex_c7_1_compte_rebours.asm")),
+        ("ex_c7_2_etoiles.asm",          include_str!("../../examples_seed/ex_c7_2_etoiles.asm")),
+        ("ex_c7_3_multiplication.asm",   include_str!("../../examples_seed/ex_c7_3_multiplication.asm")),
+        ("ex_c8_1_soustraire.asm",       include_str!("../../examples_seed/ex_c8_1_soustraire.asm")),
+        ("ex_c8_2_somme_jusqua.asm",     include_str!("../../examples_seed/ex_c8_2_somme_jusqua.asm")),
+        ("ex_c8_3_trois_appels.asm",     include_str!("../../examples_seed/ex_c8_3_trois_appels.asm")),
+        ("ex_c9_1_tableau_min.asm",      include_str!("../../examples_seed/ex_c9_1_tableau_min.asm")),
+        ("ex_c9_3_compter_pairs.asm",    include_str!("../../examples_seed/ex_c9_3_compter_pairs.asm")),
+        ("ex_c10_1_triple.asm",          include_str!("../../examples_seed/ex_c10_1_triple.asm")),
+        ("ex_c10_2_somme_saisie.asm",    include_str!("../../examples_seed/ex_c10_2_somme_saisie.asm")),
+        ("ex_c11_2_tri_decroissant.asm", include_str!("../../examples_seed/ex_c11_2_tri_decroissant.asm")),
+        ("ex_c11_3_fizzbuzz.asm",        include_str!("../../examples_seed/ex_c11_3_fizzbuzz.asm")),
+        ("ex_c11_4_palindrome.asm",      include_str!("../../examples_seed/ex_c11_4_palindrome.asm")),
+        ("ex_c11_5_premiers.asm",        include_str!("../../examples_seed/ex_c11_5_premiers.asm")),
     ];
     for (name, content) in files {
         let path = dir.join(name);

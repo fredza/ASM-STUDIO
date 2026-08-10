@@ -6,7 +6,7 @@
 
 use eframe::egui::{self, RichText};
 
-use super::{App, ACTION, FALSE_COL, FLAG_ON, card};
+use super::{App, action, false_col, flag_on, card};
 use crate::exercise;
 use crate::i18n;
 
@@ -121,7 +121,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if verified {
-                    let col = if all_ok { FLAG_ON } else { FALSE_COL };
+                    let col = if all_ok { flag_on() } else { false_col() };
                     super::badge(ui, &format!("{done}/{total}"), col);
                 } else {
                     super::badge(
@@ -153,8 +153,8 @@ impl App {
                 // Bandeau de réussite, quand tout passe : la récompense.
                 if all_ok {
                     egui::Frame::default()
-                        .fill(FLAG_ON.linear_multiply(0.16))
-                        .stroke(egui::Stroke::new(1.0_f32, FLAG_ON))
+                        .fill(flag_on().linear_multiply(0.16))
+                        .stroke(egui::Stroke::new(1.0_f32, flag_on()))
                         .corner_radius(egui::CornerRadius::same(5))
                         .inner_margin(egui::Margin::symmetric(8, 6))
                         .show(ui, |ui| {
@@ -162,7 +162,7 @@ impl App {
                             ui.label(
                                 RichText::new(tr("✔ Exercice réussi !", "✔ Exercise passed!", "✔ ¡Ejercicio superado!"))
                                     .strong()
-                                    .color(FLAG_ON),
+                                    .color(flag_on()),
                             );
                         });
                     ui.add_space(6.0);
@@ -181,7 +181,7 @@ impl App {
                 if verified {
                     for c in &self.checks {
                         let ok = c.passed();
-                        let (icon, col) = if ok { ("✔", FLAG_ON) } else { ("✘", FALSE_COL) };
+                        let (icon, col) = if ok { ("✔", flag_on()) } else { ("✘", false_col()) };
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(icon).strong().color(col));
                             ui.label(RichText::new(c.label()).monospace().color(col));
@@ -193,7 +193,7 @@ impl App {
                                             Some(g) => format!("= {g}"),
                                             None => tr("non observé", "not observed", "no observado").to_string(),
                                         };
-                                        ui.label(RichText::new(got).monospace().small().color(FALSE_COL));
+                                        ui.label(RichText::new(got).monospace().small().color(false_col()));
                                     },
                                 );
                             }
@@ -232,10 +232,10 @@ impl App {
                         RichText::new(tr("⚠ Énoncé", "⚠ Statement", "⚠ Enunciado"))
                             .small()
                             .strong()
-                            .color(ACTION),
+                            .color(action()),
                     );
                     for e in &self.exercise.errors {
-                        ui.label(RichText::new(e).small().monospace().color(ACTION));
+                        ui.label(RichText::new(e).small().monospace().color(action()));
                     }
                 }
             });

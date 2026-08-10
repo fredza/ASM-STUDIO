@@ -534,7 +534,7 @@ impl App {
                 .find('(')
                 .map(|p| call[p + 1..].trim_end_matches(')').to_string())
                 .unwrap_or_default();
-            list.push(SyscallLog { name: syscall::name(num).to_string(), args, number: num, ret });
+            list.push(SyscallLog { name: syscall::name(num).to_string(), args, number: num, ret, regs: regs.clone() });
         };
         // Sortis de `self` le temps de parcourir l'historique, qui en fait
         // partie aussi.

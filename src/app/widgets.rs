@@ -12,7 +12,7 @@ use eframe::egui::{self, Color32, RichText};
 use crate::debugger::Debugger;
 use crate::explain;
 
-use super::{ACTION, CHANGED, FALSE_COL, FLAG_ON};
+use super::{action, changed_col, false_col, flag_on};
 use super::paths::{file_name, is_asm, list_entries};
 use std::path::{Path, PathBuf};
 
@@ -60,6 +60,138 @@ pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
 
 
 
+/// Ce que l'appel système va faire, déplié : la phrase d'effet, puis chaque
+/// registre avec le rôle qu'il joue ici, le contenu du tampon s'il y en a un,
+/// ce que RAX vaudra au retour, et le piège éventuel.
+///
+/// `buf` est le contenu déjà lu du tampon décrit par `d.buffer` — la lecture
+/// mémoire revient à l'appelant, qui seul sait si le processus est vivant et
+/// si la vue affichée est bien celle du présent.
+pub(super) fn syscall_details(
+    ui: &mut egui::Ui,
+    d: &crate::syscall::Description,
+    buf: Option<&[u8]>,
+    skin: SyscallSkin,
+) {
+    let SyscallSkin { hdr, mnem, addr_c, bytes_c, labels } = skin;
+    // La phrase d'effet d'abord : c'est elle qu'on lit, les registres ne
+    // viennent qu'ensuite confirmer d'où sortent les valeurs.
+    egui::Frame::default()
+        .fill(action().linear_multiply(0.12))
+        .stroke(egui::Stroke::new(1.0_f32, action().linear_multiply(0.6)))
+        .corner_radius(egui::CornerRadius::same(5))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(labels.title).small().strong().color(action()));
+                ui.label(RichText::new(d.name).monospace().strong().color(mnem));
+            });
+            ui.add_space(2.0);
+            ui.label(RichText::new(&d.summary).size(12.5));
+        });
+
+    // Un registre par ligne : nom, argument, valeur lisible ; le rôle en
+    // dessous, en petit. Une grille à trois colonnes serrerait trop les
+    // valeurs longues (chemins, adresses).
+    ui.add_space(6.0);
+    ui.label(RichText::new(labels.args).small().strong().color(hdr));
+    for a in &d.args {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(RichText::new(a.reg).monospace().strong().color(mnem));
+            if !a.param.is_empty() {
+                ui.label(RichText::new(a.param).monospace().small().color(bytes_c));
+            }
+            ui.label(RichText::new("=").small().weak());
+            ui.label(RichText::new(&a.value).monospace().color(addr_c));
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(12.0);
+            ui.label(RichText::new(&a.role).small().weak());
+        });
+        ui.add_space(3.0);
+    }
+
+    // Le tampon : c'est ici que `msg` cesse d'être une adresse et redevient le
+    // texte tapé dans `.data`.
+    if let Some(b) = &d.buffer
+        && let Some(bytes) = buf
+    {
+        ui.add_space(4.0);
+        card(ui, |ui| {
+            ui.label(RichText::new(b.label).small().strong().color(hdr));
+            ui.add_space(2.0);
+            if b.as_text {
+                let text = crate::syscall::text_preview(bytes, 120);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(if text.is_empty() { "—".to_string() } else { format!("\"{text}\"") })
+                            .monospace()
+                            .color(changed_col()),
+                    )
+                    .wrap(),
+                );
+            }
+            let hex = bytes.iter().take(16).map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("0x{:X}", b.addr)).monospace().small().color(addr_c));
+                ui.label(RichText::new(hex).monospace().small().color(bytes_c));
+            });
+        });
+    }
+
+    // Ce que RAX vaudra APRÈS : la question qui suit immédiatement l'appel.
+    if let Some(ret) = &d.ret {
+        ui.add_space(6.0);
+        ui.label(RichText::new(labels.ret).small().strong().color(hdr));
+        ui.label(RichText::new(ret).size(12.0));
+    }
+
+    // Le piège, s'il y en a un pour ces valeurs-là.
+    if let Some(note) = &d.note {
+        ui.add_space(6.0);
+        egui::Frame::default()
+            .fill(false_col().linear_multiply(0.14))
+            .stroke(egui::Stroke::new(1.0_f32, false_col().linear_multiply(0.5)))
+            .corner_radius(egui::CornerRadius::same(5))
+            .inner_margin(egui::Margin::symmetric(8, 5))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(format!("⚠ {note}")).size(12.0).color(false_col()));
+            });
+    }
+}
+
+/// Couleurs et intitulés de [`syscall_details`], réunis : le bloc en demande
+/// six, et six paramètres de plus rendaient l'appel illisible des deux côtés.
+pub(super) struct SyscallSkin {
+    pub(super) hdr: Color32,
+    pub(super) mnem: Color32,
+    pub(super) addr_c: Color32,
+    pub(super) bytes_c: Color32,
+    pub(super) labels: SyscallLabels,
+}
+
+/// Les intitulés de [`syscall_details`]. Le rendu ne connaît pas la langue :
+/// il reçoit ses titres tout faits, comme les autres widgets reçoivent leurs
+/// couleurs.
+pub(super) struct SyscallLabels {
+    pub(super) title: &'static str,
+    pub(super) args: &'static str,
+    pub(super) ret: &'static str,
+}
+
+/// Les intitulés traduits, en un appel — deux panneaux affichent ce bloc.
+pub(super) fn syscall_labels(lang: crate::i18n::Lang) -> SyscallLabels {
+    use crate::i18n::tr3;
+    SyscallLabels {
+        title: tr3(lang, "⚙ Ce que fait cet appel", "⚙ What this call does", "⚙ Lo que hace esta llamada"),
+        args: tr3(lang, "Arguments, registre par registre", "Arguments, register by register", "Argumentos, registro por registro"),
+        ret: tr3(lang, "Au retour", "On return", "Al retornar"),
+    }
+}
+
 /// Affiche une petite icône carrée (rien si `icon` est `None`).
 pub(super) fn icon_img(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, size: f32) {
     if let Some(t) = icon {
@@ -95,7 +227,7 @@ pub(super) fn micro_static_flags(ui: &mut egui::Ui, hdr: Color32, e: &explain::E
         ui.weak(none_label);
     } else {
         ui.label(RichText::new(set_label).strong().color(hdr));
-        ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
+        ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(changed_col()));
     }
 }
 
@@ -124,7 +256,7 @@ pub(super) fn dir_tree(
     for f in files {
         let is_cur = f == current;
         let col = if is_cur {
-            CHANGED
+            changed_col()
         } else if is_asm(&f) {
             asm_col
         } else {
@@ -148,7 +280,7 @@ pub(super) fn bordered_button(
     label: &str,
     enabled: bool,
 ) -> egui::Response {
-    let color = if enabled { FLAG_ON } else { FALSE_COL };
+    let color = if enabled { flag_on() } else { false_col() };
     let btn = match btn_icon(icon) {
         Some(img) => egui::Button::image_and_text(img, label),
         None => egui::Button::new(label),
@@ -162,7 +294,7 @@ pub(super) fn btn_icon(icon: Option<&egui::TextureHandle>) -> Option<egui::load:
     icon.map(|t| egui::load::SizedTexture::new(t.id(), egui::vec2(16.0, 16.0)))
 }
 
-/// Bouton d'accent (fond ACCENT si actif, grisé sinon) — pour Run et Step.
+/// Bouton d'accent (fond accent() si actif, grisé sinon) — pour Run et Step.
 pub(super) fn accent_button(
     ui: &mut egui::Ui,
     icon: Option<&egui::TextureHandle>,
@@ -171,9 +303,9 @@ pub(super) fn accent_button(
 ) -> egui::Response {
     let btn = match (enabled, btn_icon(icon)) {
         (true, Some(img)) => {
-            egui::Button::image_and_text(img, RichText::new(label).color(Color32::WHITE)).fill(ACTION)
+            egui::Button::image_and_text(img, RichText::new(label).color(Color32::WHITE)).fill(action())
         }
-        (true, None) => egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(ACTION),
+        (true, None) => egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(action()),
         (false, Some(img)) => egui::Button::image_and_text(img, label),
         (false, None) => egui::Button::new(label),
     };

@@ -20,6 +20,8 @@ mod ui_chrome;
 mod ui_windows;
 mod ui_panels;
 mod ui_center;
+mod edit_ops;
+mod complete;
 mod pedagogy;
 mod dock;
 mod palette;
@@ -97,23 +99,53 @@ impl App {
 }
 
 // --- Palette ---
-pub(super) const ACCENT: Color32 = Color32::from_rgb(0x4C, 0x8B, 0xF5); // bleu d'accent
-pub(super) const ACTION: Color32 = Color32::from_rgb(0xE8, 0x8A, 0x2E); // orange d'action (Run/Step)
-pub(super) const HEADER: Color32 = Color32::from_rgb(0x8A, 0x9B, 0xB4); // titres de section
-pub(super) const CHANGED: Color32 = Color32::from_rgb(0xF5, 0xA6, 0x23); // valeur modifiée
-pub(super) const FLAG_ON: Color32 = Color32::from_rgb(0x5F, 0xBF, 0x69);
-pub(super) const FLAG_OFF: Color32 = Color32::from_rgb(0x77, 0x77, 0x80);
-pub(super) const RIP_ROW: Color32 = Color32::from_rgb(0x3A, 0x33, 0x1E);
-pub(super) const SEL_ROW: Color32 = Color32::from_rgb(0x2E, 0x2E, 0x38);
-pub(super) const ADDR_COL: Color32 = Color32::from_rgb(0x7F, 0x9C, 0xD1);
-pub(super) const BYTES_COL: Color32 = Color32::from_rgb(0x80, 0x80, 0x88);
-pub(super) const MNEMONIC: Color32 = Color32::from_rgb(0x6E, 0xB4, 0xE8);
-pub(super) const FALSE_COL: Color32 = Color32::from_rgb(0xD9, 0x5B, 0x5B);
+//
+// Ces couleurs ne sont plus des constantes mais des lectures du thème courant
+// (voir [`crate::theme`]) : c'est ce qui permet d'en ajouter un sans repasser
+// par ici. Le coût est une lecture atomique par appel, sur un chemin où chaque
+// libellé en fait déjà une poignée — invisible à l'échelle d'une image.
 
-// Couleur de la gouttière de numéros de ligne.
-pub(super) const GUTTER: Color32 = Color32::from_rgb(0x60, 0x66, 0x70);
-// Pastille de point d'arrêt, dans la gouttière.
-pub(super) const BREAKPOINT: Color32 = Color32::from_rgb(0xE0, 0x4A, 0x4A);
+/// Accent principal : liens, sélection, repère de la ligne courante.
+pub(super) fn accent() -> Color32 {
+    crate::theme::current().ui.accent
+}
+/// Accent d'action (Lancer / Pas à pas).
+pub(super) fn action() -> Color32 {
+    crate::theme::current().ui.action
+}
+/// Valeur qui vient de changer.
+pub(super) fn changed_col() -> Color32 {
+    crate::theme::current().ui.changed
+}
+pub(super) fn flag_on() -> Color32 {
+    crate::theme::current().ui.ok
+}
+pub(super) fn flag_off() -> Color32 {
+    crate::theme::current().ui.off
+}
+/// Erreur, condition fausse.
+pub(super) fn false_col() -> Color32 {
+    crate::theme::current().ui.error
+}
+/// Couleur de la gouttière de numéros de ligne.
+pub(super) fn gutter_col() -> Color32 {
+    crate::theme::current().ui.gutter
+}
+/// Pastille de point d'arrêt, dans la gouttière.
+pub(super) fn breakpoint_col() -> Color32 {
+    crate::theme::current().ui.error
+}
+/// Pic de la pulsation « CPU vivant ».
+pub(super) fn flash_bright() -> Color32 {
+    crate::theme::current().ui.flash
+}
+pub(super) fn push_col() -> Color32 {
+    crate::theme::current().ui.ok
+}
+pub(super) fn pop_col() -> Color32 {
+    crate::theme::current().ui.warn
+}
+
 // Taille au-delà de laquelle la console est rognée par le début, et taille
 // conservée après rognage. L'écart entre les deux est ce qui est jeté d'un
 // coup : le prendre large espace les rognages, dont chacun recopie tout ce
@@ -126,9 +158,6 @@ pub(super) const CONSOLE_KEEP: usize = 384 * 1024;
 pub(super) const MAX_RECENT: usize = 10;
 // Animation « CPU vivant ».
 pub(super) const FLASH_DUR: f64 = 0.7; // durée du fondu (secondes)
-pub(super) const FLASH_BRIGHT: Color32 = Color32::from_rgb(0xFF, 0xF2, 0x9A); // pic de pulsation
-pub(super) const PUSH_COL: Color32 = Color32::from_rgb(0x5F, 0xBF, 0x69);
-pub(super) const POP_COL: Color32 = Color32::from_rgb(0xE0, 0x8A, 0x3C);
 
 /// Interpolation linéaire entre deux couleurs (t ∈ [0,1]).
 pub(super) fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -137,16 +166,16 @@ pub(super) fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
 }
 
-/// Couleur d'une valeur modifiée, pulsant du clair vers `CHANGED` selon `flash`.
+/// Couleur d'une valeur modifiée, pulsant du clair vers `changed_col()` selon `flash`.
 pub(super) fn changed_color(flash: Option<f32>) -> Color32 {
-    changed_color2(flash, CHANGED)
+    changed_color2(flash, changed_col())
 }
 
 
 /// Comme [`changed_color`] mais vers une couleur de base arbitraire.
 pub(super) fn changed_color2(flash: Option<f32>, base: Color32) -> Color32 {
     match flash {
-        Some(p) => lerp_color(FLASH_BRIGHT, base, p),
+        Some(p) => lerp_color(flash_bright(), base, p),
         None => base,
     }
 }
@@ -266,6 +295,10 @@ pub(super) struct SyscallLog {
     pub(super) args: String,
     pub(super) number: u64,
     pub(super) ret: Option<i64>,
+    /// Les registres tels qu'ils étaient au moment de l'appel. Gardés plutôt
+    /// que la phrase déjà rédigée : l'explication se recalcule à l'affichage,
+    /// et suit donc la langue si elle change en cours de session.
+    pub(super) regs: crate::debugger::Registers,
 }
 
 pub struct App {
@@ -379,6 +412,28 @@ pub struct App {
     /// laissée par le rendu précédent — utilisée pour l'appariement de
     /// parenthèses de la frame courante (un cran de retard imperceptible).
     pub(super) editor_cursor_byte: usize,
+    /// Sélection courante de l'éditeur (indices de CARACTÈRES, comme le curseur
+    /// d'egui), relevée au dernier rendu. C'est sur elle que travaillent les
+    /// gestes d'édition de [`edit_ops`], déclenchés au clavier avant que
+    /// l'éditeur ne soit redessiné.
+    pub(super) editor_sel: (usize, usize),
+    /// Sélection à replacer au prochain rendu, quand une opération d'édition a
+    /// bougé le texte sous le curseur. Seul `editor_ui` peut l'écrire dans la
+    /// mémoire d'egui, d'où cette boîte aux lettres.
+    pub(super) pending_editor_sel: Option<(usize, usize)>,
+    /// Boîte « aller à la ligne » (Ctrl+G).
+    pub(super) show_goto_line: bool,
+    pub(super) goto_line_input: String,
+    pub(super) goto_line_focus: bool,
+    /// La liste d'autocomplétion était affichée au dernier rendu. Les
+    /// raccourcis, joués AVANT le rendu, s'en servent pour savoir à qui
+    /// appartiennent ↑↓, Tab et Entrée.
+    pub(super) complete_open: bool,
+    /// Proposition retenue dans la liste d'autocomplétion.
+    pub(super) complete_sel: usize,
+    /// Début du mot pour lequel la liste a été écartée (Échap, ou complétion
+    /// acceptée) : elle ne se rouvre qu'au mot suivant.
+    pub(super) complete_dismissed: Option<usize>,
     /// Barre de recherche/remplacement (Ctrl+F / Ctrl+H) de l'éditeur.
     pub(super) show_find: bool,
     /// Affiche en plus la ligne de remplacement (Ctrl+H) plutôt que la seule recherche.
@@ -398,9 +453,10 @@ pub struct App {
     /// bascule en vue lecture seule (voir `folded_editor_ui`).
     pub(super) folded_labels: std::collections::BTreeSet<String>,
     pub(super) stack_tab: StackTab,
-    /// Thème sombre actif (mis à jour dans `apply_theme`) — palette de texte.
-    pub(super) dark: bool,
     pub(super) show_tooltips: bool,
+    /// Inspection au survol dans l'éditeur (voir [`inspect`]) : la valeur du
+    /// mot sous le pointeur, affichée sur place.
+    pub(super) inspect_hover: bool,
     /// Animations « CPU vivant » (pulsation des valeurs modifiées au Step).
     pub(super) animate: bool,
     /// Mode pédagogique — animations enrichies (flèches, fondu directionnel).
@@ -413,7 +469,8 @@ pub struct App {
     pub(super) flash_time: f64,
     /// Un Step vient d'avoir lieu : mémorise l'instant au prochain frame.
     pub(super) pending_flash: bool,
-    pub(super) theme_pref: egui::ThemePreference,
+    /// Thème demandé : un thème nommé du catalogue, ou « celui du système ».
+    pub(super) theme_pref: crate::theme::Choice,
     /// Langue de l'interface (Réglages).
     pub(super) lang: Lang,
     pub(super) show_settings: bool,
@@ -580,6 +637,14 @@ impl App {
             editor_ln: 1,
             editor_col: 1,
             editor_cursor_byte: 0,
+            editor_sel: (0, 0),
+            pending_editor_sel: None,
+            show_goto_line: false,
+            goto_line_input: String::new(),
+            goto_line_focus: false,
+            complete_open: false,
+            complete_sel: 0,
+            complete_dismissed: None,
             show_find: false,
             find_replace_mode: false,
             find_query: String::new(),
@@ -589,15 +654,15 @@ impl App {
             pending_scroll_to_line: None,
             folded_labels: std::collections::BTreeSet::new(),
             stack_tab: StackTab::Stack,
-            dark: true,
             show_tooltips: true,
+            inspect_hover: true,
             animate: true,
             pedagogy_anim: false,
             pedagogy_memview: false,
             use_asmstd: false,
             flash_time: 0.0,
             pending_flash: false,
-            theme_pref: egui::ThemePreference::Dark,
+            theme_pref: crate::theme::Choice::default(),
             lang: Lang::Fr,
             show_settings: false,
             show_about: false,
@@ -686,7 +751,6 @@ impl App {
     /// pour que le format se teste sans toucher au disque de l'utilisateur —
     /// ni dépendre de ce qui s'y trouve.
     pub(super) fn apply_settings(&mut self, content: &str) {
-        use egui::ThemePreference;
         // La disposition est appliquée en dernier : elle dépend des autres
         // réglages (langue pour les titres) et remplace l'arbre par défaut.
         let mut saved_dock: Option<String> = None;
@@ -694,13 +758,10 @@ impl App {
             let Some((k, v)) = line.split_once('=') else { continue };
             let v = v.trim();
             match k.trim() {
-                "theme" => {
-                    self.theme_pref = match v {
-                        "system" => ThemePreference::System,
-                        "light" => ThemePreference::Light,
-                        _ => ThemePreference::Dark,
-                    }
-                }
+                // Les identifiants « system », « dark » et « light » sont
+                // ceux qu'écrivaient les versions précédentes : un réglage
+                // existant est relu tel quel.
+                "theme" => self.theme_pref = crate::theme::Choice::from_key(v),
                 "lang" => self.lang = Lang::from_key(v),
                 "mode" => self.mode = UiMode::from_key(v),
                 "tutorial" => self.tutorial_enabled = v == "true",
@@ -709,6 +770,7 @@ impl App {
                     self.tutorial_current = (!v.is_empty()).then(|| v.to_string())
                 }
                 "tooltips" => self.show_tooltips = v == "true",
+                "inspect_hover" => self.inspect_hover = v == "true",
                 "asmstd" => self.use_asmstd = v == "true",
                 "animate" => self.animate = v == "true",
                 "pedagogy_anim" => self.pedagogy_anim = v == "true",
@@ -753,25 +815,21 @@ impl App {
     /// [`save_settings`] pour la même raison que [`apply_settings`] : le format
     /// se vérifie alors sans écrire nulle part.
     pub(super) fn settings_content(&self) -> String {
-        use egui::ThemePreference;
-        let theme = match self.theme_pref {
-            ThemePreference::System => "system",
-            ThemePreference::Light => "light",
-            _ => "dark",
-        };
+        let theme = self.theme_pref.key();
         let recent: String = self
             .recent_files
             .iter()
             .map(|p| format!("recent={}\n", p.display()))
             .collect();
         format!(
-            "theme={theme}\nlang={}\nmode={}\ntooltips={}\nasmstd={}\nanimate={}\n\
+            "theme={theme}\nlang={}\nmode={}\ntooltips={}\ninspect_hover={}\nasmstd={}\nanimate={}\n\
              pedagogy_anim={}\npedagogy_memview={}\npedagogy_predict={}\n\
              tutorial={}\ntutorial_done={}\ntutorial_current={}\n\
              welcome_dismissed={}\n{recent}dock={}\n",
             self.lang.key(),
             self.mode.key(),
             self.show_tooltips,
+            self.inspect_hover,
             self.use_asmstd,
             self.animate,
             self.pedagogy_anim,
@@ -890,33 +948,35 @@ impl App {
         i18n::tr3(self.lang, fr, en, es)
     }
 
-    // ---------- Palette de texte sensible au thème ----------
-    // En thème clair, les couleurs « sombres » de la maquette deviennent
-    // illisibles : on renvoie des variantes plus foncées.
+    // ---------- Palette de texte du thème courant ----------
+    // Ces méthodes ne choisissaient qu'entre deux jeux de couleurs codés en
+    // dur, « sombre » et « clair ». Elles lisent maintenant le thème (voir
+    // [`crate::theme`]), qui en compte autant qu'on veut. Elles restent des
+    // méthodes de `App` — c'est ainsi que les appelle tout le code d'affichage.
 
     /// Couleur des titres de section / libellés secondaires.
     pub(super) fn c_header(&self) -> Color32 {
-        if self.dark { HEADER } else { Color32::from_rgb(0x3B, 0x4A, 0x63) }
+        crate::theme::current().ui.header
     }
     /// Couleur des mnémoniques / accents bleus.
     pub(super) fn c_mnemonic(&self) -> Color32 {
-        if self.dark { MNEMONIC } else { Color32::from_rgb(0x1B, 0x5E, 0xA8) }
+        crate::theme::current().ui.mnemonic
     }
     /// Couleur des adresses.
     pub(super) fn c_addr(&self) -> Color32 {
-        if self.dark { ADDR_COL } else { Color32::from_rgb(0x2A, 0x53, 0x86) }
+        crate::theme::current().ui.addr
     }
     /// Couleur des octets bruts / texte discret monospace.
     pub(super) fn c_bytes(&self) -> Color32 {
-        if self.dark { BYTES_COL } else { Color32::from_rgb(0x60, 0x64, 0x70) }
+        crate::theme::current().ui.bytes
     }
     /// Fond de la ligne RIP dans le désassemblage.
     pub(super) fn c_rip_row(&self) -> Color32 {
-        if self.dark { RIP_ROW } else { Color32::from_rgb(0xFF, 0xEE, 0xB0) }
+        crate::theme::current().ui.rip_row
     }
     /// Fond d'une ligne sélectionnée / survolée dans le désassemblage.
     pub(super) fn c_sel_row(&self) -> Color32 {
-        if self.dark { SEL_ROW } else { Color32::from_rgb(0xD5, 0xE2, 0xF4) }
+        crate::theme::current().ui.sel_row
     }
 
     /// Nombre de boîtes de dialogue (fenêtres flottantes) actuellement ouvertes.
@@ -942,6 +1002,7 @@ impl App {
             self.show_shortcuts,
             self.show_settings,
             self.show_calculator,
+            self.show_goto_line,
             self.show_program_output,
             self.show_license_gate,
             self.show_license_nag,
@@ -1020,6 +1081,7 @@ impl eframe::App for App {
         self.settings_window(ctx);
         self.microscope_window(ctx);
         self.breakpoint_condition_window(ctx);
+        self.goto_line_window(ctx);
         self.calculator_window(ctx);
         self.program_output_window(ctx);
         self.palette_window(ctx);
@@ -1166,6 +1228,93 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chaque case à cocher des Réglages doit survivre à la fermeture de
+    /// l'application. L'oubli type est d'ajouter un réglage à la fenêtre sans
+    /// l'ajouter au fichier : il fonctionne, jusqu'au prochain lancement.
+    #[test]
+    fn every_preference_survives_a_settings_round_trip() {
+        // (nom lisible, accès au champ) — la liste que le fichier doit couvrir.
+        type Get = fn(&App) -> bool;
+        type Set = fn(&mut App, bool);
+        let prefs: [(&str, Get, Set); 7] = [
+            ("tooltips", |a| a.show_tooltips, |a, v| a.show_tooltips = v),
+            ("inspect_hover", |a| a.inspect_hover, |a, v| a.inspect_hover = v),
+            ("animate", |a| a.animate, |a, v| a.animate = v),
+            ("asmstd", |a| a.use_asmstd, |a, v| a.use_asmstd = v),
+            ("pedagogy_anim", |a| a.pedagogy_anim, |a, v| a.pedagogy_anim = v),
+            ("pedagogy_memview", |a| a.pedagogy_memview, |a, v| a.pedagogy_memview = v),
+            ("pedagogy_predict", |a| a.pedagogy_predict, |a, v| a.pedagogy_predict = v),
+        ];
+        for (name, get, set) in prefs {
+            // Dans les deux sens : un réglage écrit en dur à `true` passerait le
+            // test si on ne vérifiait que la valeur `true`.
+            for value in [false, true] {
+                let mut app = App::new();
+                set(&mut app, value);
+                let content = app.settings_content();
+                let mut reloaded = App::new();
+                reloaded.apply_settings(&content);
+                assert_eq!(get(&reloaded), value, "« {name} » perdu à la relecture");
+            }
+        }
+    }
+
+    /// Un thème choisi doit se retrouver au lancement suivant : c'est tout
+    /// l'intérêt du réglage.
+    #[test]
+    fn the_chosen_theme_survives_a_settings_round_trip() {
+        for t in crate::theme::THEMES.iter() {
+            let mut app = App::new();
+            app.theme_pref = crate::theme::Choice::Named(t.id);
+            let content = app.settings_content();
+
+            let mut reloaded = App::new();
+            reloaded.apply_settings(&content);
+            assert_eq!(reloaded.theme_pref, crate::theme::Choice::Named(t.id), "{}", t.id);
+        }
+        let mut app = App::new();
+        app.theme_pref = crate::theme::Choice::System;
+        let content = app.settings_content();
+        let mut reloaded = App::new();
+        reloaded.apply_settings(&content);
+        assert_eq!(reloaded.theme_pref, crate::theme::Choice::System);
+    }
+
+    /// Les réglages écrits par les versions d'avant le catalogue ne connaissent
+    /// que `system`, `dark` et `light`. Ils doivent continuer d'être relus, sans
+    /// quoi tout le monde retrouverait le thème par défaut à la mise à jour.
+    #[test]
+    fn settings_written_before_the_theme_catalogue_are_still_read() {
+        for (key, expected) in [
+            ("system", crate::theme::Choice::System),
+            ("dark", crate::theme::Choice::Named("dark")),
+            ("light", crate::theme::Choice::Named("light")),
+        ] {
+            let mut app = App::new();
+            app.apply_settings(&format!("theme={key}\n"));
+            assert_eq!(app.theme_pref, expected, "réglage « theme={key} »");
+        }
+    }
+
+    /// Chaque thème doit pouvoir être appliqué et l'application se peindre avec,
+    /// de bout en bout. C'est le test qui attrape un thème ajouté à la va-vite.
+    #[test]
+    fn every_theme_paints_the_whole_application() {
+        for t in crate::theme::THEMES.iter() {
+            let mut app = App::new();
+            app.set_ui_mode(UiMode::Full);
+            app.theme_pref = crate::theme::Choice::Named(t.id);
+            app.show_settings = true;
+            let ctx = egui::Context::default();
+            let _ = ctx.run(Default::default(), |ctx| {
+                app.apply_theme(ctx);
+                app.dock_ui(ctx);
+                app.settings_window(ctx);
+            });
+            assert_eq!(crate::theme::current().id, t.id, "{} n'a pas été appliqué", t.id);
+        }
+    }
 
     /// Le compteur reflète bien chaque boîte de dialogue, une par une.
     #[test]

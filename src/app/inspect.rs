@@ -120,13 +120,20 @@ impl App {
 
     /// Affiche l'inspection du mot survolé, s'il y en a une à faire.
     ///
-    /// Respecte le réglage « infobulles » : qui les a coupées ne veut pas non
-    /// plus d'une fenêtre qui suit sa souris dans son code. Et rien ne
-    /// s'affiche pendant une frappe — l'infobulle passerait juste sous le
-    /// curseur au moment le plus gênant.
+    /// Disposée **en ligne** : le nom, puis ses valeurs séparées par un point
+    /// médian. En colonne, l'infobulle était un bloc haut et étroit qui couvrait
+    /// les lignes de code sous le pointeur — précisément celles qu'on est en
+    /// train de lire. En ligne, elle tient sur la hauteur d'une ligne de texte
+    /// et se lit d'un seul balayage, comme la barre d'état. Le repli n'a lieu
+    /// que si la place manque vraiment (registre pointant sur de la mémoire,
+    /// dont le contenu s'ajoute).
+    ///
+    /// Le réglage « inspection au survol » la coupe entièrement. Rien ne
+    /// s'affiche non plus pendant une frappe : l'infobulle passerait juste sous
+    /// le curseur au moment le plus gênant.
     pub(super) fn inspect_tooltip(&self, ui: &mut eframe::egui::Ui, char_index: usize) {
         use eframe::egui::{self, RichText};
-        if !self.show_tooltips || ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_) | egui::Event::Key { .. }))) {
+        if !self.inspect_hover || ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_) | egui::Event::Key { .. }))) {
             return;
         }
         let Some(word) = word_at(&self.source, char_index) else { return };
@@ -138,10 +145,20 @@ impl App {
             egui::PopupAnchor::Pointer,
         )
         .show(|ui| {
-            ui.label(RichText::new(insp.title).monospace().strong().color(super::ACCENT));
-            for line in insp.lines {
-                ui.label(RichText::new(line).monospace());
-            }
+            // Assez large pour que les cas courants (registre, littéral) tiennent
+            // sur une ligne, assez borné pour ne pas barrer l'écran quand un
+            // pointeur ramène huit octets de mémoire avec lui.
+            ui.set_max_width(560.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(&insp.title).monospace().strong().color(super::accent()));
+                for (i, line) in insp.lines.iter().enumerate() {
+                    if i > 0 {
+                        ui.label(RichText::new("·").weak());
+                    }
+                    ui.label(RichText::new(line).monospace());
+                }
+            });
         });
     }
 
@@ -347,6 +364,85 @@ mod tests {
         let zf = app.inspect("ZF").expect("les drapeaux aussi");
         assert_eq!(zf.title, "ZF");
         assert!(zf.lines[0].starts_with('1'), "ZF doit être levé : {:?}", zf.lines);
+    }
+
+    // ---------- Rendu de l'infobulle ----------
+
+    /// Positions de chaque morceau de texte peint par l'infobulle, tous calques
+    /// confondus. Les formes peuvent être imbriquées (`Shape::Vec`) selon la
+    /// façon dont egui regroupe le calque : on descend donc dedans.
+    fn tooltip_text_rows(app: &App, char_index: usize) -> Vec<f32> {
+        use eframe::egui;
+        fn collect(shape: &egui::Shape, out: &mut Vec<f32>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.pos.y),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        // L'infobulle s'ancre au pointeur : sans position de pointeur, egui n'a
+        // nulle part où la poser et ne peint rien.
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 700.0))),
+            events: vec![egui::Event::PointerMoved(egui::pos2(300.0, 200.0))],
+            ..Default::default()
+        };
+        // Deux images : la première place l'infobulle, la seconde la peint à sa
+        // taille définitive.
+        let _ = ctx.run(input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.inspect_tooltip(ui, char_index));
+        });
+        let out = ctx.run(input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.inspect_tooltip(ui, char_index));
+        });
+        let mut rows = Vec::new();
+        for cs in &out.shapes {
+            collect(&cs.shape, &mut rows);
+        }
+        rows
+    }
+
+    /// Le point de la demande : les valeurs se lisent SUR UNE LIGNE. En colonne,
+    /// l'infobulle était un bloc haut et étroit qui masquait le code sous le
+    /// pointeur — celui qu'on est justement en train de lire.
+    #[test]
+    fn the_tooltip_lays_its_values_out_on_a_single_row() {
+        let mut app = App::new();
+        app.source = "    mov rax, 0x41\n".to_string();
+        let at = app.source.find("0x41").expect("le littéral");
+
+        let rows = tooltip_text_rows(&app, at);
+        assert!(rows.len() >= 4, "infobulle trop pauvre : {rows:?}");
+        let (min, max) = (
+            rows.iter().cloned().fold(f32::MAX, f32::min),
+            rows.iter().cloned().fold(f32::MIN, f32::max),
+        );
+        assert!(max - min < 2.0, "les valeurs s'empilent encore ({min} → {max})");
+    }
+
+    /// Et le réglage la coupe pour de bon : plus un seul mot peint.
+    #[test]
+    fn the_hover_setting_switches_the_tooltip_off() {
+        let mut app = App::new();
+        app.source = "    mov rax, 0x41\n".to_string();
+        let at = app.source.find("0x41").expect("le littéral");
+        assert!(!tooltip_text_rows(&app, at).is_empty(), "activée par défaut");
+
+        app.inspect_hover = false;
+        assert!(tooltip_text_rows(&app, at).is_empty(), "coupée, elle ne peint rien");
+    }
+
+    /// Elle ne dépend PLUS des infobulles de raccourcis : celles-ci parlent des
+    /// boutons de la barre d'outils, pas du code. Les confondre rendait le
+    /// nouveau réglage sans effet apparent pour qui avait coupé les premières.
+    #[test]
+    fn hover_inspection_is_independent_from_the_shortcut_tooltips() {
+        let mut app = App::new();
+        app.source = "    mov rax, 0x41\n".to_string();
+        let at = app.source.find("0x41").expect("le littéral");
+        app.show_tooltips = false;
+        assert!(!tooltip_text_rows(&app, at).is_empty());
     }
 
     #[test]

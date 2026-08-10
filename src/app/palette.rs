@@ -22,7 +22,7 @@
 use eframe::egui::{self, RichText};
 
 use super::dock::Panel;
-use super::{ACCENT, App};
+use super::{accent, App};
 use crate::i18n::{self, Lang};
 
 /// Une action exécutable depuis la palette.
@@ -45,6 +45,15 @@ pub(crate) enum Command {
     ReplaceAll,
     FoldAtCursor,
     UnfoldAll,
+    Indent,
+    Outdent,
+    ToggleComment,
+    MoveLineUp,
+    MoveLineDown,
+    DuplicateLine,
+    DeleteLine,
+    GotoLine,
+    Complete,
     // Exécution
     Build,
     Run,
@@ -86,13 +95,14 @@ pub(crate) enum Command {
     // Préférences : les mêmes bascules que la fenêtre Réglages, à portée de
     // frappe. Elles y restent aussi — la palette n'est pas le seul chemin.
     ToggleTooltips,
+    ToggleInspectHover,
     ToggleAnimations,
     ToggleAsmstd,
     TogglePedagogyAnim,
     TogglePedagogyMemView,
     // Langue, thème et mode d'affichage
     SetLang(Lang),
-    SetTheme(egui::ThemePreference),
+    SetTheme(crate::theme::Choice),
     SetMode(crate::app::UiMode),
 }
 
@@ -136,6 +146,25 @@ impl Command {
             .into(),
             Command::FoldAtCursor => t("Replier le label sous le curseur", "Fold the label under the cursor", "Plegar la etiqueta bajo el cursor").into(),
             Command::UnfoldAll => t("Tout déplier", "Unfold all", "Desplegar todo").into(),
+            Command::Indent => t("Indenter la sélection", "Indent the selection", "Indentar la selección").into(),
+            Command::Outdent => t("Désindenter la sélection", "Outdent the selection", "Reducir la indentación").into(),
+            Command::ToggleComment => t(
+                "Commenter / décommenter les lignes",
+                "Comment / uncomment the lines",
+                "Comentar / descomentar las líneas",
+            )
+            .into(),
+            Command::MoveLineUp => t("Déplacer la ligne vers le haut", "Move the line up", "Mover la línea hacia arriba").into(),
+            Command::MoveLineDown => t("Déplacer la ligne vers le bas", "Move the line down", "Mover la línea hacia abajo").into(),
+            Command::DuplicateLine => t("Dupliquer la ligne", "Duplicate the line", "Duplicar la línea").into(),
+            Command::DeleteLine => t("Supprimer la ligne", "Delete the line", "Eliminar la línea").into(),
+            Command::GotoLine => t("Aller à la ligne…", "Go to line…", "Ir a la línea…").into(),
+            Command::Complete => t(
+                "Compléter le mot en cours",
+                "Complete the current word",
+                "Completar la palabra actual",
+            )
+            .into(),
             Command::Build => t("Assembler", "Build", "Ensamblar").into(),
             Command::Run => t("Lancer le programme", "Run the program", "Ejecutar el programa").into(),
             Command::Step => t("Pas à pas (une instruction)", "Step (one instruction)", "Paso a paso (una instrucción)").into(),
@@ -224,6 +253,12 @@ impl Command {
                 "Configuración: información sobre atajos",
             )
             .into(),
+            Command::ToggleInspectHover => t(
+                "Réglages : inspection au survol",
+                "Settings: hover inspection",
+                "Configuración: inspección al pasar el cursor",
+            )
+            .into(),
             Command::ToggleAnimations => t(
                 "Réglages : animations de l'interface",
                 "Settings: interface animations",
@@ -251,15 +286,9 @@ impl Command {
             Command::SetLang(Lang::Fr) => t("Langue : Français", "Language: French", "Idioma: Francés").into(),
             Command::SetLang(Lang::En) => t("Langue : Anglais", "Language: English", "Idioma: Inglés").into(),
             Command::SetLang(Lang::Es) => t("Langue : Espagnol", "Language: Spanish", "Idioma: Español").into(),
-            Command::SetTheme(p) => format!(
-                "{} : {}",
-                t("Thème", "Theme", "Tema"),
-                match p {
-                    egui::ThemePreference::Light => t("Clair", "Light", "Claro"),
-                    egui::ThemePreference::Dark => t("Sombre", "Dark", "Oscuro"),
-                    egui::ThemePreference::System => t("Système", "System", "Sistema"),
-                }
-            ),
+            Command::SetTheme(c) => {
+                format!("{} : {}", t("Thème", "Theme", "Tema"), c.label(lang))
+            }
             Command::SetMode(m) => format!(
                 "{} : {}",
                 t("Mode d'affichage", "Display mode", "Modo de visualización"),
@@ -281,6 +310,15 @@ impl Command {
             Command::FindPrev => "Maj+F3",
             Command::FoldAtCursor => "Ctrl+Maj+[",
             Command::UnfoldAll => "Ctrl+Maj+]",
+            Command::Indent => "Tab",
+            Command::Outdent => "Maj+Tab",
+            Command::ToggleComment => "Ctrl+/",
+            Command::MoveLineUp => "Alt+↑",
+            Command::MoveLineDown => "Alt+↓",
+            Command::DuplicateLine => "Ctrl+D",
+            Command::DeleteLine => "Ctrl+Maj+K",
+            Command::GotoLine => "Ctrl+G",
+            Command::Complete => "Ctrl+Espace",
             Command::Run => "F5",
             Command::Step => "F10",
             Command::StepOver => "Maj+F10",
@@ -330,6 +368,15 @@ impl Command {
             Command::ReplaceAll,
             Command::FoldAtCursor,
             Command::UnfoldAll,
+            Command::Indent,
+            Command::Outdent,
+            Command::ToggleComment,
+            Command::MoveLineUp,
+            Command::MoveLineDown,
+            Command::DuplicateLine,
+            Command::DeleteLine,
+            Command::GotoLine,
+            Command::Complete,
             Command::TimelineStart,
             Command::TimelinePrev,
             Command::TimelineNext,
@@ -339,6 +386,15 @@ impl Command {
         // fréquent quand on navigue au clavier.
         v.extend(Panel::ALL.map(Command::FocusPanel));
         v.extend(Panel::ALL.map(Command::TogglePanel));
+        // Un thème ajouté au catalogue apparaît ici sans qu'on y touche : c'est
+        // la promesse du module — la palette couvre TOUTE l'application.
+        v.extend(
+            std::iter::once(Command::SetTheme(crate::theme::Choice::System)).chain(
+                crate::theme::THEMES
+                    .iter()
+                    .map(|t| Command::SetTheme(crate::theme::Choice::Named(t.id))),
+            ),
+        );
         v.extend([
             Command::NextPanel,
             Command::PrevPanel,
@@ -363,10 +419,8 @@ impl Command {
             Command::SetLang(Lang::Fr),
             Command::SetLang(Lang::En),
             Command::SetLang(Lang::Es),
-            Command::SetTheme(egui::ThemePreference::Dark),
-            Command::SetTheme(egui::ThemePreference::Light),
-            Command::SetTheme(egui::ThemePreference::System),
             Command::ToggleTooltips,
+            Command::ToggleInspectHover,
             Command::ToggleAnimations,
             Command::ToggleAsmstd,
             Command::TogglePedagogyAnim,
@@ -475,6 +529,15 @@ impl App {
             Command::Quit => self.quit_requested = true,
             Command::FoldAtCursor => self.fold_label_at_cursor(),
             Command::UnfoldAll => self.unfold_all(),
+            Command::Indent => self.editor_indent(),
+            Command::Outdent => self.editor_outdent(),
+            Command::ToggleComment => self.editor_toggle_comment(),
+            Command::MoveLineUp => self.editor_move_lines(false),
+            Command::MoveLineDown => self.editor_move_lines(true),
+            Command::DuplicateLine => self.editor_duplicate_lines(),
+            Command::DeleteLine => self.editor_delete_lines(),
+            Command::GotoLine => self.open_goto_line(),
+            Command::Complete => self.force_completion(),
             Command::Find => {
                 self.show_find = true;
                 self.find_replace_mode = false;
@@ -576,6 +639,10 @@ impl App {
                 self.show_tooltips = !self.show_tooltips;
                 self.save_settings();
             }
+            Command::ToggleInspectHover => {
+                self.inspect_hover = !self.inspect_hover;
+                self.save_settings();
+            }
             Command::ToggleAnimations => {
                 self.animate = !self.animate;
                 self.save_settings();
@@ -598,8 +665,8 @@ impl App {
             }
             // `apply_theme` relit la préférence à chaque image : rien d'autre
             // à faire pour que le changement se voie.
-            Command::SetTheme(p) => {
-                self.theme_pref = p;
+            Command::SetTheme(c) => {
+                self.theme_pref = c;
                 self.save_settings();
             }
             Command::SetMode(m) => self.set_ui_mode(m),
@@ -703,7 +770,7 @@ impl App {
                         for (i, cmd) in matches.iter().enumerate() {
                             let is_sel = i == sel;
                             let bg = if is_sel {
-                                ACCENT.linear_multiply(0.25)
+                                accent().linear_multiply(0.25)
                             } else {
                                 egui::Color32::TRANSPARENT
                             };
@@ -716,7 +783,7 @@ impl App {
                                     ui.horizontal(|ui| {
                                         let mut txt = RichText::new(cmd.label(lang));
                                         if is_sel {
-                                            txt = txt.strong().color(ACCENT);
+                                            txt = txt.strong().color(accent());
                                         }
                                         ui.label(txt);
                                         if let Some(sc) = cmd.shortcut() {
@@ -799,6 +866,77 @@ mod tests {
             assert!(all.contains(&Command::FocusPanel(p)), "aller à {p:?} manquant");
             assert!(all.contains(&Command::TogglePanel(p)), "bascule de {p:?} manquante");
         }
+    }
+
+    /// Un thème ajouté au catalogue doit apparaître dans la palette sans qu'on
+    /// pense à l'y inscrire : c'est la promesse du module (« toute
+    /// l'application au clavier »), et c'est exactement ce qu'on oublie.
+    #[test]
+    fn palette_covers_every_theme_of_the_catalogue() {
+        let all = Command::all();
+        assert!(all.contains(&Command::SetTheme(crate::theme::Choice::System)));
+        for t in crate::theme::THEMES.iter() {
+            assert!(
+                all.contains(&Command::SetTheme(crate::theme::Choice::Named(t.id))),
+                "thème {} absent de la palette",
+                t.id
+            );
+        }
+    }
+
+    /// Idem pour les gestes d'édition : ils ont un raccourci, mais quelqu'un
+    /// qui ne le connaît pas doit les trouver en tapant leur nom.
+    #[test]
+    fn palette_covers_every_editing_gesture() {
+        let all = Command::all();
+        for c in [
+            Command::Indent,
+            Command::Outdent,
+            Command::ToggleComment,
+            Command::MoveLineUp,
+            Command::MoveLineDown,
+            Command::DuplicateLine,
+            Command::DeleteLine,
+            Command::GotoLine,
+            Command::Complete,
+        ] {
+            assert!(all.contains(&c), "{c:?} absent de la palette");
+            assert!(c.shortcut().is_some(), "{c:?} devrait afficher son raccourci");
+        }
+    }
+
+    /// Et elles doivent AGIR : une entrée qui ne fait rien serait pire que pas
+    /// d'entrée du tout.
+    #[test]
+    fn the_editing_commands_change_the_source() {
+        let mut app = App::new();
+        app.source = "mov rax, 1\nmov rbx, 2\n".into();
+        app.editor_sel = (0, 0);
+
+        app.run_command(Command::Indent);
+        assert!(app.source.starts_with("    mov rax"), "{}", app.source);
+        app.run_command(Command::Outdent);
+        assert!(app.source.starts_with("mov rax"), "{}", app.source);
+
+        app.run_command(Command::ToggleComment);
+        assert!(app.source.starts_with("; mov rax"), "{}", app.source);
+        app.run_command(Command::ToggleComment);
+        assert!(app.source.starts_with("mov rax"), "{}", app.source);
+
+        app.run_command(Command::DuplicateLine);
+        assert_eq!(app.source, "mov rax, 1\nmov rax, 1\nmov rbx, 2\n");
+        app.run_command(Command::DeleteLine);
+        assert_eq!(app.source, "mov rax, 1\nmov rbx, 2\n");
+
+        app.editor_sel = (0, 0);
+        app.run_command(Command::MoveLineDown);
+        assert_eq!(app.source, "mov rbx, 2\nmov rax, 1\n");
+        app.run_command(Command::MoveLineUp);
+        assert_eq!(app.source, "mov rax, 1\nmov rbx, 2\n");
+
+        assert!(!app.show_goto_line);
+        app.run_command(Command::GotoLine);
+        assert!(app.show_goto_line);
     }
 
     #[test]
@@ -905,12 +1043,14 @@ mod tests {
         let mut app = App::new();
         let before = (
             app.show_tooltips,
+            app.inspect_hover,
             app.animate,
             app.use_asmstd,
             app.pedagogy_anim,
             app.pedagogy_memview,
         );
         app.run_command(Command::ToggleTooltips);
+        app.run_command(Command::ToggleInspectHover);
         app.run_command(Command::ToggleAnimations);
         app.run_command(Command::ToggleAsmstd);
         app.run_command(Command::TogglePedagogyAnim);
@@ -918,6 +1058,7 @@ mod tests {
         assert_eq!(
             (
                 !app.show_tooltips,
+                !app.inspect_hover,
                 !app.animate,
                 !app.use_asmstd,
                 !app.pedagogy_anim,
@@ -927,8 +1068,8 @@ mod tests {
             "chaque bascule doit inverser son propre réglage"
         );
 
-        app.run_command(Command::SetTheme(egui::ThemePreference::Light));
-        assert_eq!(app.theme_pref, egui::ThemePreference::Light);
+        app.run_command(Command::SetTheme(crate::theme::Choice::Named("catppuccin-mocha")));
+        assert_eq!(app.theme_pref, crate::theme::Choice::Named("catppuccin-mocha"));
     }
 
     /// Quitter passe par le drapeau, donc par la garde du travail non
@@ -968,7 +1109,7 @@ mod tests {
     fn the_new_commands_are_reachable_by_typing() {
         let cases: [(&str, Command); 5] = [
             ("remplacer toutes", Command::ReplaceAll),
-            ("theme sombre", Command::SetTheme(egui::ThemePreference::Dark)),
+            ("theme catppuccin mocha", Command::SetTheme(crate::theme::Choice::Named("catppuccin-mocha"))),
             ("quitter", Command::Quit),
             ("exemples", Command::OpenExamples),
             ("onglet suivant", Command::NextTab),

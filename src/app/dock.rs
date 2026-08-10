@@ -236,9 +236,19 @@ impl TabViewer for Viewer<'_> {
         true
     }
 
-    /// Tout panneau peut être détaché en fenêtre flottante.
+    /// Aucun panneau ne se détache en fenêtre flottante.
+    ///
+    /// egui_dock crée une fenêtre dès qu'un onglet est lâché hors d'un nœud —
+    /// un demi-centimètre de trop en le déplaçant suffisait, et le panneau
+    /// partait flotter par-dessus le reste. L'accident était fréquent, la
+    /// réparation pas évidente, et le bénéfice nul : dans une fenêtre unique,
+    /// un panneau flottant masque le code au lieu de dégager de la place.
+    ///
+    /// Ce qui reste possible, et qui couvre le besoin : déplacer un onglet
+    /// ailleurs dans la grille, l'empiler avec un autre, scinder une zone en
+    /// deux, redimensionner, fermer, rouvrir.
     fn allowed_in_windows(&self, _tab: &mut Panel) -> bool {
-        true
+        false
     }
 }
 
@@ -250,15 +260,54 @@ impl App {
             .is_some_and(|d| d.iter_all_tabs().any(|(_, t)| *t == panel))
     }
 
-    /// Affiche le panneau : le met au premier plan s'il existe déjà, sinon
-    /// l'ajoute en fenêtre flottante (sans bousculer la disposition en place).
+    /// Zone où replacer un panneau rouvert : celle qui héberge déjà l'un de ses
+    /// VOISINS dans la disposition d'origine du mode courant.
+    ///
+    /// Rouvrir « Pile » doit le ramener auprès des registres, pas au milieu de
+    /// l'écran. Plutôt que de coder cette carte une seconde fois, on la relit
+    /// dans la disposition de référence : les panneaux qui partagent un nœud
+    /// avec lui là-bas sont ses voisins, et le premier d'entre eux qui est
+    /// encore ouvert ici indique la zone.
+    ///
+    /// `None` si aucun voisin n'est ouvert (l'élève a tout fermé autour) :
+    /// l'appelant retombe alors sur la zone active.
+    fn home_leaf_for(&self, panel: Panel) -> Option<(SurfaceIndex, NodeIndex)> {
+        let reference = layout_for(self.mode);
+        let (surface, node, _) = reference.find_tab(&panel)?;
+        let neighbours: Vec<Panel> = reference[surface][node]
+            .iter_tabs()
+            .copied()
+            .filter(|p| *p != panel)
+            .collect();
+        let dock = self.dock.as_ref()?;
+        neighbours
+            .iter()
+            .find_map(|n| dock.find_tab(n).map(|(s, node, _)| (s, node)))
+    }
+
+    /// Affiche le panneau : le met au premier plan s'il existe déjà, sinon le
+    /// rouvre comme onglet de la zone où il vit d'habitude.
+    ///
+    /// Il partait auparavant en fenêtre flottante, pour ne pas bousculer la
+    /// disposition en place. Mais l'élève qui coche « Registres » dans le menu
+    /// Affichage attend de les revoir SOUS son code, là où ils étaient — pas
+    /// une fenêtre à replacer à la main par-dessus l'éditeur.
     pub(super) fn show_panel(&mut self, panel: Panel) {
-        let Some(dock) = self.dock.as_mut() else { return };
-        if let Some((surface, node, tab)) = dock.find_tab(&panel) {
-            dock.set_active_tab((surface, node, tab));
-        } else {
-            dock.add_window(vec![panel]);
+        if let Some(dock) = self.dock.as_mut()
+            && let Some(loc) = dock.find_tab(&panel)
+        {
+            dock.set_active_tab(loc);
+            return;
         }
+        let home = self.home_leaf_for(panel);
+        let Some(dock) = self.dock.as_mut() else { return };
+        if let Some(leaf) = home {
+            dock.set_focused_node_and_surface(leaf);
+        }
+        // Sans zone d'accueil identifiée, `push_to_focused_leaf` se rabat sur la
+        // zone active, et sur la surface principale s'il n'y en a aucune : le
+        // panneau réapparaît toujours quelque part de visible.
+        dock.push_to_focused_leaf(panel);
     }
 
     /// Ferme toutes les occurrences d'un panneau.
@@ -369,8 +418,8 @@ impl App {
         // pleinement rouge au survol — pour ne pas crier en permanence. Sans
         // fond : seul le fin « × » reste, ce qui l'allège nettement (la TAILLE
         // du glyphe, elle, est figée par egui_dock et n'est pas réglable).
-        style.buttons.close_tab_color = super::FALSE_COL.gamma_multiply(0.75);
-        style.buttons.close_tab_active_color = super::FALSE_COL;
+        style.buttons.close_tab_color = super::false_col().gamma_multiply(0.75);
+        style.buttons.close_tab_active_color = super::false_col();
         style.buttons.close_tab_bg_fill = egui::Color32::TRANSPARENT;
 
         let mut focused_name = None;
@@ -412,7 +461,7 @@ impl App {
                     ui.painter().rect_stroke(
                         rect.shrink(1.0),
                         4.0,
-                        egui::Stroke::new(1.0_f32, super::ACCENT.gamma_multiply(0.35)),
+                        egui::Stroke::new(1.0_f32, super::accent().gamma_multiply(0.35)),
                         egui::StrokeKind::Middle,
                     );
                 }
@@ -475,9 +524,11 @@ impl App {
             if skip_advanced && ADVANCED.contains(&p) {
                 continue;
             }
-            if let Some(dock) = self.dock.as_mut() {
-                dock.add_window(vec![p]);
-            }
+            // Les panneaux ne flottent plus (voir `allowed_in_windows`) : un
+            // `w:` écrit par une version précédente est réancré au lieu d'être
+            // ressuscité en fenêtre. Sans ça, l'élève garderait à vie un
+            // panneau flottant qu'il ne pourrait plus recréer.
+            self.show_panel(p);
         }
     }
 
@@ -568,6 +619,50 @@ mod tests {
             app.show_panel(p);
             assert!(app.panel_is_open(p), "{p:?} devrait être rouvert");
         }
+    }
+
+    /// Rouvrir un panneau doit le ramener DANS la grille, jamais en fenêtre
+    /// flottante par-dessus le code. C'est le défaut signalé : chaque panneau
+    /// coché dans le menu Affichage revenait en fenêtre à replacer à la main.
+    #[test]
+    fn reopening_a_panel_docks_it_instead_of_floating_it() {
+        let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
+        for p in Panel::ALL {
+            app.hide_panel(p);
+            app.show_panel(p);
+            let (surface, _, _) = app.dock.as_ref().unwrap().find_tab(&p).expect("rouvert");
+            assert_eq!(surface, SurfaceIndex::main(), "{p:?} rouvert en fenêtre flottante");
+        }
+    }
+
+    /// Et il doit revenir À SA PLACE : « Pile » auprès des registres, pas au
+    /// milieu de l'écran. Sans quoi rouvrir un panneau désorganise la
+    /// disposition au lieu de la rétablir.
+    #[test]
+    fn a_reopened_panel_comes_back_next_to_its_neighbours() {
+        let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
+        // Registres et Pile partagent la bande CPU dans la disposition d'origine.
+        app.hide_panel(Panel::Stack);
+        app.show_panel(Panel::Stack);
+        let dock = app.dock.as_ref().unwrap();
+        let (_, stack_node, _) = dock.find_tab(&Panel::Stack).expect("pile rouverte");
+        let (_, regs_node, _) = dock.find_tab(&Panel::Registers).expect("registres");
+        assert_eq!(stack_node, regs_node, "la pile doit retrouver la bande CPU");
+    }
+
+    /// Un panneau dont tous les voisins d'origine sont fermés doit quand même
+    /// réapparaître quelque part de visible, plutôt que nulle part.
+    #[test]
+    fn a_panel_reopens_even_when_all_its_neighbours_are_closed() {
+        let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
+        for p in Panel::ALL {
+            app.hide_panel(p);
+        }
+        app.show_panel(Panel::Registers);
+        assert!(app.panel_is_open(Panel::Registers));
     }
 
     /// `hide_panel` retire TOUTES les occurrences : un panneau ajouté deux fois

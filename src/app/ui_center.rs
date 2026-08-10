@@ -7,8 +7,8 @@ use crate::syntax;
 use crate::syscall;
 
 use super::{
-    App, ACCENT, ACTION, BREAKPOINT, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, GUTTER,
-    badge, card,
+    App, accent, action, breakpoint_col, changed_col, flag_on, flag_off, false_col, gutter_col,
+    badge, card, syscall_details, syscall_labels, SyscallSkin,
 };
 
 impl App {
@@ -36,6 +36,10 @@ impl App {
         }
         let fold_ranges = compute_fold_ranges(&self.source);
         if fold_ranges.iter().any(|f| self.folded_labels.contains(&f.label)) {
+            // Vue repliée : on n'y édite pas, donc on n'y complète pas non plus.
+            // Sans cet oubli explicite, ↑↓ et Entrée resteraient captées par une
+            // liste que plus rien ne dessine.
+            self.complete_open = false;
             self.folded_editor_ui(ui, &fold_ranges);
         } else {
             self.editor_ui(ui);
@@ -48,7 +52,7 @@ impl App {
     /// marqueur cliquable. On n'édite jamais à travers un repli — pas besoin
     /// de synchroniser texte réel et texte affiché, ni de gérer un curseur ici.
     fn folded_editor_ui(&mut self, ui: &mut egui::Ui, fold_ranges: &[FoldRange]) {
-        let dark = self.dark;
+        let pal = &crate::theme::current().syntax;
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let lines: Vec<String> = self.source.lines().map(str::to_string).collect();
@@ -66,8 +70,8 @@ impl App {
                     let range_here = fold_ranges.iter().find(|f| f.start_line == i);
                     let folded_here = range_here.filter(|f| self.folded_labels.contains(&f.label));
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("{:>width$}", i + 1)).monospace().color(GUTTER));
-                        let job = syntax::highlight(&format!("{}\n", lines[i]), dark, None, None, None);
+                        ui.label(RichText::new(format!("{:>width$}", i + 1)).monospace().color(gutter_col()));
+                        let job = syntax::highlight(&format!("{}\n", lines[i]), pal, None, None, None, None);
                         let galley = ui.fonts_mut(|f| f.layout_job(job));
                         if let Some(range) = range_here.filter(|_| folded_here.is_none()) {
                             // Label encore déplié, avec un corps à replier.
@@ -91,7 +95,7 @@ impl App {
                                     "línea(s) plegada(s) — clic para desplegar",
                                 )
                             );
-                            if ui.selectable_label(false, RichText::new(text).italics().color(ACCENT)).clicked() {
+                            if ui.selectable_label(false, RichText::new(text).italics().color(accent())).clicked() {
                                 to_unfold = Some(f.label.clone());
                             }
                         });
@@ -161,7 +165,7 @@ impl App {
 
                     if matches.is_empty() {
                         if !self.find_query.is_empty() {
-                            ui.colored_label(FALSE_COL, tr("Aucun résultat", "No results", "Sin resultados"));
+                            ui.colored_label(false_col(), tr("Aucun résultat", "No results", "Sin resultados"));
                         }
                     } else {
                         ui.label(format!("{}/{}", self.find_current + 1, matches.len()));
@@ -261,7 +265,7 @@ impl App {
         let Some(s) = self.snap() else { return };
         let Some(insn) = self.disasm.iter().find(|i| i.address == s.regs.rip) else { return };
         ui.horizontal(|ui| {
-            ui.label(RichText::new("▶").color(ACTION));
+            ui.label(RichText::new("▶").color(action()));
             ui.label(
                 RichText::new(format!("RIP : 0x{:X}", s.regs.rip))
                     .monospace()
@@ -297,7 +301,28 @@ impl App {
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
         // Ligne source courante (RIP) à surligner pendant le débogage.
         let hl = self.current_source_line();
-        let dark = self.dark;
+        let pal = &crate::theme::current().syntax;
+
+        // Une opération d'édition (indenter, déplacer, compléter…) a déplacé le
+        // texte : elle a laissé ici où poser le curseur. C'est le dernier moment
+        // pour l'écrire dans la mémoire d'egui — après, le champ aura déjà lu
+        // son état.
+        if let Some((a, b)) = self.pending_editor_sel.take() {
+            let id = super::editor_id();
+            let mut st = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(a),
+                egui::text::CCursor::new(b),
+            )));
+            egui::TextEdit::store_state(ui.ctx(), id, st);
+        }
+
+        // Ligne du curseur, discrètement teintée : sans elle, on perd sa place
+        // d'un coup d'œil dans un fichier de cent lignes. Elle s'efface devant
+        // la ligne RIP, qui prime pendant un pas à pas.
+        let cursor_line = Some(self.source[..self.editor_cursor_byte.min(self.source.len())]
+            .matches('\n')
+            .count());
 
         // Recherche active (Ctrl+F) : surlignage par-dessus la coloration
         // syntaxique, sans le calculer si la barre est fermée ou vide.
@@ -318,7 +343,14 @@ impl App {
         // Coloration syntaxique NASM (retour à la ligne désactivé => aligné aux numéros).
         let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, _wrap: f32| {
             ui.fonts_mut(|f| {
-                f.layout_job(syntax::highlight(text.as_str(), dark, hl, find_highlight.as_ref(), bracket_match))
+                f.layout_job(syntax::highlight(
+                    text.as_str(),
+                    pal,
+                    hl,
+                    cursor_line,
+                    find_highlight.as_ref(),
+                    bracket_match,
+                ))
             })
         };
 
@@ -332,7 +364,7 @@ impl App {
                 gutter_job.append("\n", 0.0, egui::TextFormat::default());
             }
             let is_cur = hl == Some(i - 1);
-            let (marker, color) = if is_cur { ("▶", ACCENT) } else { (" ", GUTTER) };
+            let (marker, color) = if is_cur { ("▶", accent()) } else { (" ", gutter_col()) };
             gutter_job.append(
                 &format!("{marker}{i:>width$}"),
                 0.0,
@@ -389,7 +421,7 @@ impl App {
         // qu'il est capturé par les fermetures ci-dessous, `self` ne peut pas
         // être remprunté en `&mut` — l'auto-fermeture des paires doit donc
         // attendre la sortie de `ui.horizontal_top` pour s'exécuter.
-        let (changed, cursor_range, hover_char) = ui
+        let (changed, cursor_range, hover_char, caret, editor_focused) = ui
             .horizontal_top(|ui| {
                 // Gouttière : défilement vertical synchronisé, sans barre ni scroll direct.
                 egui::ScrollArea::vertical()
@@ -428,9 +460,9 @@ impl App {
                             // sans code (commentaire, `section`, ligne vide),
                             // que l'exécution ne rencontrera jamais.
                             if *executable {
-                                painter.circle_filled(c, r, BREAKPOINT);
+                                painter.circle_filled(c, r, breakpoint_col());
                             } else {
-                                painter.circle_stroke(c, r, (1.5, BREAKPOINT));
+                                painter.circle_stroke(c, r, (1.5, breakpoint_col()));
                             }
                             // Anneau : la ligne ne s'arrête que si sa condition
                             // tient. Le trou au centre se voit d'un coup d'œil
@@ -509,8 +541,19 @@ impl App {
                         self.editor_ln = before.matches('\n').count() + 1;
                         self.editor_col = before.chars().rev().take_while(|&c| c != '\n').count() + 1;
                         self.editor_cursor_byte = before.len();
+                        // Retenu pour les gestes d'édition, qui s'exécutent au
+                        // clavier avant le prochain rendu (voir `edit_ops`).
+                        self.editor_sel = (idx, range.secondary.index);
                     }
-                    (changed, out.cursor_range, hover_char)
+                    // Position à l'écran du curseur, pour ancrer la liste
+                    // d'autocomplétion juste dessous. Comme `hover_char`, elle
+                    // se relève ici : la galley ne survit pas à la fermeture.
+                    let caret = out.cursor_range.map(|r| {
+                        let rect = out.galley.pos_from_cursor(r.primary);
+                        out.galley_pos + rect.left_bottom().to_vec2()
+                    });
+                    let has_focus = out.response.has_focus();
+                    (changed, out.cursor_range, hover_char, caret, has_focus)
                 });
                 // Synchronise la gouttière sur le défilement vertical de l'éditeur.
                 self.editor_scroll_y = out.state.offset.y;
@@ -522,14 +565,68 @@ impl App {
             self.inspect_tooltip(ui, index);
         }
         if changed {
-            self.auto_pair_after_edit(&pre_edit_source, cursor_range);
+            self.after_edit(&pre_edit_source, cursor_range);
         }
+        // Liste d'autocomplétion : seulement quand on tape vraiment dans
+        // l'éditeur. Ouverte pendant qu'il a perdu le focus, elle flotterait
+        // au-dessus d'une fenêtre de réglages sans plus rien vouloir dire.
+        // `complete_open` sert aux raccourcis, joués avant ce rendu : ils y
+        // lisent si ↑↓ et Entrée appartiennent à la liste ou au panneau.
+        self.complete_open = match caret.filter(|_| editor_focused && !self.show_find) {
+            Some(pos) => self.completion_popup(ui, pos),
+            None => false,
+        };
         if let Some(line) = gutter_click {
             self.toggle_breakpoint(line);
         }
         if let Some(line) = gutter_right_click {
             self.open_breakpoint_condition(line);
         }
+    }
+
+    /// Ce qui suit une frappe dans l'éditeur : indentation automatique après un
+    /// saut de ligne, puis complétion des paires.
+    ///
+    /// Les deux se décident après coup, en comparant le texte à ce qu'il était
+    /// avant la frappe, plutôt qu'en interceptant les touches : egui gère
+    /// lui-même l'insertion, la sélection remplacée et l'annulation, et lui
+    /// disputer Entrée ferait perdre tout cela.
+    fn after_edit(&mut self, before: &str, cursor_range: Option<egui::text::CCursorRange>) {
+        if self.auto_indent_after_edit(before, cursor_range) {
+            return;
+        }
+        self.auto_pair_after_edit(before, cursor_range);
+    }
+
+    /// Un saut de ligne vient d'être tapé : réapplique l'indentation de la
+    /// ligne quittée (voir [`super::edit_ops::indent_after`]). Renvoie `true`
+    /// si c'était bien le cas, auquel cas rien d'autre n'est à faire.
+    fn auto_indent_after_edit(&mut self, before: &str, cursor_range: Option<egui::text::CCursorRange>) -> bool {
+        let Some(range) = cursor_range else { return false };
+        if range.primary != range.secondary {
+            return false;
+        }
+        // Exactement un caractère de plus, et c'est un `\n` juste avant le
+        // curseur : la signature d'un Entrée, et de rien d'autre.
+        let char_idx = range.primary.index;
+        if self.source.chars().count() != before.chars().count() + 1 || char_idx == 0 {
+            return false;
+        }
+        let byte_idx = byte_offset_of_char(&self.source, char_idx);
+        if !self.source[..byte_idx].ends_with('\n') {
+            return false;
+        }
+        let previous_line = self.source[..byte_idx - 1].rsplit('\n').next().unwrap_or("");
+        let indent = super::edit_ops::indent_after(previous_line);
+        if indent.is_empty() {
+            return false;
+        }
+        self.source.insert_str(byte_idx, &indent);
+        // Le curseur doit passer DERRIÈRE l'indentation qu'on vient d'insérer :
+        // sans cela il resterait collé à la marge, devant ses propres espaces.
+        let pos = char_idx + indent.chars().count();
+        self.pending_editor_sel = Some((pos, pos));
+        true
     }
 
     /// Après une frappe unique dans l'éditeur, complète les paires ouvrantes
@@ -618,7 +715,7 @@ impl App {
                 let bg = ui.painter().add(egui::Shape::Noop);
                 let inner = ui.horizontal(|ui| {
                     if is_current {
-                        ui.label(RichText::new("➤").color(CHANGED));
+                        ui.label(RichText::new("➤").color(changed_col()));
                     } else {
                         ui.label("    ");
                     }
@@ -714,21 +811,40 @@ impl App {
             });
         });
 
-        // Pastille syscall : numéro RAX + nom, sur une ligne compacte.
+        // Appel système : le numéro et le nom ne suffisent pas. `write(1, msg,
+        // len)` reste opaque tant qu'on ne dit pas ce que valent fd, msg et
+        // len ICI, ni ce que le noyau va en faire. Le décodage complet tient
+        // dans le panneau, sans passer par le microscope.
         if insn.mnemonic == "syscall"
             && let Some(snap) = self.snap()
         {
-            let rax = snap.regs.rax;
+            let regs = snap.regs.clone();
+            let d = syscall::describe(&regs, self.lang);
+            // Le tampon ne se lit que sur le processus vivant, à l'instant
+            // affiché : dans l'historique, l'adresse ne veut plus rien dire.
+            let buf = d
+                .buffer
+                .as_ref()
+                .filter(|_| self.can_read_memory())
+                .and_then(|b| self.dbg.as_ref()?.read_mem(b.addr, b.len).ok());
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                badge(ui, &format!("#{rax}"), self.c_bytes());
-                ui.label(
-                    RichText::new(syscall::name(rax))
-                        .monospace()
-                        .strong()
-                        .color(self.c_mnemonic()),
-                );
+                badge(ui, &format!("#{}", regs.rax), self.c_bytes());
+                ui.label(RichText::new(d.name).monospace().strong().color(self.c_mnemonic()));
             });
+            ui.add_space(4.0);
+            syscall_details(
+                ui,
+                &d,
+                buf.as_deref(),
+                SyscallSkin {
+                    hdr: self.c_header(),
+                    mnem: self.c_mnemonic(),
+                    addr_c: self.c_addr(),
+                    bytes_c: self.c_bytes(),
+                    labels: syscall_labels(self.lang),
+                },
+            );
         }
 
         // Étape de cadre d'appel : replace l'instruction dans la mécanique du
@@ -736,8 +852,8 @@ impl App {
         if let Some(phase) = crate::abi::frame_phase(&insn.mnemonic, &insn.operands) {
             ui.add_space(6.0);
             egui::Frame::default()
-                .fill(ACTION.linear_multiply(0.12))
-                .stroke(egui::Stroke::new(1.0_f32, ACTION.linear_multiply(0.6)))
+                .fill(action().linear_multiply(0.12))
+                .stroke(egui::Stroke::new(1.0_f32, action().linear_multiply(0.6)))
                 .corner_radius(egui::CornerRadius::same(5))
                 .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
@@ -746,7 +862,7 @@ impl App {
                         RichText::new(tr("🧱 Cadre d'appel", "🧱 Call frame", "🧱 Marco de llamada"))
                             .small()
                             .strong()
-                            .color(ACTION),
+                            .color(action()),
                     );
                     ui.add_space(2.0);
                     ui.label(RichText::new(phase.explain(self.lang)).size(12.5));
@@ -867,7 +983,7 @@ impl App {
                     ui.label(RichText::new(tr("État actuel", "Current state", "Estado actual")).small().strong().color(hdr2));
                     ui.horizontal(|ui| {
                         for (name, val) in &e.relevant_flags {
-                            let c = if *val { FLAG_ON } else { FLAG_OFF };
+                            let c = if *val { flag_on() } else { flag_off() };
                             ui.label(
                                 RichText::new(format!("{name} = {}", *val as u8))
                                     .monospace()
@@ -878,14 +994,14 @@ impl App {
                     if let Some(taken) = e.taken {
                         ui.add_space(4.0);
                         let (txt, col) = if taken {
-                            (tr("✔ Condition vraie — le saut sera pris.", "✔ Condition true — the jump will be taken.", "✔ Condición verdadera — el salto se tomará."), FLAG_ON)
+                            (tr("✔ Condition vraie — le saut sera pris.", "✔ Condition true — the jump will be taken.", "✔ Condición verdadera — el salto se tomará."), flag_on())
                         } else {
-                            (tr("✘ Condition fausse — pas de saut.", "✘ Condition false — no jump.", "✘ Condición falsa — sin salto."), FALSE_COL)
+                            (tr("✘ Condition fausse — pas de saut.", "✘ Condition false — no jump.", "✘ Condición falsa — sin salto."), false_col())
                         };
                         let fill = if taken {
-                            FLAG_ON.linear_multiply(0.12)
+                            flag_on().linear_multiply(0.12)
                         } else {
-                            FALSE_COL.linear_multiply(0.12)
+                            false_col().linear_multiply(0.12)
                         };
                         egui::Frame::default()
                             .fill(fill)
@@ -900,7 +1016,7 @@ impl App {
         if !e.affects_flags.is_empty() {
             ui.add_space(6.0);
             ui.label(RichText::new(tr("Flags positionnés", "Flags set", "Flags activos")).strong());
-            ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(CHANGED));
+            ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(changed_col()));
         }
     }
 }
@@ -993,6 +1109,62 @@ mod tests {
             mnemonic: "nop".into(),
             operands: String::new(),
         }
+    }
+
+    /// Le décodage bout en bout, sur un vrai processus : arrivé sur le
+    /// `syscall`, le panneau doit dire ce que l'appel va faire ET montrer le
+    /// texte réellement pointé par RSI. C'est le seul contrôle qui vérifie que
+    /// l'adresse du tampon mène bien aux octets du programme.
+    #[test]
+    fn the_instruction_panel_decodes_a_live_write() {
+        let mut app = App::new();
+        app.src_path = std::path::PathBuf::from("build/decode-test.asm");
+        app.out_dir = std::path::PathBuf::from("build/decode");
+        app.source = "\
+section .data
+    msg db 'Bonjour', 10
+    len equ $ - msg
+section .text
+    global _start
+_start:
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, msg
+    mov rdx, len
+    syscall
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+"
+        .to_string();
+
+        app.launch();
+        assert!(app.dbg.is_some(), "programme lancé");
+        // Quatre `mov` avant d'être arrêté SUR le syscall, registres chargés.
+        for _ in 0..4 {
+            app.step();
+        }
+        let regs = app.snap().expect("un snapshot après quatre pas").regs.clone();
+        assert_eq!(regs.rax, 1, "RAX doit porter le numéro de write");
+
+        let d = crate::syscall::describe(&regs, app.lang);
+        assert_eq!(d.name, "write");
+        assert!(d.summary.contains("8 octets"), "la longueur calculée par NASM doit être lue : {}", d.summary);
+        assert!(d.summary.contains("sortie standard"), "{}", d.summary);
+
+        // Le tampon annoncé pointe bien sur le message du programme.
+        let b = d.buffer.as_ref().expect("write montre son tampon");
+        let bytes = app.dbg.as_ref().unwrap().read_mem(b.addr, b.len).expect("tampon lisible");
+        assert_eq!(crate::syscall::text_preview(&bytes, 64), "Bonjour\\n");
+
+        // Et le panneau se rend, dans une colonne étroite comme au réel.
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_max_width(240.0);
+                app.instruction_ui(ui);
+            });
+        });
     }
 
     /// Ctrl+Tab fait défiler les onglets DU NŒUD qui a le focus. Sans nœud
@@ -1284,6 +1456,49 @@ mod tests {
         };
         app.auto_pair_after_edit("x", Some(range));
         assert_eq!(app.source, "x(", "une sélection encore active : on ne complète rien");
+    }
+
+    // ---------- Indentation automatique ----------
+
+    /// Après Entrée, egui a déjà inséré le `\n` : on retrouve l'indentation de
+    /// la ligne quittée, et le curseur se pose DERRIÈRE elle.
+    #[test]
+    fn a_newline_repeats_the_indentation_of_the_line_above() {
+        let mut app = app_with_source("    mov rax, 1\n");
+        assert!(app.auto_indent_after_edit("    mov rax, 1", ccursor(15)));
+        assert_eq!(app.source, "    mov rax, 1\n    ");
+        assert_eq!(app.pending_editor_sel, Some((19, 19)), "le curseur passe après l'indentation");
+    }
+
+    #[test]
+    fn a_newline_after_a_label_opens_its_body_one_step_deeper() {
+        let mut app = app_with_source("_start:\n");
+        assert!(app.auto_indent_after_edit("_start:", ccursor(8)));
+        assert_eq!(app.source, "_start:\n    ");
+    }
+
+    #[test]
+    fn a_newline_at_column_zero_indents_nothing() {
+        let mut app = app_with_source("mov rax, 1\n");
+        assert!(!app.auto_indent_after_edit("mov rax, 1", ccursor(11)));
+        assert_eq!(app.source, "mov rax, 1\n");
+        assert_eq!(app.pending_editor_sel, None);
+    }
+
+    /// Une frappe ordinaire ne doit surtout pas être prise pour un Entrée — la
+    /// fermeture automatique des paires en dépend, elle passe juste après.
+    #[test]
+    fn an_ordinary_keystroke_is_not_mistaken_for_a_newline() {
+        let mut app = app_with_source("    mov rax, 1x");
+        assert!(!app.auto_indent_after_edit("    mov rax, 1", ccursor(15)));
+    }
+
+    /// Un collage de plusieurs lignes ne déclenche pas l'indentation
+    /// automatique : le texte collé porte déjà la sienne.
+    #[test]
+    fn a_multi_line_paste_is_left_alone() {
+        let mut app = app_with_source("    a\n    b\n");
+        assert!(!app.auto_indent_after_edit("", ccursor(12)));
     }
 
     // ---------- Pliage de code ----------

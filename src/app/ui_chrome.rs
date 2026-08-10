@@ -4,11 +4,112 @@ use crate::i18n;
 use crate::debugger::RunState;
 
 use super::{
-    App, ACCENT, FLAG_ON, FLAG_OFF, FALSE_COL, CHANGED,
+    App, accent, flag_on, flag_off, false_col, changed_col,
     accent_button, bordered_button, icon_button,
 };
 
 impl App {
+    // ---------- Raccourcis de l'éditeur ----------
+
+    /// Les touches qui appartiennent à l'éditeur : autocomplétion, indentation,
+    /// commentaire, déplacement et duplication de lignes, aller à la ligne.
+    ///
+    /// Chacune est **consommée** (`consume_key`) plutôt que seulement lue : le
+    /// champ de texte d'egui verrait sinon le Tab et l'insérerait en plus du
+    /// cran d'indentation qu'on vient de poser, et Entrée validerait une
+    /// proposition tout en sautant une ligne.
+    ///
+    /// Deux portées, volontairement distinctes. Tab et les touches de la liste
+    /// de complétion exigent que le CHAMP ait le curseur, sinon Tab ne pourrait
+    /// plus passer d'un widget à l'autre dans le reste de l'application. Les
+    /// autres se contentent que le PANNEAU éditeur soit actif : elles agissent
+    /// sur la sélection mémorisée, qu'on ait cliqué dans le texte ou non.
+    fn handle_editor_keys(&mut self, ctx: &egui::Context) {
+        use egui::{Key, Modifiers};
+
+        // Une seule des deux portées suffit à disqualifier les raccourcis quand
+        // on tape ailleurs (barre de recherche, « aller @ », champ de licence).
+        let in_field = ctx.memory(|m| m.focused()) == Some(super::editor_id());
+        let in_panel = in_field || self.focused_panel() == Some(super::dock::Panel::Editor);
+        if !in_panel {
+            return;
+        }
+        let take = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+
+        // --- Liste d'autocomplétion : elle a la priorité sur tout le reste ---
+        if self.complete_open && in_field {
+            if take(Modifiers::NONE, Key::ArrowDown) {
+                self.move_completion(true);
+                return;
+            }
+            if take(Modifiers::NONE, Key::ArrowUp) {
+                self.move_completion(false);
+                return;
+            }
+            if take(Modifiers::NONE, Key::Tab) || take(Modifiers::NONE, Key::Enter) {
+                self.accept_completion();
+                return;
+            }
+            if take(Modifiers::NONE, Key::Escape) {
+                self.dismiss_completion();
+                return;
+            }
+        }
+        // Ctrl+Espace la rouvre à la demande, même après un Échap.
+        if take(Modifiers::CTRL, Key::Space) {
+            self.force_completion();
+            return;
+        }
+
+        // --- Indentation ---
+        if in_field {
+            if take(Modifiers::SHIFT, Key::Tab) {
+                self.editor_outdent();
+                return;
+            }
+            if take(Modifiers::NONE, Key::Tab) {
+                self.editor_indent();
+                return;
+            }
+        }
+
+        // --- Lignes ---
+        // Ctrl+/ sur un clavier français se tape Ctrl+Maj+: — la même touche
+        // physique, avec Maj en plus. Les deux combinaisons sont acceptées, et
+        // `Key::Colon` avec elles : selon le pilote, l'un ou l'autre remonte.
+        let comment = [
+            (Modifiers::CTRL, Key::Slash),
+            (Modifiers::CTRL | Modifiers::SHIFT, Key::Slash),
+            (Modifiers::CTRL, Key::Colon),
+            (Modifiers::CTRL | Modifiers::SHIFT, Key::Colon),
+        ]
+        .into_iter()
+        .any(|(m, k)| take(m, k));
+        if comment {
+            self.editor_toggle_comment();
+            return;
+        }
+        if take(Modifiers::ALT, Key::ArrowUp) {
+            self.editor_move_lines(false);
+            return;
+        }
+        if take(Modifiers::ALT, Key::ArrowDown) {
+            self.editor_move_lines(true);
+            return;
+        }
+        if take(Modifiers::CTRL, Key::D) {
+            self.editor_duplicate_lines();
+            return;
+        }
+        if take(Modifiers::CTRL | Modifiers::SHIFT, Key::K) {
+            self.editor_delete_lines();
+            return;
+        }
+        if take(Modifiers::CTRL, Key::G) {
+            self.open_goto_line();
+        }
+    }
+
     // ---------- Raccourcis ----------
 
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -141,6 +242,12 @@ impl App {
         if unfold_all {
             self.unfold_all();
         }
+        // Gestes d'édition (Tab, Alt+↑↓, Ctrl+D…) et autocomplétion : traités
+        // avant tout le reste, et RETIRÉS du flux d'événements — c'est ce qui
+        // empêche le champ de texte, puis les blocs suivants, de les revoir.
+        // Une liste de complétion ouverte y consomme Échap : la fermer ne doit
+        // pas arrêter en même temps le programme qui tourne.
+        self.handle_editor_keys(ctx);
         // Échap : d'abord sortir du champ de saisie, sinon arrêter le programme.
         // Sans cette priorité, un utilisateur au clavier reste piégé dans l'éditeur.
         let esc = ctx.input(|i| i.key_pressed(Key::Escape));
@@ -365,52 +472,56 @@ impl App {
         }
     }
 
-    /// Applique le thème choisi (Système / Sombre / Clair) + le style moderne.
+    /// Applique le thème choisi + le style moderne.
+    ///
+    /// Tout ce qui est coloré ici vient du catalogue de [`crate::theme`] :
+    /// ajouter un thème ne demande pas de repasser par cette fonction. Seul le
+    /// cas « Système » regarde encore l'OS, pour savoir lequel des deux thèmes
+    /// intégrés il désigne.
     pub(super) fn apply_theme(&mut self, ctx: &egui::Context) {
-        use egui::{FontId, CornerRadius, Theme, ThemePreference, TextStyle, vec2};
-        let dark = match self.theme_pref {
-            ThemePreference::Dark => true,
-            ThemePreference::Light => false,
-            ThemePreference::System => {
-                ctx.input(|i| i.raw.system_theme) != Some(Theme::Light)
-            }
-        };
-        self.dark = dark; // pour la palette de texte sensible au thème
+        use egui::{FontId, CornerRadius, Theme, TextStyle, vec2};
+        let system_dark = ctx.input(|i| i.raw.system_theme) != Some(Theme::Light);
+        let theme = self.theme_pref.resolve(system_dark);
+        // Publié pour tout le code d'affichage, qui lit les couleurs par
+        // `crate::theme::current()` sans avoir à recevoir le thème en argument.
+        crate::theme::set_current(theme);
+        let p = &theme.ui;
         let mut style = (*ctx.style()).clone();
-        let mut v = if dark {
-            egui::Visuals::dark()
-        } else {
-            egui::Visuals::light()
-        };
-        // Angles plus ronds et sélection plus douce : l'interface respire, le
-        // bleu d'accent ne claque plus autant sous le texte sélectionné.
+        // Le point de départ egui donne les dizaines de réglages qu'un thème
+        // n'a pas à décrire (ombres, épaisseurs, expansions) ; ce qui suit
+        // remplace ceux qui font l'identité visuelle.
+        let mut v = if theme.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+        // Angles plus ronds et sélection plus douce : l'interface respire, la
+        // couleur d'accent ne claque plus autant sous le texte sélectionné.
         v.window_corner_radius = CornerRadius::same(10);
         v.menu_corner_radius = CornerRadius::same(8);
-        v.selection.bg_fill = ACCENT.linear_multiply(0.38);
-        v.hyperlink_color = ACCENT;
-        for w in [
-            &mut v.widgets.inactive,
-            &mut v.widgets.hovered,
-            &mut v.widgets.active,
-            &mut v.widgets.open,
-            &mut v.widgets.noninteractive,
-        ] {
+        v.selection.bg_fill = p.accent.linear_multiply(0.38);
+        v.selection.stroke.color = p.text_strong;
+        v.hyperlink_color = p.accent;
+        v.panel_fill = p.bg;
+        v.window_fill = p.window;
+        v.window_stroke.color = p.border;
+        v.extreme_bg_color = p.extreme;
+        v.faint_bg_color = p.faint;
+        // Aucun `override_text_color` : il écraserait aussi les nuances faible
+        // et forte, dont l'interface se sert partout (libellés secondaires,
+        // titres). Les niveaux se posent un par un sur les états de widget,
+        // d'où egui dérive ensuite `text_color`, `weak_text_color` et
+        // `strong_text_color`.
+        v.override_text_color = None;
+        let states: [(&mut egui::style::WidgetVisuals, Color32, Color32); 5] = [
+            (&mut v.widgets.noninteractive, p.bg, p.text),
+            (&mut v.widgets.inactive, p.surface, p.text),
+            (&mut v.widgets.hovered, p.surface_hover, p.text_strong),
+            (&mut v.widgets.active, p.surface_active, p.text_strong),
+            (&mut v.widgets.open, p.surface, p.text),
+        ];
+        for (w, fill, fg) in states {
             w.corner_radius = CornerRadius::same(7);
-        }
-        if dark {
-            v.panel_fill = Color32::from_rgb(0x1E, 0x1E, 0x22);
-            v.window_fill = Color32::from_rgb(0x25, 0x25, 0x2B);
-            v.extreme_bg_color = Color32::from_rgb(0x17, 0x17, 0x1B);
-            v.faint_bg_color = Color32::from_rgb(0x28, 0x28, 0x30);
-        } else {
-            // Thème clair : texte par défaut nettement sombre pour le contraste,
-            // et fonds légèrement teintés pour délimiter les panneaux.
-            v.override_text_color = Some(Color32::from_rgb(0x1C, 0x20, 0x28));
-            v.panel_fill = Color32::from_rgb(0xF4, 0xF5, 0xF8);
-            v.window_fill = Color32::from_rgb(0xFB, 0xFB, 0xFD);
-            v.extreme_bg_color = Color32::from_rgb(0xFF, 0xFF, 0xFF);
-            v.faint_bg_color = Color32::from_rgb(0xEA, 0xEC, 0xF1);
-            v.hyperlink_color = Color32::from_rgb(0x1B, 0x5E, 0xA8);
+            w.bg_fill = fill;
+            w.weak_bg_fill = fill;
+            w.bg_stroke.color = p.border;
+            w.fg_stroke.color = fg;
         }
         style.visuals = v;
         style.spacing.item_spacing = vec2(8.0, 6.0);
@@ -809,7 +920,7 @@ impl App {
         egui::TopBottomPanel::top("welcome")
             .frame(
                 egui::Frame::new()
-                    .fill(ACCENT.linear_multiply(0.12))
+                    .fill(accent().linear_multiply(0.12))
                     .inner_margin(egui::Margin::symmetric(10, 7)),
             )
             .show(ctx, |ui| {
@@ -837,7 +948,7 @@ impl App {
                                     "▶ Empezar el tutorial",
                                 ))
                                 .color(egui::Color32::WHITE),
-                            ).fill(ACCENT))
+                            ).fill(accent()))
                             .clicked()
                         {
                             start_tuto = true;
@@ -870,7 +981,7 @@ impl App {
             ui.horizontal(|ui| {
                 match &self.dbg {
                     Some(d) if d.is_alive() => {
-                        ui.colored_label(FLAG_ON, "● Running");
+                        ui.colored_label(flag_on(), "● Running");
                         ui.separator();
                         // Clic droit sur le PID → menu contextuel Kill.
                         ui.label(format!("PID {}", d.pid()))
@@ -889,33 +1000,33 @@ impl App {
                     Some(d) => match d.state {
                         RunState::Exited(0) => {
                             ui.colored_label(
-                                FLAG_ON,
+                                flag_on(),
                                 RichText::new(format!("✔ {} 0", tr("Exit", "Exit", "Salir"))).strong(),
                             );
                         }
                         RunState::Exited(c) => {
                             ui.colored_label(
-                                FALSE_COL,
+                                false_col(),
                                 RichText::new(format!("✘ {} {c}", tr("Exit", "Exit", "Salir"))).strong(),
                             );
                         }
                         RunState::Signaled => {
-                            ui.colored_label(FALSE_COL, RichText::new(tr("✘ Signal", "✘ Signal", "✘ Señal")).strong());
+                            ui.colored_label(false_col(), RichText::new(tr("✘ Signal", "✘ Signal", "✘ Señal")).strong());
                         }
                         RunState::Faulted(f) => {
                             ui.colored_label(
-                                FALSE_COL,
+                                false_col(),
                                 RichText::new(format!("✘ {}", f.signal_name())).strong(),
                             );
                         }
                         RunState::Stopped => {
-                            ui.colored_label(FLAG_OFF, format!("○ {}", tr("Arrêté", "Stopped", "Detenido")));
+                            ui.colored_label(flag_off(), format!("○ {}", tr("Arrêté", "Stopped", "Detenido")));
                         }
                         // Suspendu dans un appel système : presque toujours un
                         // `read` qui attend la saisie de l'élève.
                         RunState::Running => {
                             ui.colored_label(
-                                FLAG_ON,
+                                flag_on(),
                                 RichText::new(tr(
                                     "⏳ En attente d'entrée",
                                     "⏳ Waiting for input",
@@ -926,7 +1037,7 @@ impl App {
                         }
                     },
                     None => {
-                        ui.colored_label(FLAG_OFF, format!("○ {}", tr("Prêt", "Ready", "Listo")));
+                        ui.colored_label(flag_off(), format!("○ {}", tr("Prêt", "Ready", "Listo")));
                     }
                 }
                 // « Arch : x86_64 » et « Mode : 64-bit » ne disent rien à un
@@ -943,7 +1054,7 @@ impl App {
                     ui.label(format!("{} : 0x{:X}", tr("Arrêté à", "Stopped at", "Detenido en"), s.regs.rip));
                     if let Some(next) = self.next_addr() {
                         ui.separator();
-                        ui.colored_label(CHANGED, format!("{} : 0x{next:X}", tr("Suivant", "Next", "Siguiente")));
+                        ui.colored_label(changed_col(), format!("{} : 0x{next:X}", tr("Suivant", "Next", "Siguiente")));
                     }
                 }
                 // Dernier message d'action (Enregistré, Build OK, erreurs…).
@@ -955,13 +1066,13 @@ impl App {
                 // panneau qui a le focus clavier — le repère qui manquait pour
                 // savoir où l'on se trouve après un F6.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new("NASM").color(ACCENT).strong());
+                    ui.label(RichText::new("NASM").color(accent()).strong());
                     ui.separator();
                     match &self.focused_panel_name {
                         Some(name) => {
                             ui.label(
                                 RichText::new(format!("⌨ {name}"))
-                                    .color(ACCENT)
+                                    .color(accent())
                                     .strong(),
                             )
                             .on_hover_text(tr(

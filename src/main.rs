@@ -14,6 +14,7 @@ mod license;
 mod srcmap;
 mod syntax;
 mod syscall;
+mod theme;
 mod trial;
 mod tutorial;
 mod updater;

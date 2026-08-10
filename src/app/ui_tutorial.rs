@@ -8,7 +8,7 @@
 use eframe::egui::{self, RichText};
 
 use super::dock::Panel;
-use super::{ACCENT, App, FLAG_ON, card};
+use super::{accent, App, flag_on, card};
 use crate::i18n;
 use crate::tutorial::{self, Level, Lesson};
 
@@ -108,13 +108,13 @@ impl App {
                         ui.label(
                             RichText::new(level.title(lang))
                                 .strong()
-                                .color(if complete { FLAG_ON } else { ACCENT }),
+                                .color(if complete { flag_on() } else { accent() }),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             super::badge(
                                 ui,
                                 &format!("{done}/{total}"),
-                                if complete { FLAG_ON } else { hdr },
+                                if complete { flag_on() } else { hdr },
                             );
                         });
                     });
@@ -128,7 +128,7 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(if done { "✔" } else { "○" })
-                                    .color(if done { FLAG_ON } else { self.c_bytes() }),
+                                    .color(if done { flag_on() } else { self.c_bytes() }),
                             );
                             let mut txt = RichText::new(lesson.title.get(lang)).size(12.5);
                             if planned {
@@ -225,7 +225,7 @@ impl App {
                             RichText::new(format!("{}.", i + 1))
                                 .monospace()
                                 .strong()
-                                .color(ACCENT),
+                                .color(accent()),
                         );
                         ui.add(egui::Label::new(RichText::new(step.get(lang)).size(12.5)).wrap());
                     });

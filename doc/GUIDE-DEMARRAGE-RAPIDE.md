@@ -1,7 +1,7 @@
 # ASM Studio — Guide de démarrage rapide
 
 > IDE pédagogique pour l'assembleur **NASM x86-64** sous Linux.
-> Version 0.4.3-bêta 3 · interface en français / anglais / espagnol.
+> Version 0.4.6 · interface en français / anglais / espagnol.
 
 ASM Studio n'est pas un simulateur : votre programme est **réellement assemblé**
 (`nasm`), **lié** (`ld`) et **exécuté par le vrai noyau Linux** sous `ptrace`.

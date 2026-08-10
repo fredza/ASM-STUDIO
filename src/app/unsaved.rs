@@ -18,7 +18,7 @@ use eframe::egui::{self, RichText};
 
 use crate::i18n;
 
-use super::{App, ACTION, FALSE_COL};
+use super::{App, false_col};
 
 /// Un geste réclamé par l'élève, qui écraserait le tampon d'édition.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -157,7 +157,7 @@ impl App {
                         egui::Button::new(
                             RichText::new(tr("Enregistrer", "Save", "Guardar")).strong(),
                         )
-                        .fill(ACTION),
+                        .fill(super::action()),
                     )
                     .clicked()
                 {
@@ -167,7 +167,7 @@ impl App {
                     .add_sized(
                         [btn_w, 28.0],
                         egui::Button::new(tr("Abandonner", "Discard", "Descartar"))
-                            .stroke(egui::Stroke::new(1.0_f32, FALSE_COL)),
+                            .stroke(egui::Stroke::new(1.0_f32, false_col())),
                     )
                     .clicked()
                 {

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] - 2026-08-10
+
+### Added
+- **System calls explained from their arguments**: A `syscall` used to show a number and a name. `write(fd=1, buf=0x402000, count=13)` says nothing to someone learning: the panel now says what the call is about to do — "writes the 13 bytes starting at address 0x402000 to standard output (the screen)" — then each register with the role it plays *in this call*, the contents of the buffer RSI points at, what RAX will hold on return, and the pitfall when there is one (`count = 0` from a `len` never computed, `exit(256)` the shell reads as `0`, `fork` returning twice, `execve` never returning). Values are interpreted rather than copied: a descriptor becomes "the screen", `open` flags become `O_WRONLY|O_CREAT|O_TRUNC`, a signal number becomes `SIGTERM`. Shown in the INSTRUCTION panel, in the microscope, and on hover in the SYSCALLS log.
+- **A library of ~80 system calls**: Named and grouped by family (I/O and files, memory, signals, processes, time, network), each with a one-sentence statement of purpose in all three languages, and about twenty-five decoded argument by argument. Two tests hold the contract: every call that can be named can also be explained, in every language.
+- **Program output box**: A window showing what the program writes, and nothing else.
+- **Command palette**: The whole application reachable from the keyboard.
+
+### Changed
+- The SYSCALLS log keeps each call's registers rather than a pre-written sentence, so its explanations follow the interface language when it changes mid-session.
+
 ## [0.4.3-beta.3] - 2026-08-08
 
 ### Added

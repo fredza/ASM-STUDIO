@@ -6,8 +6,8 @@ use crate::i18n;
 use crate::syscall;
 
 use super::{
-    App, ACCENT, ACTION, CHANGED, FALSE_COL, FLAG_ON, PUSH_COL, POP_COL,
-    micro_stack, micro_static_flags,
+    App, accent, action, changed_col, false_col, flag_on, push_col, pop_col,
+    micro_stack, micro_static_flags, syscall_details, syscall_labels, SyscallSkin,
 };
 
 /// En-tête d'une section de réglages : même rythme vertical pour toutes,
@@ -67,6 +67,21 @@ impl App {
             )
         });
 
+        // Décodage de l'appel système, tampon compris : la lecture mémoire a
+        // besoin de `self`, la closure ne l'a plus. Tout est préparé ici.
+        let syscall_view = dynamics
+            .as_ref()
+            .filter(|_| insn.mnemonic == "syscall")
+            .map(|(before, _, _)| {
+                let d = syscall::describe(before, self.lang);
+                let buf = d
+                    .buffer
+                    .as_ref()
+                    .filter(|_| self.can_read_memory())
+                    .and_then(|b| self.dbg.as_ref()?.read_mem(b.addr, b.len).ok());
+                (d, buf)
+            });
+
         // Couleurs figées avant la closure (pas d'accès à self dedans).
         let (hdr, mnem_c, addr_c, bytes_c) =
             (self.c_header(), self.c_mnemonic(), self.c_addr(), self.c_bytes());
@@ -103,7 +118,7 @@ impl App {
                         ui.label(e.category);
                         ui.end_row();
                         ui.label(RichText::new(tr("Cycles estimés", "Estimated cycles", "Ciclos estimados")).strong());
-                        ui.label(RichText::new(cycles).color(CHANGED))
+                        ui.label(RichText::new(cycles).color(changed_col()))
                             .on_hover_text(tr("Ordre de grandeur pédagogique, pas une mesure exacte.", "Educational ballpark, not an exact measurement.", "Orden de magnitud pedagógico, no una medida exacta."));
                         ui.end_row();
                         // Ligne syscall dans la grille d'identité (si applicable).
@@ -125,13 +140,6 @@ impl App {
                                 );
                             });
                             ui.end_row();
-                            ui.label(RichText::new(tr("Arguments", "Arguments", "Argumentos")).strong());
-                            ui.label(
-                                RichText::new(syscall::format_call(before))
-                                    .monospace()
-                                    .color(addr_c),
-                            );
-                            ui.end_row();
                         }
                     });
 
@@ -139,6 +147,20 @@ impl App {
                     // --- 💡 Explication ---
                     ui.label(RichText::new(tr("💡 Explication", "💡 Explanation", "💡 Explicación")).strong().color(hdr));
                     ui.label(&e.description);
+
+                    // --- ⚙ L'appel système, argument par argument ---
+                    // La description générique de `syscall` dit la convention ;
+                    // celle-ci dit ce que CET appel-là va faire, avec ces
+                    // valeurs-là. C'est la question que l'élève se pose.
+                    if let Some((d, buf)) = &syscall_view {
+                        ui.add_space(10.0);
+                        syscall_details(
+                            ui,
+                            d,
+                            buf.as_deref(),
+                            SyscallSkin { hdr, mnem: mnem_c, addr_c, bytes_c, labels: syscall_labels(lang) },
+                        );
+                    }
 
                     // --- 🔢 Binaire : découpage de l'encodage machine ---
                     ui.add_space(10.0);
@@ -164,7 +186,7 @@ impl App {
                                     RichText::new(hex.trim_end().to_string())
                                         .monospace()
                                         .strong()
-                                        .color(CHANGED),
+                                        .color(changed_col()),
                                 );
                                 ui.label(
                                     RichText::new(f.part.label(lang))
@@ -185,7 +207,7 @@ impl App {
                                     "⚠ Codificación parcialmente decodificada: algunos bytes no pudieron atribuirse.",
                                 ))
                                 .small()
-                                .color(FALSE_COL),
+                                .color(false_col()),
                             );
                         }
                     }
@@ -210,14 +232,14 @@ impl App {
                             ui.end_row();
                         };
                         row(ui, tr("Lu", "Reads", "Lee"), &fx.reads, addr_c);
-                        row(ui, tr("Écrit", "Writes", "Escribe"), &fx.writes, CHANGED);
+                        row(ui, tr("Écrit", "Writes", "Escribe"), &fx.writes, changed_col());
                     });
                     // Les effets que le texte de l'instruction ne montre pas —
                     // c'est là que se trouve l'essentiel de ce qui piège.
                     for note in &fx.implicit {
                         ui.add_space(4.0);
                         egui::Frame::default()
-                            .fill(ACTION.linear_multiply(0.08))
+                            .fill(action().linear_multiply(0.08))
                             .corner_radius(egui::CornerRadius::same(4))
                             .inner_margin(egui::Margin::symmetric(8, 5))
                             .show(ui, |ui| {
@@ -271,7 +293,7 @@ impl App {
                                 ui.label(RichText::new(tr("Pile (RSP)", "Stack (RSP)", "Pila (RSP)")).strong().color(hdr));
                                 if d < 0 {
                                     ui.colored_label(
-                                        PUSH_COL,
+                                        push_col(),
                                         format!(
                                             "RSP : 0x{:X} → 0x{:X}  (−{} {}, PUSH)",
                                             before.rsp, after.rsp, -d, tr("octets", "bytes", "bytes")
@@ -279,7 +301,7 @@ impl App {
                                     );
                                 } else {
                                     ui.colored_label(
-                                        POP_COL,
+                                        pop_col(),
                                         format!(
                                             "RSP : 0x{:X} → 0x{:X}  (+{} {}, POP)",
                                             before.rsp, after.rsp, d, tr("octets", "bytes", "bytes")
@@ -301,7 +323,7 @@ impl App {
                                         ui.label(RichText::new(*n).monospace().strong());
                                         ui.label(RichText::new(format!("0x{ov:016X}")).monospace().weak());
                                         ui.label("→");
-                                        ui.label(RichText::new(format!("0x{nv:016X}")).monospace().color(CHANGED));
+                                        ui.label(RichText::new(format!("0x{nv:016X}")).monospace().color(changed_col()));
                                         ui.end_row();
                                     }
                                 }
@@ -322,7 +344,7 @@ impl App {
                                         ui.label(
                                             RichText::new(format!("{n}: {}→{}", *ov as u8, nv as u8))
                                                 .monospace()
-                                                .color(CHANGED),
+                                                .color(changed_col()),
                                         );
                                     }
                                 }
@@ -400,7 +422,7 @@ impl App {
                 // Bandeau bêta : plus serein que l'alpha, mais on rappelle que
                 // c'est une préversion.
                 egui::Frame::default()
-                    .fill(ACTION.linear_multiply(0.9))
+                    .fill(action().linear_multiply(0.9))
                     .corner_radius(egui::CornerRadius::same(6))
                     .inner_margin(egui::Margin::symmetric(12, 6))
                     .show(ui, |ui| {
@@ -472,7 +494,7 @@ impl App {
                                     p.name
                                 );
                                 ui.horizontal(|ui| {
-                                    ui.colored_label(FLAG_ON, label);
+                                    ui.colored_label(flag_on(), label);
                                     if ui
                                         .link(tr("Désactiver…", "Deactivate…", "Desactivar…"))
                                         .on_hover_text(tr(
@@ -497,7 +519,7 @@ impl App {
                                         crate::i18n::Lang::Es => format!("quedan {days} día(s)"),
                                     };
                                     ui.colored_label(
-                                        ACCENT,
+                                        accent(),
                                         format!(
                                             "🕐 {} — {remaining}",
                                             tr("Avant inscription gratuite", "Before free registration", "Antes del registro gratuito")
@@ -511,7 +533,7 @@ impl App {
                             crate::license::LicenseState::Invalid(_) | crate::license::LicenseState::Missing => {
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
-                                        FALSE_COL,
+                                        false_col(),
                                         tr(
                                             "✘ Délai d'inscription dépassé",
                                             "✘ Registration period over",
@@ -606,7 +628,7 @@ impl App {
         .show(ctx, |ui| {
             ui.set_width(420.0);
             ui.add_space(4.0);
-            ui.label(RichText::new(source_line).monospace().color(ACCENT));
+            ui.label(RichText::new(source_line).monospace().color(accent()));
             ui.add_space(8.0);
             ui.label(tr(
                 "L'exécution ne s'arrêtera ici que si :",
@@ -643,7 +665,7 @@ impl App {
             );
             if let Some(err) = &self.bp_cond_error {
                 ui.add_space(6.0);
-                ui.colored_label(FALSE_COL, RichText::new(format!("✘ {err}")).small());
+                ui.colored_label(false_col(), RichText::new(format!("✘ {err}")).small());
             }
             ui.add_space(10.0);
             ui.separator();
@@ -655,7 +677,7 @@ impl App {
                     .add_sized(
                         [btn_w, 28.0],
                         egui::Button::new(RichText::new(tr("Valider", "Apply", "Aplicar")).strong())
-                            .fill(ACTION),
+                            .fill(action()),
                     )
                     .clicked()
                 {
@@ -764,7 +786,7 @@ impl App {
             ));
             ui.add_space(6.0);
             ui.colored_label(
-                FALSE_COL,
+                false_col(),
                 tr(
                     "⚠ Irréversible : il faudra recoller le bloc de licence pour la réactiver.",
                     "⚠ Irreversible: you will need the license block again to re-activate it.",
@@ -785,7 +807,7 @@ impl App {
                         egui::Button::new(
                             RichText::new(tr("Désactiver", "Deactivate", "Desactivar")).strong(),
                         )
-                        .fill(FALSE_COL),
+                        .fill(false_col()),
                     )
                     .clicked()
                 {
@@ -909,29 +931,57 @@ impl App {
         }
     }
 
+    /// Trois pastilles de l'aperçu d'un thème : fond de l'éditeur, accent,
+    /// couleur des chaînes — les trois qui changent le plus d'un thème à l'autre.
+    fn theme_preview(ui: &mut egui::Ui, t: &crate::theme::Theme) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 14.0), egui::Sense::hover());
+        let painter = ui.painter();
+        painter.rect_filled(rect, 3.0, t.ui.extreme);
+        for (i, c) in [t.ui.accent, t.syntax.string, t.syntax.mnemonic].into_iter().enumerate() {
+            let x = rect.left() + 9.0 + i as f32 * 15.0;
+            painter.circle_filled(egui::pos2(x, rect.center().y), 4.0, c);
+        }
+        painter.rect_stroke(
+            rect,
+            3.0,
+            egui::Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            egui::StrokeKind::Inside,
+        );
+    }
+
     pub(super) fn settings_window(&mut self, ctx: &egui::Context) {
         if !self.show_settings {
             return;
         }
-        use egui::ThemePreference;
         // Libellés traduits précalculés (évite d'emprunter self pendant que les
         // widgets empruntent ses champs en écriture).
+        let lang = self.lang;
         let t_title = self.tr3("Réglages", "Settings", "Configuración");
         let t_lang = self.tr3("Langue", "Language", "Idioma");
         let t_theme = self.tr3("Thème", "Theme", "Tema");
-        let t_sys = self.tr3("Système (suit l'OS)", "System (follow OS)", "Sistema (sigue el SO)");
-        let t_dark = self.tr3("Sombre", "Dark", "Oscuro");
-        let t_light = self.tr3("Clair", "Light", "Claro");
         let t_theme_note = self.tr3(
-            "Note : la coloration du code est optimisée pour le thème sombre.",
-            "Note: syntax colors are tuned for the dark theme.",
-            "Nota: los colores de sintaxis están optimizados para el tema oscuro.",
+            "Chaque thème porte sa propre coloration du code, ses fonds et ses accents.",
+            "Each theme carries its own code colors, backgrounds and accents.",
+            "Cada tema lleva sus propios colores de código, fondos y acentos.",
         );
         let t_iface = self.tr3("Interface", "Interface", "Interfaz");
         let t_tooltips = self.tr3(
             "Afficher les infobulles des raccourcis (au survol des boutons)",
             "Show shortcut tooltips (on button hover)",
             "Mostrar tooltips de atajos (al pasar el cursor sobre los botones)",
+        );
+        let t_inspect = self.tr3(
+            "Inspection au survol dans l'éditeur (valeur du registre, du drapeau, du label)",
+            "Hover inspection in the editor (value of the register, flag or label)",
+            "Inspección al pasar el cursor en el editor (valor del registro, flag o etiqueta)",
+        );
+        let t_inspect_tip = self.tr3(
+            "Survolez un mot du code pendant l'exécution : sa valeur s'affiche sur place,\n\
+             sur une ligne, sans quitter le code des yeux.",
+            "Hover a word in the code while running: its value appears in place,\n\
+             on one line, without leaving the code.",
+            "Pase el cursor sobre una palabra durante la ejecución: su valor aparece ahí mismo,\n\
+             en una línea, sin apartar la vista del código.",
         );
         let t_anim = self.tr3(
             "Animations « CPU vivant » (pulsation des valeurs modifiées)",
@@ -1059,15 +1109,37 @@ impl App {
                         ui.separator();
 
                         section(ui, t_theme);
-                        changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::System, t_sys).changed();
-                        changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::Dark, t_dark).changed();
-                        changed |= ui.radio_value(&mut self.theme_pref, ThemePreference::Light, t_light).changed();
+                        // La liste vient du catalogue : un thème ajouté à
+                        // `crate::theme::THEMES` apparaît ici sans rien changer
+                        // à cette fenêtre.
+                        let choices = std::iter::once(crate::theme::Choice::System).chain(
+                            crate::theme::THEMES
+                                .iter()
+                                .map(|t| crate::theme::Choice::Named(t.id)),
+                        );
+                        for c in choices {
+                            ui.horizontal(|ui| {
+                                changed |= ui.radio_value(&mut self.theme_pref, c, c.label(lang)).changed();
+                                // Un aperçu vaut mieux qu'un nom : trois pastilles
+                                // (fond, accent, chaîne) disent d'un coup d'œil à
+                                // quoi ressemblera l'éditeur.
+                                if let crate::theme::Choice::Named(id) = c
+                                    && let Some(t) = crate::theme::by_id(id)
+                                {
+                                    Self::theme_preview(ui, t);
+                                }
+                            });
+                        }
                         ui.add_space(4.0);
                         ui.weak(t_theme_note);
                         ui.separator();
 
                         section(ui, t_iface);
                         changed |= ui.checkbox(&mut self.show_tooltips, t_tooltips).changed();
+                        changed |= ui
+                            .checkbox(&mut self.inspect_hover, t_inspect)
+                            .on_hover_text(t_inspect_tip)
+                            .changed();
                         changed |= ui.checkbox(&mut self.animate, t_anim).changed();
                         ui.separator();
 
@@ -1155,6 +1227,13 @@ impl App {
                     ("F3 / Maj+F3", tr("Correspondance suivante / précédente", "Next / previous match", "Coincidencia siguiente / anterior")),
                     ("Ctrl+Maj+[", tr("Replier le label sous le curseur", "Fold the label under the cursor", "Plegar la etiqueta bajo el cursor")),
                     ("Ctrl+Maj+]", tr("Tout déplier", "Unfold all", "Desplegar todo")),
+                    ("Tab / Maj+Tab", tr("Indenter / désindenter la sélection", "Indent / outdent the selection", "Indentar / reducir la indentación")),
+                    ("Ctrl+/", tr("Commenter / décommenter les lignes", "Comment / uncomment the lines", "Comentar / descomentar las líneas")),
+                    ("Alt+↑ / Alt+↓", tr("Déplacer la ligne vers le haut / le bas", "Move the line up / down", "Mover la línea arriba / abajo")),
+                    ("Ctrl+D", tr("Dupliquer la ligne", "Duplicate the line", "Duplicar la línea")),
+                    ("Ctrl+Maj+K", tr("Supprimer la ligne", "Delete the line", "Eliminar la línea")),
+                    ("Ctrl+G", tr("Aller à la ligne…", "Go to line…", "Ir a la línea…")),
+                    ("Ctrl+Espace", tr("Autocomplétion : mnémoniques, registres, labels", "Autocomplete: mnemonics, registers, labels", "Autocompletado: mnemónicos, registros, etiquetas")),
                     ("← / →", tr("Timeline : précédent / suivant", "Timeline: previous / next", "Línea de tiempo: anterior / siguiente")),
                     ("Home / End", tr("Timeline : début / fin", "Timeline: start / end", "Línea de tiempo: inicio / fin")),
                     ("Ctrl+1", tr("Afficher/masquer l'explorateur", "Show/hide the explorer", "Mostrar/ocultar el explorador")),
@@ -1224,7 +1303,7 @@ impl App {
                                 ui.spacing_mut().item_spacing.x = 1.0;
                                 for (k, on) in super::calc_bits_of(*byte).iter().enumerate() {
                                     let rank = high - k;
-                                    let col = if *on { ACTION } else { self.c_bytes() };
+                                    let col = if *on { action() } else { self.c_bytes() };
                                     let txt = RichText::new(if *on { "1" } else { "0" })
                                         .monospace()
                                         .size(13.0)
@@ -1232,7 +1311,7 @@ impl App {
                                     let btn = egui::Button::new(txt)
                                         .min_size(egui::vec2(15.0, 19.0))
                                         .fill(if *on {
-                                            ACTION.linear_multiply(0.16)
+                                            action().linear_multiply(0.16)
                                         } else {
                                             egui::Color32::TRANSPARENT
                                         })
@@ -1307,33 +1386,40 @@ impl App {
             ),
             Some(RunState::Exited(0)) => (
                 format!("{} 0", tr("Terminé — code de sortie", "Finished — exit code", "Terminado — código de salida")),
-                FLAG_ON,
+                flag_on(),
             ),
             Some(RunState::Exited(c)) => (
                 format!("{} {c}", tr("Terminé — code de sortie", "Finished — exit code", "Terminado — código de salida")),
-                FALSE_COL,
+                false_col(),
             ),
             Some(RunState::Signaled) => (
                 tr("Tué par un signal", "Killed by a signal", "Terminado por una señal").to_string(),
-                FALSE_COL,
+                false_col(),
             ),
             Some(RunState::Faulted(_)) => (
                 tr("Arrêté sur une faute", "Stopped on a fault", "Detenido por un fallo").to_string(),
-                FALSE_COL,
+                false_col(),
             ),
             Some(RunState::Running) => (
                 tr("En attente d'une saisie…", "Waiting for input…", "Esperando entrada…").to_string(),
-                ACTION,
+                action(),
             ),
             Some(RunState::Stopped) => (
                 tr("En cours d'exécution", "Running", "En ejecución").to_string(),
-                ACTION,
+                action(),
             ),
         };
 
+        // Corps borné à une fraction de l'écran, comme la fenêtre Réglages :
+        // une sortie de mille lignes poussait sinon le pied de page et le
+        // bouton « Fermer » hors de la fenêtre, qui débordait de l'écran.
+        let max_body_h = (ctx.content_rect().height() * 0.6).max(160.0);
         let mut open = true;
         let mut copy = false;
         egui::Window::new(tr("Sortie du programme", "Program output", "Salida del programa"))
+            // Identité stable, indépendante du titre : changer de langue ne doit
+            // pas faire perdre à la fenêtre sa position et sa taille.
+            .id(egui::Id::new("program_output"))
             .collapsible(false)
             .resizable(true)
             .default_width(560.0)
@@ -1358,12 +1444,14 @@ impl App {
                 });
                 ui.add_space(4.0);
 
-                // Fond sombre et texte clair quel que soit le thème : c'est un
-                // terminal qu'on montre, et l'élève doit le reconnaître comme
-                // tel plutôt que comme un panneau de l'IDE de plus.
+                // Le terminal se distingue des panneaux de l'IDE par la surface
+                // la plus enfoncée du thème — celle de l'éditeur —, pas par un
+                // noir écrit en dur : sur un thème clair, ce dernier plaquait un
+                // rectangle de charbon au milieu d'une fenêtre pâle.
+                let theme = crate::theme::current();
                 egui::Frame::new()
-                    .fill(egui::Color32::from_rgb(0x12, 0x14, 0x18))
-                    .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x2A, 0x2F, 0x38)))
+                    .fill(theme.ui.extreme)
+                    .stroke(egui::Stroke::new(1.0_f32, theme.ui.border))
                     .corner_radius(egui::CornerRadius::same(4))
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
@@ -1371,6 +1459,7 @@ impl App {
                         egui::ScrollArea::vertical()
                             .id_salt("program_output_scroll")
                             .stick_to_bottom(true)
+                            .max_height(max_body_h)
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
@@ -1385,14 +1474,14 @@ impl App {
                                             "(el programa no escribió nada)",
                                         ))
                                         .monospace()
-                                        .color(egui::Color32::from_rgb(0x6A, 0x72, 0x80)),
+                                        .color(theme.ui.gutter),
                                     );
                                 } else {
                                     ui.add(
                                         egui::Label::new(
                                             RichText::new(&self.program_output)
                                                 .monospace()
-                                                .color(egui::Color32::from_rgb(0xD8, 0xDE, 0xE6)),
+                                                .color(theme.syntax.text),
                                         )
                                         .selectable(true)
                                         .wrap(),
@@ -1519,7 +1608,7 @@ impl App {
                             .min_size(egui::vec2(38.0, 22.0))
                             .corner_radius(egui::CornerRadius::same(4));
                         if sel {
-                            b = b.fill(ACCENT);
+                            b = b.fill(accent());
                         }
                         if ui
                             .add(b)
@@ -1654,13 +1743,13 @@ impl App {
             .show(ctx, |ui| {
                 // Bandeau de cause, en rouge.
                 egui::Frame::default()
-                    .fill(FALSE_COL.linear_multiply(0.16))
-                    .stroke(egui::Stroke::new(1.0_f32, FALSE_COL))
+                    .fill(false_col().linear_multiply(0.16))
+                    .stroke(egui::Stroke::new(1.0_f32, false_col()))
                     .corner_radius(egui::CornerRadius::same(5))
                     .inner_margin(egui::Margin::symmetric(10, 7))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.label(RichText::new(&diag.title).size(15.0).strong().color(FALSE_COL));
+                        ui.label(RichText::new(&diag.title).size(15.0).strong().color(false_col()));
                     });
                 ui.add_space(8.0);
 
@@ -1671,10 +1760,10 @@ impl App {
                 ui.add_space(8.0);
 
                 // Piste de correction.
-                ui.label(RichText::new(tr("💡 Comment corriger", "💡 How to fix it", "💡 Cómo corregirlo")).strong().color(ACTION));
+                ui.label(RichText::new(tr("💡 Comment corriger", "💡 How to fix it", "💡 Cómo corregirlo")).strong().color(action()));
                 ui.add_space(3.0);
                 egui::Frame::default()
-                    .fill(ACTION.linear_multiply(0.12))
+                    .fill(action().linear_multiply(0.12))
                     .corner_radius(egui::CornerRadius::same(5))
                     .inner_margin(egui::Margin::symmetric(10, 7))
                     .show(ui, |ui| {
@@ -1933,7 +2022,7 @@ impl App {
             .frame(
                 egui::Frame::window(&ctx.style())
                     .corner_radius(egui::CornerRadius::same(12))
-                    .stroke(egui::Stroke::new(1.0_f32, ACCENT.linear_multiply(0.6))),
+                    .stroke(egui::Stroke::new(1.0_f32, accent().linear_multiply(0.6))),
             )
             .show(ctx, |ui| {
                 ui.set_width(340.0);
@@ -1942,7 +2031,7 @@ impl App {
                     // Médaillon en dégradé léger — la seule touche de couleur
                     // franche de la carte, pour attirer l'œil sans agresser.
                     egui::Frame::default()
-                        .fill(ACCENT.linear_multiply(0.18))
+                        .fill(accent().linear_multiply(0.18))
                         .corner_radius(egui::CornerRadius::same(28))
                         .inner_margin(egui::Margin::same(14))
                         .show(ui, |ui| {
@@ -1957,7 +2046,7 @@ impl App {
                         ))
                         .heading()
                         .strong()
-                        .color(ACCENT),
+                        .color(accent()),
                     );
                     ui.add_space(6.0);
                     ui.label(
@@ -1980,7 +2069,7 @@ impl App {
                             crate::i18n::Lang::En => format!("{days} day(s) left before registration"),
                             crate::i18n::Lang::Es => format!("Quedan {days} día(s) antes del registro"),
                         };
-                        ui.label(RichText::new(format!("🕐 {remaining}")).small().color(ACTION));
+                        ui.label(RichText::new(format!("🕐 {remaining}")).small().color(action()));
                     }
 
                     // Ouverte parce qu'on essaie de fermer l'appli : on le dit,
@@ -2010,7 +2099,7 @@ impl App {
                             .add_sized(
                                 [btn_w, 28.0],
                                 egui::Button::new(RichText::new(tr("Activer une licence", "Activate a license", "Activar una licencia")).strong())
-                                    .fill(ACCENT),
+                                    .fill(accent()),
                             )
                             .clicked()
                         {

@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "asm_studio"
-version = "0.4.3-beta.3"
+version = "0.4.6"
 dependencies = [
  "base64",
  "capstone",

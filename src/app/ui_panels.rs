@@ -4,8 +4,8 @@ use crate::debugger::Flags;
 use crate::i18n;
 
 use super::{
-    App, ACCENT, ACTION, CHANGED, FLAG_ON, FLAG_OFF, FALSE_COL, FLASH_BRIGHT, GUTTER,
-    PUSH_COL, POP_COL,
+    App, accent, action, changed_col, flag_on, flag_off, false_col, flash_bright, gutter_col,
+    push_col, pop_col,
     changed_color, changed_color2, lerp_color,
     panel_header, icon_img, icon_tab,
     hex_dump_rows, parse_hex, parse_hex_bytes,
@@ -42,7 +42,7 @@ impl App {
                         );
                         let mut btn = egui::Button::new(txt).min_size(egui::vec2(22.0, 22.0)).corner_radius(egui::CornerRadius::same(11));
                         if cur {
-                            btn = btn.fill(ACTION);
+                            btn = btn.fill(action());
                         }
                         if ui.add(btn).clicked() {
                             goto = Some(i);
@@ -75,7 +75,7 @@ impl App {
                         self.view_index
                     ))
                     .strong()
-                    .color(CHANGED),
+                    .color(changed_col()),
                 )
                 .wrap(),
             );
@@ -257,7 +257,7 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Petite corbeille rouge plutôt qu'un mot : l'action est
                 // universelle, et le libellé passe en infobulle.
-                let btn = egui::Button::new(RichText::new("🗑").size(15.0).color(FALSE_COL))
+                let btn = egui::Button::new(RichText::new("🗑").size(15.0).color(false_col()))
                     .frame(false);
                 let resp = ui.add(btn).on_hover_text(clear);
                 if resp.hovered() {
@@ -269,7 +269,7 @@ impl App {
                 // Ouvre la sortie du programme démêlée du journal de l'IDE.
                 // Au même endroit que la corbeille : les deux actions portent
                 // sur ce qu'affiche la console, pas sur le programme.
-                let btn = egui::Button::new(RichText::new(CONSOLE_OUTPUT_ICON).size(15.0).color(ACCENT)).frame(false);
+                let btn = egui::Button::new(RichText::new(CONSOLE_OUTPUT_ICON).size(15.0).color(accent())).frame(false);
                 let resp = ui.add(btn).on_hover_text(see_output);
                 if resp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -301,7 +301,7 @@ impl App {
                         ui.label(
                             RichText::new("❯")
                                 .monospace()
-                                .color(if waiting { ACTION } else { GUTTER }),
+                                .color(if waiting { action() } else { gutter_col() }),
                         );
                         let hint = i18n::tr3(
                             self.lang,
@@ -472,7 +472,7 @@ impl App {
                         let name_txt = RichText::new(name)
                             .monospace()
                             .strong()
-                            .color(if kb_sel { super::ACCENT } else { hdr });
+                            .color(if kb_sel { super::accent() } else { hdr });
                         let name_resp = ui.label(name_txt).on_hover_text(role_tip);
                         // Le registre retenu au clavier est amené à l'écran :
                         // sans cela, les flèches le poussaient hors du cadre
@@ -485,7 +485,7 @@ impl App {
                             ui.painter().rect_stroke(
                                 name_resp.rect.expand(2.0),
                                 3.0,
-                                egui::Stroke::new(1.0_f32, super::ACCENT),
+                                egui::Stroke::new(1.0_f32, super::accent()),
                                 egui::StrokeKind::Middle,
                             );
                         }
@@ -530,7 +530,7 @@ impl App {
                             // d'un simple fondu, pour attirer l'œil sur le changement.
                             let bg = if changed {
                                 if blink > 0.0 {
-                                    lerp_color(CHANGED.linear_multiply(0.22), FLASH_BRIGHT.linear_multiply(0.55), blink)
+                                    lerp_color(changed_col().linear_multiply(0.22), flash_bright().linear_multiply(0.55), blink)
                                 } else {
                                     changed_color(flash).linear_multiply(0.22)
                                 }
@@ -545,7 +545,7 @@ impl App {
                                     // flags, pour que registres et flags forment une
                                     // même famille visuelle.
                                     let stroke = if changed && blink > 0.0 {
-                                        egui::Stroke::new(1.0 + 1.4 * blink, lerp_color(CHANGED, FLASH_BRIGHT, blink))
+                                        egui::Stroke::new(1.0 + 1.4 * blink, lerp_color(changed_col(), flash_bright(), blink))
                                     } else if changed {
                                         egui::Stroke::new(1.0_f32, changed_color(flash))
                                     } else {
@@ -579,8 +579,8 @@ impl App {
                                     // Flèche directionnelle + delta chiffré, clignotants.
                                     if changed && ped {
                                         let up = val > pval;
-                                        let base = if up { PUSH_COL } else { POP_COL };
-                                        let col = lerp_color(base, FLASH_BRIGHT, blink);
+                                        let base = if up { push_col() } else { pop_col() };
+                                        let col = lerp_color(base, flash_bright(), blink);
                                         ui.label(
                                             RichText::new(if up { "▲" } else { "▼" })
                                                 .strong()
@@ -674,9 +674,9 @@ impl App {
                         let cc = changed_color(flash);
                         (cc.linear_multiply(0.20), cc, cc)
                     } else if *val {
-                        (FLAG_ON.linear_multiply(0.16), FLAG_ON.linear_multiply(0.55), FLAG_ON)
+                        (flag_on().linear_multiply(0.16), flag_on().linear_multiply(0.55), flag_on())
                     } else {
-                        (c[j].visuals().faint_bg_color, FLAG_OFF.linear_multiply(0.30), FLAG_OFF)
+                        (c[j].visuals().faint_bg_color, flag_off().linear_multiply(0.30), flag_off())
                     };
                     egui::Frame::new()
                         .fill(fill)
@@ -804,7 +804,7 @@ impl App {
             // Frame courante en haut (RIP), puis les retours empilés.
             let mut depth = self.call_stack.len();
             if let Some(rip) = self.view_rip() {
-                line(ui, RichText::new(format!("#{depth}  0x{rip:08X}  {}", tr("(courant)", "(current)", "(actual)"))).monospace().color(CHANGED));
+                line(ui, RichText::new(format!("#{depth}  0x{rip:08X}  {}", tr("(courant)", "(current)", "(actual)"))).monospace().color(changed_col()));
             }
             for addr in self.call_stack.iter().rev() {
                 depth = depth.saturating_sub(1);
@@ -834,9 +834,20 @@ impl App {
                 for s in &self.syscalls {
                     // Couleur encode le résultat : vert=ok, rouge=erreur, gris=pending.
                     let col = match s.ret {
-                        Some(r) if r < 0 => FALSE_COL,
-                        Some(_) => FLAG_ON,
+                        Some(r) if r < 0 => false_col(),
+                        Some(_) => flag_on(),
                         None => self.c_bytes(),
+                    };
+                    // Le journal reste compact — nom, numéro, arguments bruts —
+                    // mais l'effet de l'appel est à un survol de là : relire
+                    // « write(fd=1, …) » trois écrans plus bas ne dit toujours
+                    // pas ce qui s'est passé.
+                    let hover = {
+                        let d = crate::syscall::describe(&s.regs, self.lang);
+                        match &d.note {
+                            Some(n) => format!("{}\n\n⚠ {n}", d.summary),
+                            None => d.summary,
+                        }
                     };
                     // Ligne 1 : nom  #num  = ret. Le retour est aligné à gauche
                     // à la suite du numéro : dans une zone qui défile
@@ -848,13 +859,15 @@ impl App {
                                 .monospace()
                                 .strong()
                                 .color(col),
-                        );
+                        )
+                        .on_hover_text(hover.as_str());
                         ui.label(
                             RichText::new(format!("#{}", s.number))
                                 .monospace()
                                 .small()
                                 .color(self.c_bytes()),
-                        );
+                        )
+                        .on_hover_text(hover.as_str());
                         if let Some(r) = s.ret {
                             ui.label(
                                 RichText::new(format!("= {r}"))
@@ -875,7 +888,8 @@ impl App {
                                     .weak(),
                             )
                             .extend(),
-                        );
+                        )
+                        .on_hover_text(hover.as_str());
                     }
                     ui.add_space(2.0);
                 }
@@ -919,9 +933,9 @@ impl App {
         if let Some(prev) = self.prev_snap() {
             let prsp = prev.regs.rsp;
             if rsp < prsp {
-                ui.label(RichText::new("⬇ PUSH").strong().color(changed_color2(flash, PUSH_COL)));
+                ui.label(RichText::new("⬇ PUSH").strong().color(changed_color2(flash, push_col())));
             } else if rsp > prsp {
-                ui.label(RichText::new("⬆ POP").strong().color(changed_color2(flash, POP_COL)));
+                ui.label(RichText::new("⬆ POP").strong().color(changed_color2(flash, pop_col())));
             } else {
                 ui.label("");
             }
@@ -946,15 +960,15 @@ impl App {
                 let is_top = i == 0;
                 // Barre de gauche : couleur = rôle de la case (sommet / cadre / corps).
                 let bar_col = if addr == rsp {
-                    PUSH_COL
+                    push_col()
                 } else if addr == rbp {
-                    ACTION
+                    action()
                 } else {
                     self.c_bytes().gamma_multiply(0.5)
                 };
                 // Case modifiée : fond clignotant.
                 let fill = if changed && blink > 0.0 {
-                    lerp_color(CHANGED.linear_multiply(0.18), FLASH_BRIGHT.linear_multiply(0.45), blink)
+                    lerp_color(changed_col().linear_multiply(0.18), flash_bright().linear_multiply(0.45), blink)
                 } else if changed {
                     changed_color(flash).linear_multiply(0.18)
                 } else if addr == rsp || addr == rbp {
@@ -992,7 +1006,7 @@ impl App {
                                 let mut vt = RichText::new(format!("0x{val:016X}")).monospace();
                                 if changed {
                                     vt = vt.color(if blink > 0.0 {
-                                        lerp_color(CHANGED, FLASH_BRIGHT, blink)
+                                        lerp_color(changed_col(), flash_bright(), blink)
                                     } else {
                                         changed_color(flash)
                                     });
@@ -1013,8 +1027,8 @@ impl App {
                                     // transforme une colonne d'adresses en structure.
                                     if let Some(kind) = crate::abi::classify_slot(addr, rbp) {
                                         let (txt, col) = match kind {
-                                            crate::abi::SlotKind::ReturnAddress => (kind.label(lang), FALSE_COL),
-                                            crate::abi::SlotKind::SavedFramePointer => (kind.label(lang), ACTION),
+                                            crate::abi::SlotKind::ReturnAddress => (kind.label(lang), false_col()),
+                                            crate::abi::SlotKind::SavedFramePointer => (kind.label(lang), action()),
                                             _ => (kind.label(lang), self.c_bytes()),
                                         };
                                         ui.label(RichText::new(txt).small().italics().color(col));
@@ -1025,7 +1039,7 @@ impl App {
                                                 .monospace()
                                                 .small()
                                                 .strong()
-                                                .color(if addr == rsp { PUSH_COL } else { ACTION }),
+                                                .color(if addr == rsp { push_col() } else { action() }),
                                         );
                                     }
                                 });

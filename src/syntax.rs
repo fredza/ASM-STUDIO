@@ -1,64 +1,23 @@
-//! Coloration syntaxique NASM pour l'éditeur (style VSCode).
+//! Coloration syntaxique NASM pour l'éditeur.
 //!
 //! Un balayage par ligne, en un seul passage, gère : commentaires (`;` — même
 //! à l'intérieur d'une chaîne il n'est pas confondu), chaînes `"…"`/`'…'`,
 //! labels (`foo:`) et labels locaux/sections (`.text`), directives (`section`,
 //! `global`, `db`…), registres, nombres, et le mnémonique en tête de ligne.
 //!
-//! Le surlignage des résultats de recherche (`FindHighlight`) et de la
-//! parenthèse/du crochet correspondant (`matching_bracket`) sont des passes
-//! indépendantes des couleurs lexicales : elles ne font que teinter le fond de
-//! segments déjà classés, sans toucher à leur couleur de premier plan.
+//! Les couleurs viennent du thème courant (voir [`crate::theme`]) : ce module
+//! ne connaît que les CATÉGORIES lexicales, jamais les teintes. Ajouter un
+//! thème ne s'y voit pas.
+//!
+//! Le surlignage des résultats de recherche (`FindHighlight`), de la ligne du
+//! curseur et de la parenthèse/du crochet correspondant (`matching_bracket`)
+//! sont des passes indépendantes des couleurs lexicales : elles ne font que
+//! teinter le fond de segments déjà classés, sans toucher à leur couleur de
+//! premier plan.
 
 use eframe::egui::{Color32, FontId, TextFormat, text::LayoutJob};
 
-/// Palette de coloration (une variante par thème).
-struct Palette {
-    comment: Color32,
-    mnemonic: Color32,
-    register: Color32,
-    number: Color32,
-    directive: Color32,
-    label: Color32,
-    string: Color32,
-    text: Color32,
-    line_bg: Color32,
-    match_bg: Color32,
-    match_current_bg: Color32,
-    bracket_bg: Color32,
-}
-
-// Tons VSCode « Dark+ ».
-const DARK: Palette = Palette {
-    comment: Color32::from_rgb(0x6A, 0x99, 0x55),
-    mnemonic: Color32::from_rgb(0x56, 0x9C, 0xD6),
-    register: Color32::from_rgb(0x9C, 0xDC, 0xFE),
-    number: Color32::from_rgb(0xB5, 0xCE, 0xA8),
-    directive: Color32::from_rgb(0xC5, 0x86, 0xC0),
-    label: Color32::from_rgb(0xDC, 0xDC, 0xAA),
-    string: Color32::from_rgb(0xCE, 0x91, 0x78),
-    text: Color32::from_rgb(0xD4, 0xD4, 0xD4),
-    line_bg: Color32::from_rgb(0x3A, 0x33, 0x1E),
-    match_bg: Color32::from_rgb(0x51, 0x5C, 0x6A),
-    match_current_bg: Color32::from_rgb(0xA8, 0x7A, 0x1E),
-    bracket_bg: Color32::from_rgb(0x51, 0x51, 0x0A),
-};
-
-// Tons VSCode « Light+ » : couleurs foncées pour contraster sur fond clair.
-const LIGHT: Palette = Palette {
-    comment: Color32::from_rgb(0x00, 0x80, 0x00),
-    mnemonic: Color32::from_rgb(0x04, 0x51, 0xA5),
-    register: Color32::from_rgb(0x0F, 0x68, 0xA0),
-    number: Color32::from_rgb(0x0A, 0x6E, 0x48),
-    directive: Color32::from_rgb(0xAF, 0x00, 0xDB),
-    label: Color32::from_rgb(0x79, 0x5E, 0x26),
-    string: Color32::from_rgb(0xA3, 0x15, 0x15),
-    text: Color32::from_rgb(0x1C, 0x20, 0x28),
-    line_bg: Color32::from_rgb(0xFF, 0xF3, 0xC4),
-    match_bg: Color32::from_rgb(0xCF, 0xE0, 0xEA),
-    match_current_bg: Color32::from_rgb(0xFF, 0xD7, 0x7A),
-    bracket_bg: Color32::from_rgb(0xDD, 0xE6, 0xA8),
-};
+use crate::theme::Syntax;
 
 /// Taille de police de l'éditeur (partagée avec la gouttière de numéros).
 pub const FONT_SIZE: f32 = 13.0;
@@ -222,19 +181,20 @@ pub fn matching_bracket(text: &str, cursor: usize) -> Option<(usize, usize)> {
     }
 }
 
-/// Construit le `LayoutJob` coloré du source complet. `dark` choisit la palette,
-/// `hl_line` (0-based) est la ligne à surligner (ligne courante du débogage),
-/// `find` surligne en plus les correspondances d'une recherche active, et
+/// Construit le `LayoutJob` coloré du source complet. `pal` est la palette du
+/// thème courant, `hl_line` (0-based) la ligne à surligner (ligne courante du
+/// débogage), `cursor_line` celle où se trouve le curseur d'édition, `find`
+/// surligne en plus les correspondances d'une recherche active, et
 /// `bracket_match` la paire de brackets sous le curseur (voir [`matching_bracket`]).
 /// Le retour à la ligne est désactivé pour rester aligné aux numéros de ligne.
 pub fn highlight(
     text: &str,
-    dark: bool,
+    pal: &Syntax,
     hl_line: Option<usize>,
+    cursor_line: Option<usize>,
     find: Option<&FindHighlight>,
     bracket_match: Option<(usize, usize)>,
 ) -> LayoutJob {
-    let pal = if dark { &DARK } else { &LIGHT };
     let font = FontId::monospace(FONT_SIZE);
 
     let mut spans = Vec::new();
@@ -254,8 +214,12 @@ pub fn highlight(
     job.wrap.max_width = f32::INFINITY;
     let mut offset = 0usize;
     for (i, line) in text.split_inclusive('\n').enumerate() {
+        // La ligne RIP prime sur la ligne du curseur : pendant un pas à pas,
+        // c'est elle qu'on cherche des yeux.
         let bg = if Some(i) == hl_line {
             pal.line_bg
+        } else if Some(i) == cursor_line {
+            pal.cursor_line_bg
         } else {
             Color32::TRANSPARENT
         };
@@ -267,7 +231,7 @@ pub fn highlight(
 
 fn highlight_line(
     job: &mut LayoutJob,
-    pal: &Palette,
+    pal: &Syntax,
     line: &str,
     font: &FontId,
     bg: Color32,
@@ -318,7 +282,7 @@ fn string_end(s: &str, quote: char) -> usize {
     s.len()
 }
 
-fn classify(word: &str, after: &str, pal: &Palette, mnem_pending: &mut bool) -> Color32 {
+fn classify(word: &str, after: &str, pal: &Syntax, mnem_pending: &mut bool) -> Color32 {
     if word.starts_with('.') {
         // Label local (.loop) ou nom de section (.text/.data/.bss).
         pal.label
@@ -408,25 +372,32 @@ fn is_directive(w: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Palette de référence des tests : le thème sombre intégré. Les couleurs
+    /// exactes n'ont pas d'importance ici, seule compte la catégorie à laquelle
+    /// chaque morceau de texte a été rattaché.
+    fn pal() -> &'static Syntax {
+        &crate::theme::by_id("dark").expect("le thème sombre fait partie du catalogue").syntax
+    }
+
     #[test]
     fn covers_whole_line_without_loss() {
         // Chaque caractère doit être stylé (aucune perte de texte à l'affichage).
         let src = "  mov rax, 5   ; commentaire\n";
-        let job = highlight(src, true, None, None, None);
+        let job = highlight(src, pal(), None, None, None, None);
         assert_eq!(job.text, src);
     }
 
     #[test]
     fn semicolon_inside_string_is_not_a_comment() {
         let src = "    db \"a;b\", 10\n";
-        let job = highlight(src, true, None, None, None);
+        let job = highlight(src, pal(), None, None, None, None);
         // Tout le texte est présent et la ligne reste intègre.
         assert_eq!(job.text, src);
         // La chaîne "a;b" est colorée en STRING (une section contient a;b).
         assert!(
             job.sections
                 .iter()
-                .any(|s| s.format.color == DARK.string && src[s.byte_range.clone()].contains(';')),
+                .any(|s| s.format.color == pal().string && src[s.byte_range.clone()].contains(';')),
             "le ; dans la chaîne ne doit pas déclencher un commentaire"
         );
     }
@@ -457,13 +428,13 @@ mod tests {
     fn highlighting_matches_does_not_lose_or_reorder_text() {
         let src = "    mov rax, rbx ; move rax into itself\n";
         let find = FindHighlight { query: "rax", case_sensitive: false, current: None };
-        let job = highlight(src, true, None, Some(&find), None);
+        let job = highlight(src, pal(), None, None, Some(&find), None);
         assert_eq!(job.text, src, "le surlignage ne doit jamais altérer le texte affiché");
         // Les deux occurrences de "rax" doivent porter le fond de correspondance.
         let hits: Vec<_> = job
             .sections
             .iter()
-            .filter(|s| s.format.background == DARK.match_bg)
+            .filter(|s| s.format.background == pal().match_bg)
             .collect();
         assert_eq!(hits.len(), 2, "{hits:?}");
     }
@@ -473,9 +444,9 @@ mod tests {
         let src = "rax rax\n";
         let matches = find_matches(src, "rax", false);
         let find = FindHighlight { query: "rax", case_sensitive: false, current: Some(matches[1].0) };
-        let job = highlight(src, true, None, Some(&find), None);
-        let current_hits = job.sections.iter().filter(|s| s.format.background == DARK.match_current_bg).count();
-        let other_hits = job.sections.iter().filter(|s| s.format.background == DARK.match_bg).count();
+        let job = highlight(src, pal(), None, None, Some(&find), None);
+        let current_hits = job.sections.iter().filter(|s| s.format.background == pal().match_current_bg).count();
+        let other_hits = job.sections.iter().filter(|s| s.format.background == pal().match_bg).count();
         assert_eq!(current_hits, 1, "une seule correspondance active");
         assert_eq!(other_hits, 1, "l'autre garde le fond neutre");
     }

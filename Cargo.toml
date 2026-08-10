@@ -1,6 +1,6 @@
 [package]
 name = "asm_studio"
-version = "0.4.3-beta.3"
+version = "0.4.6"
 edition = "2024"
 # Licence propre au projet, hors nomenclature SPDX : le fichier fait foi.
 license-file = "LICENSE.md"

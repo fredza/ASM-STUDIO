@@ -16,7 +16,7 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::i18n;
 
-use super::{App, CHANGED, FLASH_BRIGHT, badge, lerp_color};
+use super::{App, changed_col, flash_bright, badge, lerp_color};
 
 // ---------- Constantes et couleurs propres au mode pédagogique ----------
 
@@ -179,7 +179,7 @@ pub(super) fn bit_diff_strip(ui: &mut egui::Ui, val: u64, pval: u64, blink: f32,
         let painter = ui.painter_at(hover_rect);
         let off = ui.visuals().extreme_bg_color;
         let on = ui.visuals().weak_text_color().gamma_multiply(0.55);
-        let hot = lerp_color(CHANGED, FLASH_BRIGHT, blink);
+        let hot = lerp_color(changed_col(), flash_bright(), blink);
         // Bit 63 à gauche, bit 0 à droite (ordre de lecture d'un nombre binaire).
         for i in 0..64u32 {
             let bit = 63 - i;
@@ -502,7 +502,7 @@ impl App {
                     let wc = wire_col(i);
                     // Fond : clignotant si la valeur vient de changer.
                     let fill = if w.changed && blink > 0.0 {
-                        lerp_color(CHANGED.linear_multiply(0.20), FLASH_BRIGHT.linear_multiply(0.5), blink)
+                        lerp_color(changed_col().linear_multiply(0.20), flash_bright().linear_multiply(0.5), blink)
                     } else if is_hov {
                         wc.linear_multiply(0.20)
                     } else if linked {
@@ -512,7 +512,7 @@ impl App {
                     };
                     painter.rect_filled(rect, 4.0, fill);
                     let stroke_c = if w.changed && blink > 0.0 {
-                        lerp_color(CHANGED, FLASH_BRIGHT, blink)
+                        lerp_color(changed_col(), flash_bright(), blink)
                     } else if linked {
                         wc.gamma_multiply(if faded { 0.35 } else { 1.0 })
                     } else {
@@ -522,7 +522,7 @@ impl App {
                     painter.rect_stroke(rect, 4.0, egui::Stroke::new(sw, stroke_c), egui::StrokeKind::Middle);
 
                     let name_c = if w.changed {
-                        lerp_color(CHANGED, FLASH_BRIGHT, blink)
+                        lerp_color(changed_col(), flash_bright(), blink)
                     } else if faded {
                         weak_col
                     } else {
@@ -564,7 +564,7 @@ impl App {
                     if faded {
                         col = col.gamma_multiply(0.22);
                     } else if w.changed && blink > 0.0 {
-                        col = lerp_color(col, FLASH_BRIGHT, blink * 0.8);
+                        col = lerp_color(col, flash_bright(), blink * 0.8);
                     }
                     let width = if emphasised { 2.4_f32 } else if faded { 0.9 } else { 1.5 };
 
@@ -664,17 +664,17 @@ impl App {
                 for (i, b) in bytes.iter().enumerate().take(8) {
                     // Dégradé : vif pour le poids faible, pâle pour le poids fort.
                     let t = i as f32 / 7.0;
-                    let col = lerp_color(super::ACTION, super::ACCENT, t);
+                    let col = lerp_color(super::action(), super::accent(), t);
                     ui.label(RichText::new(format!("{b:02X}")).monospace().strong().color(col));
                 }
                 ui.end_row();
             });
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr("↑ poids faible", "↑ least significant", "↑ menos significativo"))
-                    .small().color(super::ACTION));
+                    .small().color(super::action()));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(RichText::new(tr("poids fort ↑", "most significant ↑", "más significativo ↑"))
-                        .small().color(super::ACCENT));
+                        .small().color(super::accent()));
                 });
             });
 
