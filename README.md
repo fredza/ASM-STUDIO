@@ -1,29 +1,15 @@
-<p align="center">
-  <img src="assets/icon.png" width="96" alt="ASM Studio icon">
-</p>
+# ASM Studio
 
-<h1 align="center">ASM Studio</h1>
+**English** | [Français](README.fr.md) | [Español](README.es.md)
 
-<p align="center"><strong>Learn NASM x86-64 by watching a real Linux process execute.</strong></p>
+> A pedagogical IDE for learning **NASM x86-64** assembly on Linux.
 
-<p align="center">
-  <a href="https://github.com/fredza/asm-studio/releases"><img src="https://img.shields.io/badge/version-0.4.7-2f81c1?style=flat-square" alt="Version 0.4.7"></a>
-  <img src="https://img.shields.io/badge/platform-Linux%20x86__64-f6a434?style=flat-square" alt="Linux x86-64">
-  <a href="LICENSE.md"><img src="https://img.shields.io/badge/license-ASFL%201.0-6baf68?style=flat-square" alt="ASFL 1.0 license"></a>
-</p>
+ASM Studio is not a simulator: your program is **actually assembled**
+(`nasm`), **linked** (`ld`) and **run by the real Linux kernel**, driven
+step by step through `ptrace`. What you see — registers, flags, stack,
+memory — is the genuine process state, not an approximation.
 
-<p align="center"><strong>English</strong> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a></p>
-
-ASM Studio assembles your source with `nasm`, links it with `ld`, and runs it
-under the real Linux kernel. Step through the process with `ptrace` and inspect
-its registers, flags, stack and memory as they really are — no CPU simulator in
-between.
-
-![ASM Studio — debugger, flags and guided lesson](assets/captures/asm_studio-preview.png)
-
-| Inspect vector registers | Understand one instruction |
-|---|---|
-| ![SSE and x87 register panel](assets/captures/debugger-sse.png) | ![Instruction microscope](assets/captures/instruction-microscope.png) |
+![ASM Studio preview](assets/captures/asm_studio-preview.png)
 
 ---
 

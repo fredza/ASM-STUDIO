@@ -1,29 +1,16 @@
-<p align="center">
-  <img src="assets/icon.png" width="96" alt="Icono de ASM Studio">
-</p>
+# ASM Studio
 
-<h1 align="center">ASM Studio</h1>
+[English](README.md) | [Français](README.fr.md) | **Español**
 
-<p align="center"><strong>Aprenda NASM x86-64 observando un proceso Linux real.</strong></p>
+> IDE pedagógico para aprender ensamblador **NASM x86-64** en Linux.
 
-<p align="center">
-  <a href="https://github.com/fredza/asm-studio/releases"><img src="https://img.shields.io/badge/versi%C3%B3n-0.4.7-2f81c1?style=flat-square" alt="Versión 0.4.7"></a>
-  <img src="https://img.shields.io/badge/plataforma-Linux%20x86__64-f6a434?style=flat-square" alt="Linux x86-64">
-  <a href="LICENSE.md"><img src="https://img.shields.io/badge/licencia-ASFL%201.0-6baf68?style=flat-square" alt="Licencia ASFL 1.0"></a>
-</p>
+ASM Studio no es un simulador: su programa se **ensambla realmente**
+(`nasm`), se **enlaza** (`ld`) y lo **ejecuta el núcleo Linux de verdad**,
+dirigido paso a paso mediante `ptrace`. Lo que usted ve — registros,
+banderas, pila, memoria — es el estado auténtico del proceso, no una
+aproximación.
 
-<p align="center"><a href="README.md">English</a> · <a href="README.fr.md">Français</a> · <strong>Español</strong></p>
-
-ASM Studio ensambla su fuente con `nasm`, la enlaza con `ld` y la ejecuta con
-el núcleo Linux de verdad. Avance instrucción por instrucción mediante `ptrace`
-e inspeccione registros, banderas, pila y memoria en su estado real, sin un
-simulador de CPU de por medio.
-
-![ASM Studio — depurador, banderas y lección guiada](assets/captures/asm_studio-preview.png)
-
-| Inspeccionar registros vectoriales | Comprender una instrucción |
-|---|---|
-| ![Panel de registros SSE y x87](assets/captures/debugger-sse.png) | ![Microscopio de instrucciones](assets/captures/instruction-microscope.png) |
+![Vista previa de ASM Studio](assets/captures/asm_studio-preview.png)
 
 ---
 
