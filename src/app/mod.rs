@@ -105,6 +105,20 @@ impl App {
 // par ici. Le coût est une lecture atomique par appel, sur un chemin où chaque
 // libellé en fait déjà une poignée — invisible à l'échelle d'une image.
 
+/// Contenu texte du presse-papiers, s'il y en a un.
+///
+/// egui sait *écrire* dans le presse-papiers (`Context::copy_text`) mais pas le
+/// lire : côté lecture, il ne transmet que l'événement de collage clavier, ce
+/// qui ne permet pas de déclencher un collage depuis un bouton. On passe donc
+/// par `arboard`, que eframe embarque déjà.
+///
+/// Rend `None` si le presse-papiers est vide, illisible, ou ne contient pas de
+/// texte — trois cas où il n'y a rien à coller, et un seul message à montrer.
+pub(super) fn clipboard_text() -> Option<String> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    clipboard.get_text().ok().filter(|s| !s.trim().is_empty())
+}
+
 /// Accent principal : liens, sélection, repère de la ligne courante.
 pub(super) fn accent() -> Color32 {
     crate::theme::current().ui.accent
@@ -126,6 +140,10 @@ pub(super) fn flag_off() -> Color32 {
 /// Erreur, condition fausse.
 pub(super) fn false_col() -> Color32 {
     crate::theme::current().ui.error
+}
+/// Réserve, restriction : ce qui marche, mais pas partout ni jusqu'au bout.
+pub(super) fn warn_col() -> Color32 {
+    crate::theme::current().ui.warn
 }
 /// Couleur de la gouttière de numéros de ligne.
 pub(super) fn gutter_col() -> Color32 {
@@ -158,6 +176,15 @@ pub(super) const CONSOLE_KEEP: usize = 384 * 1024;
 pub(super) const MAX_RECENT: usize = 10;
 // Animation « CPU vivant ».
 pub(super) const FLASH_DUR: f64 = 0.7; // durée du fondu (secondes)
+
+// Squelettes de départ d'un nouveau fichier, un par format visé. Ils tiennent
+// en quelques lignes : ce qu'il faut pour que le fichier s'assemble et se
+// termine proprement, pas un programme d'exemple — celui-là est dans
+// `examples/`. Chacun s'arrête à la frontière du format : `_start` + `syscall`
+// pour ELF, `main` + `ExitProcess` pour PE.
+pub(super) const SKELETON_ELF: &str = "section .data\n\nsection .text\n    global _start\n_start:\n    mov rax, 60      ; sys_exit\n    xor rdi, rdi     ; code 0\n    syscall\n";
+pub(super) const SKELETON_PE_CONSOLE: &str = "bits 64\ndefault rel                 ; adressage relatif à RIP, comme sous Windows\n\nsection .data\n\nsection .text\n    global main\n    extern ExitProcess      ; kernel32.dll — le lieur l'inscrit dans les imports\n\nmain:\n    sub     rsp, 40         ; 32 d'espace d'ombre + 8 d'alignement, avant tout appel\n\n    xor     ecx, ecx        ; code de sortie 0\n    call    ExitProcess     ; ne revient jamais\n";
+pub(super) const SKELETON_PE_GUI: &str = "bits 64\ndefault rel                 ; adressage relatif à RIP, comme sous Windows\n\nsection .data\n    titre   db \"ASM Studio\", 0\n    texte   db \"Bonjour depuis un PE64 !\", 0\n\nsection .text\n    global main\n    extern MessageBoxA      ; user32.dll\n    extern ExitProcess      ; kernel32.dll\n\nmain:\n    sub     rsp, 40         ; 32 d'espace d'ombre + 8 d'alignement\n\n    xor     ecx, ecx        ; 1er argument : aucune fenêtre parente\n    lea     rdx, [texte]    ; 2e : le message\n    lea     r8, [titre]     ; 3e : le titre\n    xor     r9d, r9d        ; 4e : MB_OK\n    call    MessageBoxA\n\n    xor     ecx, ecx        ; code de sortie 0\n    call    ExitProcess\n";
 
 /// Interpolation linéaire entre deux couleurs (t ∈ [0,1]).
 pub(super) fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -387,6 +414,35 @@ pub struct App {
     /// (adapté à la largeur du panneau). ↑/↓ sautent d'autant de registres pour
     /// suivre ce que l'œil voit dans la grille.
     pub(super) reg_cols: usize,
+    /// Lecture choisie pour les registres XMM (panneau SSE/FPU). Les mêmes
+    /// seize octets sont deux `double` ou seize entiers selon l'instruction :
+    /// c'est l'élève qui dit laquelle il vient d'écrire.
+    pub(super) xmm_view: crate::simd::XmmView,
+    /// Masque les registres XMM entièrement nuls, pour ne garder que ceux qui
+    /// travaillent (la plupart des programmes n'en utilisent que deux ou trois).
+    pub(super) simd_hide_zero: bool,
+    /// Système visé par l'assemblage. La cible Windows produit un vrai `.exe`
+    /// PE64, que l'IDE sait lire mais pas exécuter : `ptrace` n'existe que sous
+    /// Linux, et prétendre le contraire serait le seul vrai mensonge possible
+    /// ici (voir [`crate::assemble::Target`]).
+    pub(super) target: crate::assemble::Target,
+    /// Description du dernier binaire assemblé, pour le panneau FORMAT.
+    pub(super) format_info: Option<crate::binfmt::Overview>,
+    /// L'assemblage Windows est-il proposé ?
+    ///
+    /// Une cible supplémentaire est une question de plus posée à qui apprend
+    /// l'assembleur ; ceux qui n'en ont pas besoin la coupent, et l'IDE
+    /// redevient ce qu'il était : un outil pour Linux. Décocher ramène la cible
+    /// courante à Linux — laisser un `.exe` en cours sans plus aucun menu pour
+    /// en sortir serait un cul-de-sac.
+    pub(super) pe_enabled: bool,
+    /// Exécutable Windows en cours d'exécution sous Wine, le cas échéant.
+    ///
+    /// Sa sortie va dans la même console que celle d'un programme Linux, mais
+    /// il n'y a ni registres ni timeline derrière : Wine exécute, il ne se
+    /// laisse pas déboguer instruction par instruction (voir
+    /// [`crate::winerun`]).
+    pub(super) wine: Option<crate::winerun::WineRun>,
     /// Registre en cours d'édition (laboratoire mémoire) et son tampon de saisie.
     pub(super) edit_reg: Option<&'static str>,
     pub(super) edit_buf: String,
@@ -569,6 +625,12 @@ pub struct App {
     /// quoi faire du travail non enregistré qu'elle écraserait (voir
     /// [`unsaved`]). `None` : rien en suspens, la boîte est fermée.
     pub(super) unsaved_prompt: Option<unsaved::PendingAction>,
+    /// Un nouveau fichier attend de savoir pour quel format il est écrit : un
+    /// squelette ELF et un squelette PE ne commencent pas par les mêmes lignes,
+    /// et poser la question vaut mieux que d'imposer Linux puis de laisser
+    /// l'élève découvrir l'erreur au moment d'assembler. `false` : rien en
+    /// suspens. La question ne se pose que si l'assemblage Windows est activé.
+    pub(super) new_file_prompt: bool,
     /// L'abandon des modifications a été confirmé pour la fermeture en cours :
     /// le `Close` qu'on réémet soi-même ne doit pas rouvrir la question.
     pub(super) discard_confirmed: bool,
@@ -626,6 +688,16 @@ impl App {
             mem_poke: String::new(),
             reg_sel: 0,
             reg_cols: 2,
+            // Deux `double` par défaut : c'est la forme des premiers pas en
+            // flottant (`addsd`, `cvtsi2sd`), avant tout calcul vectoriel.
+            xmm_view: crate::simd::XmmView::F64,
+            simd_hide_zero: true,
+            target: crate::assemble::Target::Linux,
+            // Proposée par défaut : la fonctionnalité existe, autant qu'elle se
+            // découvre. Une case dans les Réglages suffit à la retirer.
+            pe_enabled: true,
+            format_info: None,
+            wine: None,
             edit_reg: None,
             edit_buf: String::new(),
             edit_focus: false,
@@ -713,6 +785,7 @@ impl App {
             exit_pending: false,
             quit_confirmed: false,
             unsaved_prompt: None,
+            new_file_prompt: false,
             discard_confirmed: false,
             quit_requested: false,
             nag_next_at: None,
@@ -764,6 +837,8 @@ impl App {
                 "theme" => self.theme_pref = crate::theme::Choice::from_key(v),
                 "lang" => self.lang = Lang::from_key(v),
                 "mode" => self.mode = UiMode::from_key(v),
+                "target" => self.target = crate::assemble::Target::from_key(v),
+                "pe" => self.pe_enabled = v == "true",
                 "tutorial" => self.tutorial_enabled = v == "true",
                 "tutorial_done" => self.tutorial_progress = crate::tutorial::Progress::parse(v),
                 "tutorial_current" => {
@@ -825,7 +900,7 @@ impl App {
             "theme={theme}\nlang={}\nmode={}\ntooltips={}\ninspect_hover={}\nasmstd={}\nanimate={}\n\
              pedagogy_anim={}\npedagogy_memview={}\npedagogy_predict={}\n\
              tutorial={}\ntutorial_done={}\ntutorial_current={}\n\
-             welcome_dismissed={}\n{recent}dock={}\n",
+             welcome_dismissed={}\ntarget={}\npe={}\n{recent}dock={}\n",
             self.lang.key(),
             self.mode.key(),
             self.show_tooltips,
@@ -839,6 +914,8 @@ impl App {
             self.tutorial_progress,
             self.tutorial_current.clone().unwrap_or_default(),
             self.welcome_dismissed,
+            self.target.key(),
+            self.pe_enabled,
             self.dock_layout_string(),
         )
     }
@@ -1009,6 +1086,7 @@ impl App {
             self.confirm_license_reset,
             self.palette_open,
             self.unsaved_prompt.is_some(),
+            self.new_file_prompt,
             self.bp_cond_line.is_some(),
             self.pedagogy_predict,
             self.microscope.is_some(),
@@ -1054,6 +1132,9 @@ impl eframe::App for App {
         // appel système bloquant. Avant toute peinture : la console et la
         // barre d'état de cette frame doivent montrer l'état à jour.
         self.poll_debugger(ctx);
+        // Et, pour la cible Windows, le programme confié à Wine : il écrit dans
+        // la même console, sur le même rythme d'une sonde par frame.
+        self.poll_wine(ctx);
         if self.pending_flash {
             self.flash_time = ctx.input(|i| i.time);
             self.pending_flash = false;
@@ -1091,6 +1172,9 @@ impl eframe::App for App {
         self.check_license_nag(ctx);
         self.check_close_request(ctx);
         self.unsaved_window(ctx);
+        // Après elle : la question du format ne se pose qu'une fois le sort du
+        // travail en cours réglé, sinon deux boîtes se superposeraient.
+        self.new_file_format_window(ctx);
         // La boîte « non enregistré » décide de quitter, mais c'est ici qu'on
         // tient le viewport : la fermeture est réémise au frame suivant, une
         // fois `discard_confirmed` posé pour ne pas reposer la question.

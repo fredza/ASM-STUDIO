@@ -4,7 +4,7 @@ use crate::i18n;
 use crate::debugger::RunState;
 
 use super::{
-    App, accent, flag_on, flag_off, false_col, changed_col,
+    App, accent, flag_on, flag_off, false_col, warn_col, changed_col,
     accent_button, bordered_button, icon_button,
 };
 
@@ -597,6 +597,55 @@ impl App {
                 });
 
                 ui.menu_button(tr("Exécution", "Run", "Ejecución"), |ui| {
+                    // La cible d'abord : c'est elle qui décide de ce que
+                    // « Assembler » produit et de si « Lancer » a un sens. Le
+                    // sous-menu n'apparaît que si l'assemblage Windows est
+                    // proposé (Réglages) : sinon il n'y a qu'une cible, et un
+                    // menu à un seul choix n'est pas un choix.
+                    if self.pe_enabled {
+                    ui.menu_button(tr("Cible", "Target", "Destino"), |ui| {
+                        use crate::assemble::Target;
+                        let mut chosen: Option<Target> = None;
+                        for (t, label, tip) in [
+                            (
+                                Target::Linux,
+                                tr("Linux — ELF64", "Linux — ELF64", "Linux — ELF64"),
+                                tr(
+                                    "Assemblé, exécuté et débogué pas à pas ici.",
+                                    "Assembled, run and single-stepped here.",
+                                    "Ensamblado, ejecutado y depurado paso a paso aquí.",
+                                ),
+                            ),
+                            (
+                                Target::Windows,
+                                tr("Windows — PE64 console", "Windows — PE64 console", "Windows — PE64 consola"),
+                                tr(
+                                    "Produit un vrai .exe, désassemblable et lisible dans le panneau FORMAT — mais non exécutable sous Linux.",
+                                    "Produces a real .exe, disassemblable and readable in the FORMAT panel — but not runnable on Linux.",
+                                    "Produce un .exe real, desensamblable y legible en el panel FORMATO — pero no ejecutable en Linux.",
+                                ),
+                            ),
+                            (
+                                Target::WindowsGui,
+                                tr("Windows — PE64 fenêtré", "Windows — PE64 GUI", "Windows — PE64 con ventanas"),
+                                tr(
+                                    "Même chose, sans console au lancement : pour un programme qui ne parle que par MessageBox.",
+                                    "Same, with no console at startup: for a program that only speaks through MessageBox.",
+                                    "Lo mismo, sin consola al arrancar: para un programa que solo habla por MessageBox.",
+                                ),
+                            ),
+                        ] {
+                            let mut on = self.target == t;
+                            if ui.checkbox(&mut on, label).on_hover_text(tip).clicked() {
+                                chosen = Some(t);
+                            }
+                        }
+                        if let Some(t) = chosen {
+                            self.set_target(t);
+                        }
+                    });
+                    ui.separator();
+                    }
                     if item(ui, tr("Assembler", "Build", "Ensamblar"), "Ctrl+B") {
                         self.build();
                     }
@@ -651,6 +700,16 @@ impl App {
                 });
 
                 ui.menu_button(tr("Aide", "Help", "Ayuda"), |ui| {
+                    // En tête du menu : c'est par là qu'on entre dans le
+                    // logiciel, et c'était introuvable une fois le bandeau
+                    // d'accueil écarté.
+                    if item(ui, tr("Tutoriel guidé", "Guided tutorial", "Tutorial guiado"), "") {
+                        self.show_tutorial_toc();
+                    }
+                    if item(ui, tr("Revoir l'écran d'accueil", "Show the welcome screen again", "Volver a ver la pantalla de bienvenida"), "") {
+                        self.show_welcome_again();
+                    }
+                    ui.separator();
                     if item(ui, tr("Raccourcis clavier…", "Keyboard shortcuts…", "Atajos de teclado…"), "F1") {
                         self.show_shortcuts = true;
                     }
@@ -824,7 +883,11 @@ impl App {
             ui.horizontal(|ui| {
                 let lang = self.lang;
                 let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
-                let running = self.dbg.as_ref().is_some_and(|d| d.is_alive());
+                // « Lancer » se grise aussi pendant qu'un .exe tourne sous
+                // Wine : c'est bien un programme de l'élève en cours, même
+                // sans débogueur derrière.
+                let running = self.dbg.as_ref().is_some_and(|d| d.is_alive())
+                    || self.wine.as_ref().is_some_and(|w| w.is_running());
                 let can_step = self.can_step();
                 // Handles clonés (Arc bon marché) => pas d'emprunt de self dans la barre.
                 let ic = |f: fn(&super::Icons) -> &egui::TextureHandle| self.icons.as_ref().map(|i| f(i).clone());
@@ -961,9 +1024,7 @@ impl App {
             self.open_examples_dir();
         }
         if start_tuto {
-            self.tutorial_enabled = true;
-            self.focus_panel(super::dock::Panel::Exercise);
-            self.save_settings();
+            self.show_tutorial_toc();
         }
         if dismiss {
             self.welcome_dismissed = true;
@@ -1067,6 +1128,42 @@ impl App {
                 // savoir où l'on se trouve après un F6.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(RichText::new("NASM").color(accent()).strong());
+                    // Juste à côté : le format que « Assembler » va produire.
+                    // L'assembleur ne dit pas tout — le même NASM sort un ELF ou
+                    // un PE selon la cible, et rien à l'écran ne le montrait :
+                    // il fallait rouvrir le menu Exécution ▸ Cible pour savoir
+                    // dans quel monde on écrivait.
+                    ui.separator();
+                    let (fmt, tip) = match self.target {
+                        crate::assemble::Target::Linux => (
+                            "ELF64",
+                            tr(
+                                "Cible Linux : nasm -f elf64 puis ld. Exécuté et déroulé pas à pas ici.",
+                                "Linux target: nasm -f elf64 then ld. Run and single-stepped here.",
+                                "Destino Linux: nasm -f elf64 y ld. Ejecutado y recorrido paso a paso aquí.",
+                            ),
+                        ),
+                        crate::assemble::Target::Windows => (
+                            "PE64",
+                            tr(
+                                "Cible Windows console : nasm -f win64 puis le lieur intégré. Lancé par Wine s'il est installé, sans pas-à-pas.",
+                                "Windows console target: nasm -f win64 then the built-in linker. Run through Wine when installed, with no single-stepping.",
+                                "Destino Windows consola: nasm -f win64 y el enlazador integrado. Ejecutado con Wine si está instalado, sin paso a paso.",
+                            ),
+                        ),
+                        crate::assemble::Target::WindowsGui => (
+                            "PE64 ⊞",
+                            tr(
+                                "Cible Windows fenêtrée : même chose, sans console au lancement.",
+                                "Windows GUI target: same, with no console at startup.",
+                                "Destino Windows con ventanas: lo mismo, sin consola al arrancar.",
+                            ),
+                        ),
+                    };
+                    // Vert quand le binaire produit se débogue ici, orangé quand
+                    // il ne fait que s'assembler : la couleur porte la nuance.
+                    let col = if self.target.is_runnable() { flag_on() } else { warn_col() };
+                    ui.label(RichText::new(fmt).color(col).strong()).on_hover_text(tip);
                     ui.separator();
                     match &self.focused_panel_name {
                         Some(name) => {
@@ -1459,6 +1556,11 @@ mod keyboard_tests {
         frame(&mut app, &ctx, ctrl(egui::Key::S));
         assert!(!app.dirty(), "Ctrl+S : enregistre");
         frame(&mut app, &ctx, ctrl(egui::Key::N));
+        // Le nouveau fichier demande d'abord son format : c'est la réponse qui
+        // pose le squelette. Ici on vérifie que le raccourci mène bien à la
+        // question, puis on y répond.
+        assert!(app.new_file_prompt, "Ctrl+N : demande le format du nouveau fichier");
+        app.create_new_file(crate::assemble::Target::Linux);
         assert!(app.source.contains("sys_exit"), "Ctrl+N : nouveau fichier");
         assert!(app.dbg.is_none(), "Ctrl+N : remet le débogueur à zéro");
 
@@ -1637,5 +1739,52 @@ mod welcome_tests {
         app.welcome_dismissed = false;
         app.set_ui_mode(crate::app::UiMode::Full);
         render(&mut app); // mode complet : pas de bandeau
+    }
+}
+
+#[cfg(test)]
+mod status_bar_tests {
+    use super::*;
+
+    /// La barre d'état annonce le format que « Assembler » va produire, à côté
+    /// de l'assembleur : le même NASM sort un ELF ou un PE selon la cible, et
+    /// rien à l'écran ne le disait.
+    #[test]
+    fn the_status_bar_names_the_binary_format_next_to_the_assembler() {
+        use crate::assemble::Target;
+        for (target, expected) in [
+            (Target::Linux, "ELF64"),
+            (Target::Windows, "PE64"),
+            (Target::WindowsGui, "PE64 ⊞"),
+        ] {
+            let mut app = App::new();
+            app.pe_enabled = true;
+            app.set_target(target);
+            let ctx = egui::Context::default();
+            let out = ctx.run(Default::default(), |ctx| app.status_bar(ctx));
+
+            let texts = collect_text(&out.shapes);
+            assert!(texts.iter().any(|t| t == "NASM"), "l'assembleur reste affiché");
+            assert!(
+                texts.iter().any(|t| t == expected),
+                "cible {target:?} : « {expected} » attendu dans la barre d'état, vu : {texts:?}"
+            );
+        }
+    }
+
+    /// Tout le texte peint pendant une frame, à plat.
+    fn collect_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for s in shapes {
+            walk(&s.shape, &mut out);
+        }
+        out
     }
 }

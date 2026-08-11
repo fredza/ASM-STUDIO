@@ -23,10 +23,88 @@ pub(super) fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Analyse une valeur dans la base donnée (2, 8, 10 ou 16).
+/// Base fictive : la saisie n'est plus un nombre mais du texte, chaque
+/// caractère valant son code ASCII (« Hi » = 0x4869).
+///
+/// 256 ne peut pas entrer en collision avec une vraie base : `from_str_radix`
+/// s'arrête à 36, et `char::is_digit` panique au-delà — d'où les branches
+/// ASCII placées AVANT tout appel à ces deux fonctions.
+pub(crate) const CALC_BASE_ASCII: u32 = 256;
+
+/// Décode une saisie ASCII en octets, en interprétant les échappements
+/// `\0`, `\t`, `\n`, `\r`, `\\` et `\xNN`.
+///
+/// Sans échappements on ne pourrait ni saisir un octet nul ni un octet non
+/// imprimable — or ce sont précisément ceux qui comptent en assembleur (le
+/// zéro terminal d'une chaîne, le `\n` d'un `write`).
+///
+/// Une séquence incomplète (`\x4`, antislash final) ne produit rien : elle est
+/// en cours de frappe. Un caractère hors ASCII n'a pas de code sur un octet,
+/// il est ignoré.
+pub(super) fn calc_ascii_bytes(s: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            if c.is_ascii() {
+                out.push(c as u8);
+            }
+            continue;
+        }
+        match chars.next() {
+            Some('0') => out.push(0),
+            Some('t') => out.push(b'\t'),
+            Some('n') => out.push(b'\n'),
+            Some('r') => out.push(b'\r'),
+            Some('\\') => out.push(b'\\'),
+            Some('x') | Some('X') => {
+                let hi = chars.peek().copied().filter(char::is_ascii_hexdigit);
+                let Some(hi) = hi else { continue };
+                chars.next();
+                let lo = chars.peek().copied().filter(char::is_ascii_hexdigit);
+                let Some(lo) = lo else { continue };
+                chars.next();
+                let byte = (hi.to_digit(16).unwrap() * 16 + lo.to_digit(16).unwrap()) as u8;
+                out.push(byte);
+            }
+            // `\q` : l'antislash ne veut rien dire ici, on garde la lettre.
+            Some(other) if other.is_ascii() => out.push(other as u8),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Rend les octets significatifs de `v` sous forme de texte ASCII, les
+/// caractères non imprimables étant échappés — donc relisible par
+/// [`calc_ascii_bytes`].
+pub(super) fn calc_ascii_text(v: i64) -> String {
+    calc_bytes_of(v, calc_width_bytes(v))
+        .into_iter()
+        .map(|b| match b {
+            0 => "\\0".to_string(),
+            b'\t' => "\\t".to_string(),
+            b'\n' => "\\n".to_string(),
+            b'\r' => "\\r".to_string(),
+            b'\\' => "\\\\".to_string(),
+            0x20..=0x7E => (b as char).to_string(),
+            _ => format!("\\x{b:02X}"),
+        })
+        .collect()
+}
+
+/// Analyse une valeur dans la base donnée (2, 8, 10, 16 ou ASCII).
 /// Base 10 : signé (`i64`), supporte le signe `-`. Autres bases : bit-pattern `u64` casté.
 /// Renvoie `None` si vide ou hors plage.
 pub(super) fn calc_parse(s: &str, base: u32) -> Option<i64> {
+    if base == CALC_BASE_ASCII {
+        // Pas de `trim` ici : l'espace est un caractère (0x20) comme un autre.
+        let bytes = calc_ascii_bytes(s);
+        if bytes.is_empty() || bytes.len() > 8 {
+            return None;
+        }
+        return Some(bytes.iter().fold(0u64, |acc, &b| (acc << 8) | b as u64) as i64);
+    }
     let s = s.trim();
     if s.is_empty() {
         return None;
@@ -39,12 +117,50 @@ pub(super) fn calc_parse(s: &str, base: u32) -> Option<i64> {
 
 /// Formate `v` dans la base donnée, avec préfixe (`0x`/`0o`/`0b`) sauf en base 10.
 /// Hex/Oct/Bin : affiche le motif de bits en non-signé. Dec : affiche signé.
+/// ASCII : le texte entre apostrophes.
 pub(super) fn calc_format(v: i64, base: u32) -> String {
     match base {
         16 => format!("0x{:X}", v as u64),
         8 => format!("0o{:o}", v as u64),
         2 => format!("0b{:b}", v as u64),
+        CALC_BASE_ASCII => format!("'{}'", calc_ascii_text(v)),
         _ => format!("{v}"),
+    }
+}
+
+/// Même valeur, sans les décorations (préfixe `0x`, apostrophes) : ce qui peut
+/// être remis tel quel dans un champ de saisie.
+pub(super) fn calc_format_bare(v: i64, base: u32) -> String {
+    if base == CALC_BASE_ASCII {
+        return calc_ascii_text(v);
+    }
+    calc_format(v, base)
+        .trim_start_matches("0x")
+        .trim_start_matches("0b")
+        .trim_start_matches("0o")
+        .to_string()
+}
+
+/// Nettoie une saisie pour la base donnée : ne garde que ce qui a un sens, et
+/// borne l'ASCII à 8 octets — la largeur d'un registre.
+pub(super) fn calc_sanitize(s: &mut String, base: u32) {
+    match base {
+        CALC_BASE_ASCII => {
+            s.retain(|c| c.is_ascii() && !c.is_ascii_control());
+            // Retirer un caractère peut casser un `\xNN` en séquence
+            // incomplète, qui ne compte plus : la boucle converge quand même.
+            while calc_ascii_bytes(s).len() > 8 {
+                s.pop();
+            }
+        }
+        10 => {
+            let neg = s.starts_with('-');
+            s.retain(|c| c.is_ascii_digit());
+            if neg {
+                s.insert(0, '-');
+            }
+        }
+        _ => s.retain(|c| c.is_digit(base)),
     }
 }
 
@@ -317,6 +433,92 @@ mod tests {
         assert_eq!(calc_parse("  ff  ", 16), Some(0xFF), "espaces tolérés");
         assert_eq!(calc_parse("", 10), None, "vide → None");
         assert_eq!(calc_parse("-42", 10), Some(-42), "décimal négatif supporté");
+    }
+
+    /// La base ASCII lit du texte : chaque caractère vaut son code, le premier
+    /// caractère occupant les poids forts — l'ordre de lecture, pas celui de
+    /// la mémoire.
+    #[test]
+    fn ascii_reads_text_as_its_codes() {
+        assert_eq!(calc_parse("A", CALC_BASE_ASCII), Some(0x41));
+        assert_eq!(calc_parse("Hi", CALC_BASE_ASCII), Some(0x4869));
+        assert_eq!(calc_parse("", CALC_BASE_ASCII), None, "vide → None");
+        // L'espace est un caractère (0x20), pas du remplissage à ignorer.
+        assert_eq!(calc_parse(" ", CALC_BASE_ASCII), Some(0x20));
+        assert_eq!(calc_parse("A B", CALC_BASE_ASCII), Some(0x41_20_42));
+        // Huit octets tiennent dans un registre, neuf non.
+        assert_eq!(calc_parse("12345678", CALC_BASE_ASCII), Some(0x3132333435363738));
+        assert_eq!(calc_parse("123456789", CALC_BASE_ASCII), None);
+    }
+
+    /// Sans échappements, ni l'octet nul ni le saut de ligne ne seraient
+    /// saisissables — or ce sont ceux qui comptent en assembleur.
+    #[test]
+    fn ascii_understands_escapes() {
+        assert_eq!(calc_parse("\\0", CALC_BASE_ASCII), Some(0));
+        assert_eq!(calc_parse("\\n", CALC_BASE_ASCII), Some(0x0A));
+        assert_eq!(calc_parse("\\t", CALC_BASE_ASCII), Some(0x09));
+        assert_eq!(calc_parse("\\r", CALC_BASE_ASCII), Some(0x0D));
+        assert_eq!(calc_parse("\\\\", CALC_BASE_ASCII), Some(0x5C));
+        assert_eq!(calc_parse("\\xFF", CALC_BASE_ASCII), Some(0xFF));
+        assert_eq!(calc_parse("Hi\\n", CALC_BASE_ASCII), Some(0x48690A));
+        // Séquences en cours de frappe : elles ne produisent rien.
+        assert_eq!(calc_parse("\\x", CALC_BASE_ASCII), None);
+        assert_eq!(calc_parse("\\x4", CALC_BASE_ASCII), None);
+        assert_eq!(calc_parse("\\", CALC_BASE_ASCII), None);
+    }
+
+    /// Ce que la calculatrice affiche doit pouvoir être relu tel quel.
+    #[test]
+    fn ascii_formatting_roundtrips() {
+        for text in ["A", "Hi!", " ", "\\0", "\\n", "\\\\", "\\xFF", "ab\\0"] {
+            let v = calc_parse(text, CALC_BASE_ASCII).unwrap();
+            let shown = calc_format_bare(v, CALC_BASE_ASCII);
+            assert_eq!(calc_parse(&shown, CALC_BASE_ASCII), Some(v), "aller-retour de {text}");
+        }
+        assert_eq!(calc_format(0x41, CALC_BASE_ASCII), "'A'");
+        assert_eq!(calc_format(0x4869, CALC_BASE_ASCII), "'Hi'");
+        assert_eq!(calc_format(0, CALC_BASE_ASCII), "'\\0'");
+        assert_eq!(calc_format(0x7F, CALC_BASE_ASCII), "'\\x7F'", "non imprimable échappé");
+    }
+
+    /// Le filtre de saisie : chaque base ne laisse passer que ce qu'elle sait
+    /// lire, et l'ASCII s'arrête à la largeur d'un registre.
+    #[test]
+    fn sanitize_keeps_only_what_the_base_can_read() {
+        let mut s = "12zz34".to_string();
+        calc_sanitize(&mut s, 10);
+        assert_eq!(s, "1234");
+        let mut s = "-4x2".to_string();
+        calc_sanitize(&mut s, 10);
+        assert_eq!(s, "-42", "le signe survit au filtre");
+        let mut s = "dezzad".to_string();
+        calc_sanitize(&mut s, 16);
+        assert_eq!(s, "dead");
+        let mut s = "1o0l1".to_string();
+        calc_sanitize(&mut s, 2);
+        assert_eq!(s, "101");
+
+        let mut s = "Hé là !".to_string();
+        calc_sanitize(&mut s, CALC_BASE_ASCII);
+        assert_eq!(s, "H l !", "un caractère hors ASCII n'a pas de code sur un octet");
+        let mut s = "123456789abc".to_string();
+        calc_sanitize(&mut s, CALC_BASE_ASCII);
+        assert_eq!(calc_ascii_bytes(&s).len(), 8, "borné à 8 octets");
+        // Tronquer au milieu d'un `\xNN` ne doit pas boucler sans fin.
+        let mut s = "AAAAAAA\\xFF".to_string();
+        calc_sanitize(&mut s, CALC_BASE_ASCII);
+        assert!(calc_ascii_bytes(&s).len() <= 8);
+    }
+
+    /// Les opérations gardent leur sens sur du texte : mettre le bit 5 à zéro
+    /// passe une minuscule en majuscule, c'est l'exercice classique.
+    #[test]
+    fn ascii_feeds_the_usual_bit_tricks() {
+        let a = calc_parse("a", CALC_BASE_ASCII).unwrap();
+        let mask = calc_parse("\\xDF", CALC_BASE_ASCII).unwrap();
+        let r = CalcOp::And.apply(a, mask).unwrap();
+        assert_eq!(calc_format(r, CALC_BASE_ASCII), "'A'");
     }
 
     #[test]

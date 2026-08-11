@@ -61,14 +61,24 @@ pub(super) fn data_dir() -> PathBuf {
 /// Peuple `~/.local/share/asm_studio/examples/` avec les programmes de
 /// démonstration et les exercices auto-corrigés.
 ///
-/// Chaque fichier ABSENT est écrit, à chaque lancement — et non plus « tout ou
-/// rien au premier lancement ». Ainsi un exemple ou un exercice ajouté dans une
-/// nouvelle version apparaît aussi chez les utilisateurs installés de longue
-/// date, au lieu de rester invisible parce que le dossier existait déjà. Un
-/// fichier présent n'est jamais réécrit : le travail de l'élève est préservé.
+/// Chaque fichier ABSENT est écrit — et non plus « tout ou rien au premier
+/// lancement ». Ainsi un exemple ou un exercice ajouté dans une nouvelle
+/// version apparaît aussi chez les utilisateurs installés de longue date, au
+/// lieu de rester invisible parce que le dossier existait déjà. Un fichier
+/// présent n'est jamais réécrit : le travail de l'élève est préservé.
+///
+/// Ce parcours ne se refait pas à chaque démarrage. Un témoin déposé dans le
+/// dossier porte la version qui l'a semé ; tant qu'elle correspond, il n'y a
+/// rien de nouveau à écrire et on s'arrête sur un seul `read` au lieu de
+/// soixante `stat`. Le témoin porte la version *du paquet* et non le numéro de
+/// build : recompiler ne change pas le catalogue, livrer si.
 pub(super) fn setup_examples() {
     let dir = data_dir().join("examples");
     if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let stamp = dir.join(".semis");
+    if !needs_seeding(std::fs::read_to_string(&stamp).ok().as_deref(), crate::version::SEMVER) {
         return;
     }
 
@@ -133,6 +143,19 @@ pub(super) fn setup_examples() {
             let _ = std::fs::write(path, content);
         }
     }
+    // Témoin écrit en dernier : si l'écriture des fichiers a échoué en cours de
+    // route (disque plein, dossier en lecture seule), le prochain lancement
+    // retentera plutôt que de considérer le semis fait.
+    let _ = std::fs::write(&stamp, crate::version::SEMVER);
+}
+
+/// Le catalogue d'exemples doit-il être parcouru ?
+///
+/// `stamp` est le contenu du témoin déposé au dernier semis, s'il existe.
+/// Séparé du disque pour être vérifiable : c'est la décision qui compte, pas
+/// l'écriture.
+fn needs_seeding(stamp: Option<&str>, version: &str) -> bool {
+    stamp.is_none_or(|s| s.trim() != version)
 }
 
 pub(super) fn settings_path() -> Option<PathBuf> {
@@ -232,6 +255,20 @@ mod tests {
         assert!(dir.is_absolute(), "le dossier doit être absolu");
         assert!(dir.ends_with("examples"));
         assert!(dir.parent().is_some(), "on doit pouvoir remonter (..)");
+    }
+
+    /// Le semis ne se refait que lorsqu'il a quelque chose à faire : au premier
+    /// lancement, et après une mise à jour qui peut avoir ajouté des exemples.
+    /// Entre les deux, démarrer ne doit rien coûter.
+    #[test]
+    fn seeding_happens_once_per_version() {
+        assert!(needs_seeding(None, "0.4.7"), "premier lancement : il faut semer");
+        assert!(!needs_seeding(Some("0.4.7"), "0.4.7"), "déjà semé : rien à faire");
+        assert!(needs_seeding(Some("0.4.6"), "0.4.7"), "mise à jour : de nouveaux exemples peut-être");
+        // Le fichier est écrit sans retour à la ligne, mais un éditeur en
+        // ajoute un : ne pas ressemer pour un « \n ».
+        assert!(!needs_seeding(Some("0.4.7\n"), "0.4.7"));
+        assert!(needs_seeding(Some(""), "0.4.7"), "témoin vide : on ressème");
     }
 
     #[test]

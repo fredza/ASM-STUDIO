@@ -31,12 +31,14 @@ pub(crate) enum Panel {
     Console,
     CallStack,
     Syscalls,
+    Simd,
+    Format,
     Exercise,
 }
 
 impl Panel {
     /// Tous les panneaux, dans l'ordre du menu Affichage.
-    pub(crate) const ALL: [Panel; 14] = [
+    pub(crate) const ALL: [Panel; 16] = [
         Panel::Editor,
         Panel::Disasm,
         Panel::MemMap,
@@ -50,6 +52,8 @@ impl Panel {
         Panel::Console,
         Panel::CallStack,
         Panel::Syscalls,
+        Panel::Simd,
+        Panel::Format,
         Panel::Exercise,
     ];
 
@@ -70,7 +74,11 @@ impl Panel {
             Panel::Console => "Console",
             Panel::CallStack => t("Pile d'appels", "Call stack", "Pila de llamadas"),
             Panel::Syscalls => t("Appels système", "Syscalls", "Llamadas al sistema"),
-            Panel::Exercise => t("Exercices", "Exercises", "Ejercicios"),
+            Panel::Simd => "SSE / FPU",
+            Panel::Format => t("Format", "Format", "Formato"),
+            // « Exercices » seul ne disait pas où était le tutoriel — et un
+            // élève qui avait écarté le bandeau d'accueil ne le retrouvait plus.
+            Panel::Exercise => t("Tutoriel / Exercices", "Tutorial / Exercises", "Tutorial / Ejercicios"),
         }
         .to_string()
     }
@@ -91,6 +99,8 @@ impl Panel {
             Panel::Console => "console",
             Panel::CallStack => "callstack",
             Panel::Syscalls => "syscalls",
+            Panel::Simd => "simd",
+            Panel::Format => "format",
             Panel::Exercise => "exercise",
         }
     }
@@ -135,6 +145,8 @@ pub(crate) fn default_layout() -> DockState<Panel> {
             Panel::Stack,
             Panel::CallStack,
             Panel::Syscalls,
+            Panel::Simd,
+            Panel::Format,
         ],
     );
     // Bande basse sous la bande CPU.
@@ -145,12 +157,14 @@ pub(crate) fn default_layout() -> DockState<Panel> {
 
 /// Panneaux réservés au mode complet : ils supposent des notions qui viennent
 /// plus tard (code machine, adressage, conventions d'appel, appels système).
-pub(crate) const ADVANCED: [Panel; 5] = [
+pub(crate) const ADVANCED: [Panel; 7] = [
     Panel::Disasm,
     Panel::MemMap,
     Panel::Memory,
     Panel::CallStack,
     Panel::Syscalls,
+    Panel::Simd,
+    Panel::Format,
 ];
 
 /// Disposition du mode apprentissage : neuf panneaux au lieu de quatorze.
@@ -227,6 +241,9 @@ impl TabViewer for Viewer<'_> {
             Panel::Console => app.console_ui(ui),
             Panel::CallStack => app.callstack_ui(ui),
             Panel::Syscalls => app.syscalls_ui(ui),
+            // Même réserve que REGISTERS et FLAGS : c'est de l'état processeur.
+            Panel::Simd => if app.is_unlocked() { app.simd_ui(ui) } else { app.locked_panel_ui(ui) },
+            Panel::Format => app.format_ui(ui),
             Panel::Exercise => app.exercise_ui(ui),
         }
     }

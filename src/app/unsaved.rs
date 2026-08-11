@@ -294,14 +294,39 @@ mod tests {
     }
 
     /// « Abandonner » exécute le geste ; le tampon est bien remplacé.
+    ///
+    /// L'assemblage Windows est coupé ici pour que le geste aille jusqu'au
+    /// bout : sinon le nouveau fichier s'arrête sur la question du format, qui
+    /// vient APRÈS ce garde-fou et se teste ailleurs (`new_file_tests`).
     #[test]
     fn discarding_runs_the_action() {
         let mut app = dirty_app();
+        app.pe_enabled = false;
         app.guarded(PendingAction::NewFile);
         app.unsaved_prompt = None;
         app.perform_pending(PendingAction::NewFile);
         assert!(app.source.contains("_start"), "le squelette a pris la place");
         assert!(!app.dirty(), "un squelette vierge n'est pas du travail à sauver");
+    }
+
+    /// L'ordre des deux questions : d'abord le sort du travail en cours,
+    /// ENSUITE seulement le format du nouveau fichier. Les poser dans l'autre
+    /// sens ferait choisir un format pour un fichier qu'on renonce à créer.
+    #[test]
+    fn the_format_question_comes_after_the_unsaved_one() {
+        let mut app = dirty_app();
+        app.pe_enabled = true;
+        let work = app.source.clone();
+
+        assert!(!app.guarded(PendingAction::NewFile), "le garde-fou passe en premier");
+        assert!(!app.new_file_prompt, "le format ne se demande pas encore");
+        assert_eq!(app.source, work);
+
+        // L'élève abandonne son travail : c'est là que le format se demande.
+        app.unsaved_prompt = None;
+        app.perform_pending(PendingAction::NewFile);
+        assert!(app.new_file_prompt, "puis vient la question du format");
+        assert_eq!(app.source, work, "et rien n'est écrasé avant la réponse");
     }
 
     /// Quitter passe par un drapeau : c'est `update` qui tient le viewport.

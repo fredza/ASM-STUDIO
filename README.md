@@ -50,15 +50,32 @@ memory — is the genuine process state, not an approximation.
   (everything: disassembly, memory view, hex dump, call stack, syscalls).
 - **Dockable layout** — every panel can be dragged, stacked or detached into
   a floating window (`egui_dock`), like a regular IDE.
-- **Guided tutorial** — a four-level path (Beginner, Intermediate, Advanced,
-  Expert) that progressively introduces registers, sizes, memory, flags,
-  the stack and syscalls.
-- **Self-checked exercises** — about twenty exercises with automatic result
-  verification.
+- **Guided tutorial** — a five-level path (Beginner, Intermediate, Advanced,
+  Expert, and Windows/PE64) that progressively introduces registers, sizes,
+  memory, flags, the stack and syscalls. Each lesson loads its program, opens
+  the panels it explains, and offers the exercises that practise it.
+- **Self-checked exercises** — thirty-six exercises with automatic result
+  verification, each linked back to the lesson that explains it.
 - **"Live CPU" mode** — modified registers and flags pulse on every step,
   with PUSH/POP activity badges on the stack view.
 - **Prediction** — guess the effect of the next instruction before running
   it, to reinforce understanding.
+- **SSE / x87 registers** — the sixteen XMM registers and the x87 stack, read
+  the way the instruction reads them: two `double`, four `float`, four 32-bit
+  integers, sixteen bytes, or raw hex. MXCSR rounding mode and raised
+  exceptions included. Writing `addsd xmm0, xmm1` and seeing `5` no longer
+  requires a leap of faith.
+- **Windows target (PE64)** — the same source can be assembled as a real
+  Windows `.exe` (`nasm -f win64` plus a built-in linker: no `lld-link`, no
+  Microsoft SDK). `extern ExitProcess` becomes a proper import table. The
+  binary disassembles and opens in the FORMAT panel, and — if `wine` is
+  installed — `Run` executes it, with its output in the usual console. What
+  stays out of reach is single-stepping: the debugger speaks `ptrace` and
+  follows the addresses of the image it just wrote, neither of which survives
+  Wine's loader.
+- **Binary format explorer** — header, sections, permissions, entry point,
+  imports and global symbols, shown the same way for ELF and PE. What a
+  section costs in memory versus on disk, and why `.bss` weighs nothing.
 - **Built-in calculator** — hexadecimal by default, bit-by-bit view, common
   operations.
 - **Error diagnostics** — `nasm`/`ld` errors and runtime crashes rephrased
@@ -185,7 +202,7 @@ Main Rust dependencies:
 | `eframe` / `egui_dock` | GUI and dockable layout |
 | `nix` | `ptrace`, process and signal handling |
 | `capstone` | x86-64 disassembly |
-| `object` | ELF file reading |
+| `object` | reading ELF/PE, and writing the PE executable |
 | `rfd` | native file dialogs (XDG portal) |
 | `ureq` / `serde` | update checking (GitHub Releases) |
 
@@ -202,7 +219,11 @@ src/
 ├── app/            UI (dockable panels, menus, shortcuts, tutorial…)
 ├── debugger.rs      ptrace-driven control of the debugged process
 ├── disasm.rs         disassembly (capstone)
-├── assemble.rs       invokes nasm / ld
+├── assemble.rs       invokes nasm / ld (ELF) or nasm / built-in linker (PE)
+├── pe_link.rs         PE64 linker: sections, imports, relocations
+├── binfmt.rs           binary format explorer (ELF and PE)
+├── simd.rs              reading XMM / x87 registers
+├── winerun.rs            running the produced .exe under Wine
 ├── tutorial.rs        guided-path content
 ├── exercise.rs         self-checked exercises
 ├── i18n.rs              FR / EN / ES translations

@@ -2,6 +2,7 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::debugger::Flags;
 use crate::i18n;
+use crate::simd::{self, XmmView};
 
 use super::{
     App, accent, action, changed_col, flag_on, flag_off, false_col, flash_bright, gutter_col,
@@ -282,7 +283,10 @@ impl App {
         // Champ de saisie en bas : le programme tracé lit ce qu'on y tape.
         // Réservé aux moments où il tourne — hors exécution, il n'y a personne
         // au bout du tuyau.
-        let can_input = self.dbg.as_ref().is_some_and(|d| d.is_alive() && d.has_stdin());
+        // Un programme lancé sous Wine lit lui aussi son entrée standard : il
+        // n'a pas de débogueur derrière, mais il a bien quelqu'un au bout du tuyau.
+        let can_input = self.dbg.as_ref().is_some_and(|d| d.is_alive() && d.has_stdin())
+            || self.wine.as_ref().is_some_and(|w| w.is_running());
         if can_input {
             let waiting = self.dbg.as_ref().is_some_and(|d| d.is_waiting());
             // Le focus se prend au passage en attente, et une seule fois : le
@@ -744,15 +748,28 @@ impl App {
 
     pub(super) fn explorer_ui(&mut self, ui: &mut egui::Ui) {
         let up_tip = i18n::tr3(self.lang, "Dossier parent comme racine", "Parent folder as root", "Carpeta padre como raíz");
+        let new_tip = i18n::tr3(
+            self.lang,
+            "Nouveau fichier dans ce dossier — le format (ELF ou PE) est demandé",
+            "New file in this folder — the format (ELF or PE) is asked for",
+            "Archivo nuevo en esta carpeta — se pregunta el formato (ELF o PE)",
+        );
 
-        // Barre : nom du dossier racine + remonter d'un cran.
+        // Barre : nouveau fichier, nom du dossier racine, remonter d'un cran.
         let mut go_up = false;
+        let mut new_here = false;
         ui.horizontal(|ui| {
             if self
                 .tip(ui.small_button("⬆"), up_tip)
                 .clicked()
             {
                 go_up = true;
+            }
+            // Créer un fichier depuis l'explorateur : c'est là qu'on regarde
+            // ses fichiers, donc là qu'on veut en ajouter un — sans avoir à
+            // remonter au menu Fichier.
+            if self.tip(ui.small_button("✚"), new_tip).clicked() {
+                new_here = true;
             }
             let root = self
                 .explorer_dir
@@ -764,6 +781,9 @@ impl App {
         });
         if go_up && let Some(p) = self.explorer_dir.parent() {
             self.explorer_dir = p.to_path_buf();
+        }
+        if new_here {
+            self.new_file();
         }
         ui.separator();
 
@@ -1097,6 +1117,282 @@ impl App {
             hex_dump_rows(ui, addr_c, bytes_c, dbg, start, rows);
         });
     }
+
+    // ---------- Format du binaire ----------
+
+    /// Panneau FORMAT : ce qu'est devenu le source une fois assemblé.
+    ///
+    /// Même présentation pour un ELF et pour un PE — c'est le propos : les deux
+    /// formats répondent aux mêmes questions (par où l'exécution commence, quel
+    /// morceau est du code, lequel est modifiable, ce qui vient d'ailleurs), et
+    /// l'élève qui a compris l'un a compris l'autre aux trois quarts.
+    pub(super) fn format_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let hdr = self.c_header();
+        let addr_c = self.c_addr();
+        let Some(info) = self.format_info.clone() else {
+            ui.weak(tr(
+                "Assemblez un programme (F5) pour examiner le binaire produit.",
+                "Assemble a program (F5) to inspect the binary produced.",
+                "Ensamble un programa (F5) para examinar el binario producido.",
+            ));
+            return;
+        };
+
+        egui::ScrollArea::vertical().id_salt("format_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            super::card(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(&info.format).monospace().strong().size(16.0).color(super::accent()));
+                    ui.label(RichText::new(format!("· {} · {}", info.arch, info.kind)).weak());
+                });
+                ui.add_space(2.0);
+                egui::Grid::new("format_head").num_columns(2).spacing([14.0, 3.0]).show(ui, |ui| {
+                    ui.label(RichText::new(tr("Point d'entrée", "Entry point", "Punto de entrada")).small().weak());
+                    ui.label(RichText::new(format!("0x{:X}", info.entry)).monospace().color(addr_c))
+                        .on_hover_text(tr(
+                            "La première instruction exécutée : le système y place RIP après avoir chargé l'image.",
+                            "The first instruction executed: the system puts RIP there once the image is loaded.",
+                            "La primera instrucción ejecutada: el sistema coloca RIP allí tras cargar la imagen.",
+                        ));
+                    ui.end_row();
+                    if info.image_base != 0 {
+                        ui.label(RichText::new(tr("Base d'image", "Image base", "Base de imagen")).small().weak());
+                        ui.label(RichText::new(format!("0x{:X}", info.image_base)).monospace().color(addr_c));
+                        ui.end_row();
+                    }
+                    ui.label(RichText::new(tr("Taille du fichier", "File size", "Tamaño del archivo")).small().weak());
+                    ui.label(RichText::new(format!("{} {}", info.file_size, tr("octets", "bytes", "bytes"))).monospace());
+                    ui.end_row();
+                });
+            });
+
+            ui.add_space(6.0);
+            ui.label(RichText::new(tr("Sections", "Sections", "Secciones")).small().strong().color(hdr));
+            egui::Grid::new("format_sections").num_columns(5).striped(true).spacing([12.0, 3.0]).show(ui, |ui| {
+                for c in [
+                    tr("nom", "name", "nombre"),
+                    tr("adresse", "address", "dirección"),
+                    tr("en mémoire", "in memory", "en memoria"),
+                    tr("dans le fichier", "in the file", "en el archivo"),
+                    tr("droits", "perms", "permisos"),
+                ] {
+                    ui.label(RichText::new(c).small().weak());
+                }
+                ui.end_row();
+                for s in &info.sections {
+                    ui.label(RichText::new(&s.name).monospace().strong()).on_hover_text(&s.role);
+                    ui.label(RichText::new(if s.address == 0 { "—".to_string() } else { format!("0x{:X}", s.address) }).monospace().color(addr_c));
+                    ui.label(RichText::new(format!("{}", s.size)).monospace());
+                    // Zéro octet sur le disque et de la place en mémoire : c'est
+                    // .bss, et c'est la ligne qui fait poser la question.
+                    let file = if s.file_size == 0 && s.size > 0 {
+                        RichText::new("0").monospace().color(super::accent())
+                    } else {
+                        RichText::new(format!("{}", s.file_size)).monospace()
+                    };
+                    ui.label(file);
+                    ui.label(RichText::new(&s.perms).monospace().color(if s.perms.contains('x') { super::flag_on() } else { ui.visuals().text_color() }));
+                    ui.end_row();
+                }
+            });
+
+            if !info.imports.is_empty() {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(tr("Fonctions importées", "Imported functions", "Funciones importadas"))
+                        .small()
+                        .strong()
+                        .color(hdr),
+                );
+                let mut lib = String::new();
+                for imp in &info.imports {
+                    if imp.library != lib {
+                        lib = imp.library.clone();
+                        ui.label(RichText::new(&lib).monospace().weak());
+                    }
+                    ui.label(RichText::new(format!("    {}", imp.name)).monospace());
+                }
+            }
+
+            if !info.symbols.is_empty() {
+                ui.add_space(6.0);
+                ui.label(RichText::new(tr("Symboles globaux", "Global symbols", "Símbolos globales")).small().strong().color(hdr));
+                for (name, addr) in info.symbols.iter().take(64) {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("0x{addr:X}")).monospace().color(addr_c));
+                        ui.label(RichText::new(name).monospace());
+                    });
+                }
+            }
+
+            for note in &info.notes {
+                ui.add_space(6.0);
+                super::card(ui, |ui| {
+                    ui.label(RichText::new(note).small());
+                });
+            }
+        });
+    }
+
+    // ---------- SSE / x87 ----------
+
+    /// Panneau SSE / FPU : les seize registres XMM et la pile x87.
+    ///
+    /// Le tutoriel enseigne `movdqa xmm0, [rel a]` et `paddd xmm0, xmm1` depuis
+    /// toujours ; jusqu'ici, l'élève exécutait ces instructions sans pouvoir
+    /// regarder le seul endroit où le résultat se trouvait. Le panneau montre
+    /// chaque registre dans la lecture qu'en fait l'instruction (deux `double`,
+    /// quatre entiers, seize octets…), avec la même pulsation « CPU vivant » que
+    /// les registres généraux pour signaler ce qui vient de changer.
+    pub(super) fn simd_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let Some(snap) = self.snap() else {
+            ui.weak(tr("Aucun programme lancé.", "No program running.", "Ningún programa en ejecución."));
+            return;
+        };
+        let Some(fp) = snap.fp.clone() else {
+            ui.weak(tr(
+                "Registres flottants indisponibles pour ce processus.",
+                "Floating-point registers unavailable for this process.",
+                "Registros de coma flotante no disponibles para este proceso.",
+            ));
+            return;
+        };
+        // L'état précédent sert uniquement à repérer ce qui a bougé.
+        let prev = self.prev_snap().and_then(|s| s.fp.clone());
+        let flash = self.flash_progress(ui);
+        let hdr = self.c_header();
+        let view = self.xmm_view;
+
+        panel_header(ui, |ui| {
+            ui.label(RichText::new(tr("Vue", "View", "Vista")).small().weak());
+            egui::ComboBox::from_id_salt("xmm_view")
+                .selected_text(view.label())
+                .width(78.0)
+                .show_ui(ui, |ui| {
+                    for v in XmmView::ALL {
+                        ui.selectable_value(&mut self.xmm_view, v, v.label())
+                            .on_hover_text(v.hint(lang));
+                    }
+                });
+            ui.checkbox(
+                &mut self.simd_hide_zero,
+                RichText::new(tr("masquer les nuls", "hide zeroed", "ocultar los nulos")).small(),
+            )
+            .on_hover_text(tr(
+                "Un programme n'utilise presque jamais les seize registres : masquer ceux qui valent zéro laisse voir ceux qui travaillent.",
+                "A program almost never uses all sixteen registers: hiding the zeroed ones leaves only those doing work.",
+                "Un programa casi nunca usa los dieciséis registros: ocultar los que valen cero deja ver los que trabajan.",
+            ));
+        });
+        let view = self.xmm_view; // relu : la combo a pu changer la vue à l'instant
+
+        egui::ScrollArea::vertical().id_salt("simd_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            let mut shown = 0usize;
+            for i in 0..16 {
+                let v = fp.xmm[i];
+                let changed = prev.as_ref().is_some_and(|p| p.xmm[i] != v);
+                if self.simd_hide_zero && simd::is_zero(v) && !changed {
+                    continue;
+                }
+                shown += 1;
+                let name_col = if changed { changed_color(flash) } else { hdr };
+                ui.horizontal_top(|ui| {
+                    ui.add_sized(
+                        [46.0, 18.0],
+                        egui::Label::new(RichText::new(format!("XMM{i}")).monospace().strong().color(name_col)),
+                    )
+                    .on_hover_text(format!("{:032X}", v));
+                    // Les cases séparées par « │ » : l'élève voit du premier coup
+                    // combien de valeurs le registre porte dans cette lecture.
+                    let cells = simd::lanes(v, view);
+                    ui.label(
+                        RichText::new(cells.join(" │ "))
+                            .monospace()
+                            .color(if changed { changed_color(flash) } else { ui.visuals().text_color() }),
+                    );
+                });
+                shown = shown.max(1);
+            }
+            if shown == 0 {
+                ui.weak(tr(
+                    "Les seize registres XMM sont à zéro — ce programme n'a pas encore touché au calcul vectoriel.",
+                    "All sixteen XMM registers are zero — this program has not touched vector maths yet.",
+                    "Los dieciséis registros XMM están a cero — este programa aún no ha tocado el cálculo vectorial.",
+                ));
+            }
+
+            // Pile x87 : montrée seulement si elle contient quelque chose. Un
+            // programme x86-64 moderne ne s'en sert plus, et huit lignes vides
+            // n'apprendraient rien à celui qui n'en aura jamais besoin.
+            let occupied = (0..8).filter(|i| fp.st_reg(*i).2).count();
+            if occupied > 0 {
+                ui.add_space(8.0);
+                ui.label(RichText::new(tr("Pile x87", "x87 stack", "Pila x87")).small().strong().color(hdr));
+                for i in 0..8 {
+                    let (phys, raw, used) = fp.st_reg(i);
+                    if !used {
+                        continue;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.add_sized(
+                            [46.0, 18.0],
+                            egui::Label::new(RichText::new(format!("ST({i})")).monospace().strong().color(hdr)),
+                        )
+                        .on_hover_text(format!(
+                            "{} R{phys} — TOP = {}",
+                            tr("registre physique", "physical register", "registro físico"),
+                            fp.top()
+                        ));
+                        ui.label(RichText::new(simd::fmt_f64(simd::st_to_f64(raw))).monospace());
+                    });
+                }
+            }
+
+            // MXCSR : arrondi et exceptions levées. Les exceptions sont
+            // collantes — le dire évite de croire que la dernière instruction
+            // vient de diviser par zéro.
+            ui.add_space(8.0);
+            let flags = simd::exception_flags((fp.mxcsr & 0x3F) as u16, lang);
+            let raised: Vec<&str> = flags.iter().filter(|f| f.set).map(|f| f.name).collect();
+            ui.label(
+                RichText::new(format!(
+                    "MXCSR 0x{:04X} — {} : {}",
+                    fp.mxcsr,
+                    tr("arrondi", "rounding", "redondeo"),
+                    simd::rounding_mode(((fp.mxcsr >> 13) & 0b11) as u8, lang)
+                ))
+                .monospace()
+                .small()
+                .weak(),
+            );
+            if raised.is_empty() {
+                ui.label(
+                    RichText::new(tr("Aucune exception flottante levée.", "No floating-point exception raised.", "Ninguna excepción de coma flotante levantada."))
+                        .small()
+                        .weak(),
+                );
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(tr("Exceptions :", "Exceptions:", "Excepciones:")).small().weak());
+                    for f in flags.iter().filter(|f| f.set) {
+                        ui.label(RichText::new(f.name).monospace().small().color(flag_on()))
+                            .on_hover_text(format!(
+                                "{}\n{}",
+                                f.meaning,
+                                tr(
+                                    "Drapeau collant : levé depuis le début du programme, pas forcément par la dernière instruction.",
+                                    "Sticky flag: raised at some point since the program started, not necessarily by the last instruction.",
+                                    "Bandera pegajosa: levantada en algún momento desde el inicio del programa, no necesariamente por la última instrucción."
+                                )
+                            ));
+                    }
+                });
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1360,5 +1656,77 @@ niveau2:
         app.reg_sel = 8;
         app.edit_selected_register();
         assert_eq!(app.edit_reg, Some("RIP"), "le 9e registre visible est RIP");
+    }
+
+    /// Le panneau SSE/FPU se rend pour de vrai, avant et après lancement, et
+    /// dans chacune de ses vues. Une grille mal fermée ou un index de case hors
+    /// bornes ne se voit qu'au rendu — pas en compilant.
+    #[test]
+    fn the_simd_panel_renders_in_every_view() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+
+        // Sans programme lancé : le panneau doit le dire, pas paniquer.
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.simd_ui(ui));
+        });
+
+        app.src_path = PathBuf::from("build/simd-ui/simd.asm");
+        app.out_dir = PathBuf::from("build/simd-ui");
+        app.source = std::fs::read_to_string("examples/simd.asm").expect("exemple SIMD");
+        std::fs::create_dir_all("build/simd-ui").expect("dossier");
+        app.launch();
+        for _ in 0..12 {
+            app.step();
+        }
+        assert!(
+            app.snap().and_then(|s| s.fp.clone()).is_some(),
+            "le snapshot doit porter les registres flottants"
+        );
+        for view in crate::simd::XmmView::ALL {
+            app.xmm_view = view;
+            for hide in [true, false] {
+                app.simd_hide_zero = hide;
+                let _ = ctx.run(Default::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.simd_ui(ui));
+                });
+            }
+        }
+    }
+
+    /// Le panneau FORMAT se rend pour les deux formats — c'est justement son
+    /// propos de les montrer côte à côte.
+    #[test]
+    fn the_format_panel_renders_for_elf_and_pe() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+
+        // Avant tout assemblage : une invite, pas un panneau vide.
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.format_ui(ui));
+        });
+
+        std::fs::create_dir_all("build/fmt-ui").expect("dossier");
+        app.out_dir = PathBuf::from("build/fmt-ui");
+        for (target, source) in [
+            (
+                crate::assemble::Target::Linux,
+                "section .text\n global _start\n_start:\n mov rax,60\n xor rdi,rdi\n syscall\n".to_string(),
+            ),
+            (
+                crate::assemble::Target::Windows,
+                std::fs::read_to_string("examples/hello-windows.asm").expect("exemple Windows"),
+            ),
+        ] {
+            app.target = target;
+            app.src_path = PathBuf::from("build/fmt-ui/prog.asm");
+            app.source = source;
+            app.build();
+            let info = app.format_info.as_ref().expect("le binaire doit être décrit");
+            assert!(!info.sections.is_empty(), "{target:?} : sections attendues");
+            let _ = ctx.run(Default::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.format_ui(ui));
+            });
+        }
     }
 }

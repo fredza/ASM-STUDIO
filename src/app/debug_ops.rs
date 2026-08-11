@@ -33,29 +33,91 @@ fn stops_here(stops: &StopMap, regs: &crate::debugger::Registers) -> bool {
 }
 
 impl App {
-    /// Enregistre puis assemble (nasm) et lie (ld) le programme de l'utilisateur.
+    /// Enregistre puis assemble le programme de l'utilisateur, pour la cible
+    /// courante : `nasm` + `ld` sous Linux, `nasm -f win64` + le lieur intégré
+    /// pour Windows.
     pub(super) fn build(&mut self) {
         self.save_source();
         // Artefacts dans un sous-dossier `build/` À CÔTÉ du fichier source
         // (et non plus dans un `build/` global relatif au répertoire courant).
         self.out_dir = super::abs_dir_of(&self.src_path).join("build");
         let includes = self.include_dirs();
-        match assemble::assemble_with_includes(&self.src_path, &self.out_dir, &includes) {
+        match assemble::assemble_for(&self.src_path, &self.out_dir, &includes, self.target) {
             Ok(out) => {
                 self.log(&out.log);
                 // Mapping adresse → ligne source (suivi dans l'éditeur).
                 self.src_map = disasm::section_address(&out.binary, ".text")
                     .map(|base| srcmap::parse(&out.listing, base))
                     .unwrap_or_default();
+                // Description du binaire produit : c'est la seule chose que
+                // l'IDE puisse offrir d'un `.exe`, et elle vaut aussi pour un ELF.
+                match crate::binfmt::inspect(&out.binary, self.lang) {
+                    Ok(info) => self.format_info = Some(info),
+                    Err(e) => {
+                        self.format_info = None;
+                        self.log(&e);
+                    }
+                }
                 self.binary = Some(out.binary);
                 self.status = "Build OK".to_string();
             }
             Err(e) => {
                 self.log(&e);
                 self.binary = None;
+                self.format_info = None;
                 self.status = i18n::tr(self.lang, "Échec build", "Build failed").to_string();
             }
         }
+    }
+
+    /// Applique le réglage « assemblage Windows » après un changement.
+    ///
+    /// Couper l'option pendant qu'une cible Windows est active laisserait un
+    /// état invisible et indéfaisable : plus aucun menu ne montrerait la cible,
+    /// mais « Lancer » continuerait de produire un `.exe`. On revient donc à
+    /// Linux, et on le dit dans la console.
+    pub(super) fn apply_pe_setting(&mut self) {
+        if !self.pe_enabled && self.target.is_windows() {
+            self.set_target(assemble::Target::Linux);
+        }
+    }
+
+    /// Change la cible d'assemblage. Le binaire produit pour l'ancienne n'a plus
+    /// de sens : on arrête ce qui tourne plutôt que de laisser un débogueur
+    /// piloter un exécutable qui n'est plus celui du source affiché.
+    pub(super) fn set_target(&mut self, target: crate::assemble::Target) {
+        // Garde-fou : la cible Windows n'existe pas tant que l'option est
+        // décochée, quel que soit le chemin emprunté (menu, palette, réglage
+        // relu d'un fichier écrit à la main).
+        if target.is_windows() && !self.pe_enabled {
+            return;
+        }
+        if self.target == target {
+            return;
+        }
+        self.target = target;
+        self.stop();
+        self.binary = None;
+        self.format_info = None;
+        self.save_settings();
+        let lang = self.lang;
+        self.log(&format!(
+            "→ {}",
+            match target {
+                assemble::Target::Linux => i18n::tr3(
+                    lang,
+                    "cible Linux (ELF64) : assemblage, exécution et débogage",
+                    "Linux target (ELF64): assembling, running and debugging",
+                    "destino Linux (ELF64): ensamblado, ejecución y depuración",
+                ),
+                assemble::Target::Windows | assemble::Target::WindowsGui => i18n::tr3(
+                    lang,
+                    "cible Windows (PE64) : assemblage, lecture du format, et exécution sous Wine s'il est installé — mais pas de pas-à-pas",
+                    "Windows target (PE64): assembling, format inspection, and execution under Wine when installed — but no single-stepping",
+                    "destino Windows (PE64): ensamblado, inspección del formato y ejecución con Wine si está instalado — pero sin paso a paso",
+                ),
+            }
+        ));
     }
 
     /// Relit l'énoncé d'exercice depuis le source courant. Appelé à l'ouverture
@@ -92,6 +154,27 @@ impl App {
         let Some(bin) = self.binary.clone() else {
             return;
         };
+        // Cible Windows : désassemblage, lecture du format, puis exécution par
+        // Wine s'il est là. Pas de pas-à-pas : le débogueur suit les adresses
+        // du binaire qu'il a produit, alors qu'un PE lancé par Wine démarre
+        // derrière un chargeur, ailleurs. Mieux vaut ne rien montrer que
+        // montrer des registres qui ne sont pas les siens.
+        if !self.target.is_runnable() {
+            match disasm::disassemble_text(&bin) {
+                Ok(insns) => self.disasm = insns,
+                Err(e) => self.log(&e),
+            }
+            self.disasm_index = self
+                .disasm
+                .iter()
+                .enumerate()
+                .map(|(i, insn)| (insn.address, i))
+                .collect();
+            self.dbg = None;
+            self.show_panel(super::dock::Panel::Format);
+            self.run_under_wine(&bin);
+            return;
+        }
         match disasm::disassemble_text(&bin) {
             Ok(insns) => self.disasm = insns,
             Err(e) => self.log(&e),
@@ -140,6 +223,12 @@ impl App {
 
     pub(super) fn stop(&mut self) {
         self.dbg = None;
+        // Un programme lancé sous Wine ne s'arrête pas tout seul quand on
+        // ferme le débogueur : il faut le tuer, sinon une boucle infinie
+        // continue de tourner en arrière-plan, invisible.
+        if let Some(mut run) = self.wine.take() {
+            run.kill();
+        }
         // Une consigne d'exécution en attente ne doit pas survivre au
         // programme qu'elle pilotait.
         self.run_pending = None;
@@ -206,6 +295,131 @@ impl App {
         }
     }
 
+    /// Lance l'exécutable Windows sous Wine, ou explique pourquoi il ne se
+    /// lancera pas.
+    ///
+    /// Wine est cherché à chaque lancement plutôt qu'une fois pour toutes :
+    /// l'installer pendant que l'IDE tourne doit suffire à s'en servir, sans
+    /// redémarrer.
+    fn run_under_wine(&mut self, bin: &std::path::Path) {
+        self.program_output.clear();
+        if !crate::winerun::available() {
+            self.wine = None;
+            self.log(i18n::tr3(
+                self.lang,
+                "Exécutable Windows produit. Wine n'étant pas installé, il ne peut pas être lancé ici : le panneau FORMAT montre ce qu'il contient, et le fichier .exe s'exécute tel quel sur une machine Windows. Installez wine pour le lancer depuis l'IDE.",
+                "Windows executable produced. Wine is not installed, so it cannot be run here: the FORMAT panel shows what it contains, and the .exe runs as-is on a Windows machine. Install wine to run it from the IDE.",
+                "Ejecutable de Windows producido. Wine no está instalado, así que no puede ejecutarse aquí: el panel FORMATO muestra lo que contiene, y el .exe se ejecuta tal cual en una máquina Windows. Instale wine para ejecutarlo desde el IDE.",
+            ));
+            self.status = i18n::tr3(self.lang, "Assemblé (PE64)", "Assembled (PE64)", "Ensamblado (PE64)").to_string();
+            return;
+        }
+        match crate::winerun::WineRun::spawn(bin) {
+            Ok(run) => {
+                // Remplacer l'ancien processus le tue (voir `Drop`) : deux
+                // programmes de l'élève ne tournent jamais en même temps.
+                self.wine = Some(run);
+                self.log(i18n::tr3(
+                    self.lang,
+                    "Exécution sous Wine. Pas de pas-à-pas ici : Wine exécute le programme, il ne le déroule pas instruction par instruction. La sortie arrive dans la console.",
+                    "Running under Wine. No single-stepping here: Wine runs the program, it does not walk it instruction by instruction. Output lands in the console.",
+                    "Ejecución con Wine. Sin paso a paso aquí: Wine ejecuta el programa, no lo recorre instrucción por instrucción. La salida llega a la consola.",
+                ));
+                self.status = i18n::tr3(
+                    self.lang,
+                    "En cours d'exécution (Wine)…",
+                    "Running (Wine)…",
+                    "En ejecución (Wine)…",
+                )
+                .to_string();
+            }
+            Err(e) => {
+                self.wine = None;
+                self.log(&e);
+                self.status = i18n::tr3(self.lang, "Assemblé (PE64)", "Assembled (PE64)", "Ensamblado (PE64)").to_string();
+            }
+        }
+    }
+
+    /// Vérifie les attentes d'un exercice Windows, à partir du seul code de
+    /// sortie.
+    ///
+    /// Wine exécute, il ne déroule pas : il n'y a pas de registres à lire à la
+    /// fin. Les attentes portant sur un registre ne sont donc pas *fausses*,
+    /// elles sont invérifiables — les compter en échec ferait mentir le panneau.
+    /// Elles sont écartées du verdict et signalées dans la console, ce qui est
+    /// la seule réponse honnête.
+    fn verify_exercise_from_exit(&mut self, exit_code: i32) {
+        if !self.exercise.is_exercise() {
+            return;
+        }
+        let unverifiable: Vec<String> = self
+            .exercise
+            .expectations
+            .iter()
+            .filter(|e| !matches!(e.subject, crate::exercise::Subject::ExitCode))
+            .map(|e| e.label())
+            .collect();
+        let mut checkable = self.exercise.clone();
+        checkable
+            .expectations
+            .retain(|e| matches!(e.subject, crate::exercise::Subject::ExitCode));
+
+        self.checks = crate::exercise::check(
+            &checkable,
+            &crate::debugger::Registers::default(),
+            Some(exit_code),
+            &self.source,
+        );
+        for label in &unverifiable {
+            self.log(&format!(
+                "{} {label}",
+                i18n::tr3(
+                    self.lang,
+                    "⚠ attente non vérifiable en cible Windows (pas de débogueur) :",
+                    "⚠ expectation not checkable on the Windows target (no debugger):",
+                    "⚠ expectativa no verificable en el destino Windows (sin depurador):"
+                )
+            ));
+        }
+        if !self.checks.is_empty() {
+            let summary = crate::exercise::summary(&self.checks, self.lang);
+            self.log(&summary);
+            self.status = summary;
+        }
+    }
+
+    /// Sonde le programme lancé sous Wine : sortie vers la console, puis code
+    /// de sortie quand il s'achève. Sans effet si rien ne tourne.
+    pub(super) fn poll_wine(&mut self, ctx: &egui::Context) {
+        let Some(run) = self.wine.as_mut() else { return };
+        let out = run.take_output();
+        let done = run.poll();
+        if !out.is_empty() {
+            self.program_out_push(&out);
+        }
+        match done {
+            Some(code) => {
+                self.wine = None;
+                let lang = self.lang;
+                self.log(&format!(
+                    "{} {code}",
+                    i18n::tr3(lang, "Terminé, code de sortie", "Finished, exit code", "Terminado, código de salida")
+                ));
+                self.status = format!(
+                    "{} {code}",
+                    i18n::tr3(lang, "Terminé (Wine) — code", "Finished (Wine) — code", "Terminado (Wine) — código")
+                );
+                // Le programme a rendu son code : les leçons et exercices du
+                // parcours Windows se corrigent là-dessus.
+                self.verify_exercise_from_exit(code);
+            }
+            // Rien d'autre ne réveillerait l'interface quand le programme
+            // écrira : c'est un processus extérieur, pas un événement egui.
+            None => ctx.request_repaint_after(std::time::Duration::from_millis(30)),
+        }
+    }
+
     /// Verse dans la console ce que le programme a écrit sur sa sortie
     /// standard ou d'erreur, tel quel (le programme mène ses retours à la ligne).
     fn drain_program_output(&mut self) {
@@ -227,8 +441,12 @@ impl App {
         // compte donc aussi dans la sortie « telle qu'au terminal » — c'est
         // précisément le terminal qui produirait cet écho.
         self.program_out_push(&line);
-        if let Some(d) = self.dbg.as_mut()
-            && let Err(e) = d.write_stdin(&line)
+        if let Some(d) = self.dbg.as_mut() {
+            if let Err(e) = d.write_stdin(&line) {
+                self.log(&e);
+            }
+        } else if let Some(run) = self.wine.as_mut()
+            && let Err(e) = run.write_stdin(&line)
         {
             self.log(&e);
         }
@@ -1062,6 +1280,48 @@ mod tests {
             app.syscalls.iter().map(|s| s.number).collect::<Vec<_>>(),
             syscalls,
             "mêmes appels système, sans doublon ni oubli"
+        );
+    }
+
+    /// Le chemin complet tel que l'élève le vit : cible Windows, F5, et la
+    /// sortie du programme arrive dans la console de l'IDE, suivie de son code
+    /// de sortie. Sans débogueur derrière — c'est ce que la cible promet, et
+    /// c'est aussi ce qu'elle ne promet pas.
+    #[test]
+    fn the_ide_runs_a_windows_program_and_shows_its_output() {
+        if !crate::winerun::available() {
+            eprintln!("wine absent : exécution depuis l'IDE non vérifiée");
+            return;
+        }
+        let dir = std::path::PathBuf::from("build/wine-ide");
+        std::fs::create_dir_all(&dir).expect("dossier");
+        let mut app = App::new();
+        app.target = crate::assemble::Target::Windows;
+        app.src_path = dir.join("prog.asm");
+        app.out_dir = dir.clone();
+        app.source = std::fs::read_to_string("examples/hello-windows.asm").expect("exemple Windows");
+
+        let ctx = eframe::egui::Context::default();
+        app.launch();
+        assert!(app.wine.is_some(), "le programme doit avoir été lancé: {}", app.console);
+        assert!(app.dbg.is_none(), "pas de débogueur pour un PE : Wine exécute, il ne déroule pas");
+
+        // Sonder comme le fait la boucle de frame, jusqu'à la fin du programme.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while app.wine.is_some() {
+            app.poll_wine(&ctx);
+            assert!(std::time::Instant::now() < deadline, "le programme ne finit pas");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            app.program_output.contains("Bonjour depuis un PE64"),
+            "sortie du programme: {:?}",
+            app.program_output
+        );
+        assert!(
+            app.console.contains("code de sortie 0"),
+            "la console doit rapporter le code de sortie: {}",
+            app.console
         );
     }
 }

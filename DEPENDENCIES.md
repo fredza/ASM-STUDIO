@@ -39,12 +39,28 @@ mais ne figurent **pas** dans la sortie `ldd`.
 | Outil | Rôle | Paquet Fedora / DNF | Paquet Ubuntu / APT |
 |---|---|---|---|
 | `nasm` ≥ 2.16 | Assembleur — traduit le `.asm` en fichier objet | `nasm` | `nasm` |
-| `ld` | Éditeur de liens — produit l'exécutable final | `binutils` | `binutils` |
+| `ld` | Éditeur de liens ELF — produit l'exécutable final (cible Linux) | `binutils` | `binutils` |
 
 Les deux sont **indispensables** : `assemble.rs` les invoque à la suite
 (`nasm -f elf64 … -o x.o` puis `ld -o x x.o`). Si l'un manque du `PATH`, le
 bouton **Assembler** retourne « impossible de lancer nasm » ou
 « impossible de lancer ld ».
+
+La cible Windows (PE64) ne demande, elle, que `nasm` : `nasm -f win64` produit
+l'objet COFF, et le lien est fait à l'intérieur d'ASM Studio (`pe_link.rs`). Ni
+`lld-link` ni le SDK Microsoft ne sont requis — c'est précisément pour cela que
+le lieur est intégré.
+
+`wine` est **facultatif** : sans lui, la cible Windows assemble, désassemble et
+décrit le `.exe` sans pouvoir le lancer, et l'IDE le dit. S'il est présent dans
+le `PATH`, « Lancer » exécute le programme et sa sortie arrive dans la console,
+comme celle d'un programme Linux — sans pas-à-pas, qui reste propre à la cible
+ELF. La suite de tests s'en sert aussi ; les tests concernés s'ignorent d'
+eux-mêmes quand wine manque.
+
+| Outil | Rôle | Paquet Fedora / DNF | Paquet Ubuntu / APT |
+|---|---|---|---|
+| `wine` (facultatif) | Exécute le `.exe` produit par la cible Windows | `wine` | `wine` |
 
 `binutils` est presque toujours déjà installé (c'est une dépendance de la
 chaîne de compilation C), mais une image de conteneur minimale peut en manquer.

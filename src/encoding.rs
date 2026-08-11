@@ -353,7 +353,7 @@ pub fn decode(bytes: &[u8], lang: Lang) -> Encoding {
                 "{val} ({}) — {}",
                 t("décimal signé", "signed decimal", "decimal con signo"),
                 t(
-                    "ajouté à l'adresse calculée ; stocké en petit-boutiste",
+                    "ajouté à l'adresse calculée ; stocké en little-endian",
                     "added to the computed address; stored little-endian",
                     "sumado a la dirección calculada; almacenado en little-endian",
                 ),
@@ -383,7 +383,7 @@ pub fn decode(bytes: &[u8], lang: Lang) -> Encoding {
             detail: format!(
                 "{val} (0x{val:X}) — {}",
                 t(
-                    "valeur écrite dans l'instruction, en petit-boutiste",
+                    "valeur écrite dans l'instruction, en little-endian",
                     "value written inside the instruction, little-endian",
                     "valor escrito dentro de la instrucción, en little-endian",
                 ),

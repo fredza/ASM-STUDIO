@@ -18,20 +18,6 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(4.0);
 }
 
-/// Numéro de bêta lu dans la version du paquet (`0.4.3-beta.3` → « 3 »).
-///
-/// Le bandeau de la fenêtre « À propos » l'écrivait en toutes lettres, et il
-/// est resté sur « BÊTA 2 » toute une version : une information affichée à
-/// deux endroits finit toujours par se contredire. `Cargo.toml` fait seul foi.
-/// Une version sans suffixe `-beta.N` — une finale — renvoie une chaîne vide,
-/// et le bandeau ne prétend alors plus rien.
-fn beta_number() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-        .split_once("-beta.")
-        .map(|(_, n)| n)
-        .unwrap_or_default()
-}
-
 /// Retire le balisage gras `**…**` d'une ligne Markdown, pour un affichage
 /// propre dans la fenêtre de licence (on ne conserve pas le gras inline, mais
 /// le texte reste lisible sans les astérisques parasites).
@@ -419,8 +405,9 @@ impl App {
                     ui.label(tr("IDE pédagogique NASM x86-64", "Educational NASM x86-64 IDE", "IDE educativo NASM x86-64"));
                 });
                 ui.add_space(6.0);
-                // Bandeau bêta : plus serein que l'alpha, mais on rappelle que
-                // c'est une préversion.
+                // Bandeau de préversion : il disparaît de lui-même le jour où
+                // `Cargo.toml` annonce une version finale (voir crate::version).
+                if let Some(beta_label) = crate::version::beta_label(lang) {
                 egui::Frame::default()
                     .fill(action().linear_multiply(0.9))
                     .corner_radius(egui::CornerRadius::same(6))
@@ -428,13 +415,9 @@ impl App {
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             ui.label(
-                                RichText::new(match lang {
-                                    i18n::Lang::Fr => format!("🔷  VERSION BÊTA {}", beta_number()),
-                                    i18n::Lang::En => format!("🔷  BETA {} VERSION", beta_number()),
-                                    i18n::Lang::Es => format!("🔷  VERSIÓN BETA {}", beta_number()),
-                                })
-                                .strong()
-                                .color(egui::Color32::WHITE),
+                                RichText::new(format!("🔷  {beta_label}"))
+                                    .strong()
+                                    .color(egui::Color32::WHITE),
                             );
                             ui.label(
                                 RichText::new(tr(
@@ -447,6 +430,7 @@ impl App {
                             );
                         });
                     });
+                }
                 ui.add_space(8.0);
                 ui.separator();
                 egui::Grid::new("about_grid")
@@ -454,11 +438,24 @@ impl App {
                     .spacing([16.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Version");
-                        ui.label(RichText::new(env!("CARGO_PKG_VERSION")).monospace().strong());
+                        ui.label(RichText::new(crate::version::full()).monospace().strong())
+                            .on_hover_text(tr(
+                                "MAJEUR.MINEUR.CORRECTIF-préversion+build.numéro — le numéro de build change à chaque compilation, la version à chaque livraison.",
+                                "MAJOR.MINOR.PATCH-prerelease+build.number — the build number changes on every compilation, the version on every release.",
+                                "MAYOR.MENOR.PARCHE-preversión+build.número — el número de compilación cambia en cada compilación, la versión en cada entrega.",
+                            ));
                         ui.end_row();
                         ui.label("Build");
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(env!("GIT_HASH")).monospace().strong());
+                            ui.label(
+                                RichText::new(format!(
+                                    "{}  ({})",
+                                    crate::version::COMMIT,
+                                    crate::version::DATE
+                                ))
+                                .monospace()
+                                .strong(),
+                            );
                             if ui
                                 .small_button("📋")
                                 .on_hover_text(tr(
@@ -859,6 +856,117 @@ impl App {
         }
     }
 
+    /// Boîte « Nouveau fichier » : pour quel format ?
+    ///
+    /// Un squelette ELF et un squelette PE ne se ressemblent pas — `_start` et
+    /// `syscall` d'un côté, `main` et `ExitProcess` de l'autre — et le format
+    /// décide aussi de ce que fera « Assembler ». Imposer Linux puis laisser
+    /// l'élève buter sur une erreur de nasm serait le lui apprendre à l'envers ;
+    /// la question se pose donc une fois, au moment où le fichier naît.
+    ///
+    /// Elle ne s'affiche que si l'assemblage Windows est activé (Réglages) :
+    /// sinon [`App::new_file_now`] crée directement le fichier ELF.
+    pub(super) fn new_file_format_window(&mut self, ctx: &egui::Context) {
+        if !self.new_file_prompt {
+            return;
+        }
+        use crate::assemble::Target;
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+
+        let mut chosen: Option<Target> = None;
+        let mut open = true;
+        egui::Window::new(tr("Nouveau fichier", "New file", "Archivo nuevo"))
+            .collapsible(false)
+            .resizable(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_width(420.0);
+                ui.add_space(4.0);
+                ui.label(tr(
+                    "Pour quel format ce programme est-il écrit ?",
+                    "Which format is this program written for?",
+                    "¿Para qué formato se escribe este programa?",
+                ));
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new(tr(
+                        "Le squelette de départ et la cible d'assemblage suivent ce choix, qui reste modifiable par le menu Exécution ▸ Cible.",
+                        "The starting skeleton and the build target follow this choice, which stays changeable from the Run ▸ Target menu.",
+                        "El esqueleto inicial y el destino de ensamblado siguen esta elección, que sigue siendo modificable desde el menú Ejecución ▸ Destino.",
+                    ))
+                    .small()
+                    .weak(),
+                );
+                ui.add_space(10.0);
+
+                for (target, label, detail, primary) in [
+                    (
+                        Target::Linux,
+                        tr("ELF64 — Linux", "ELF64 — Linux", "ELF64 — Linux"),
+                        tr(
+                            "« _start » et « syscall ». Le seul format qui s'exécute et se déroule pas à pas ici.",
+                            "\"_start\" and \"syscall\". The only format that runs and single-steps here.",
+                            "«_start» y «syscall». El único formato que se ejecuta y se recorre paso a paso aquí.",
+                        ),
+                        true,
+                    ),
+                    (
+                        Target::Windows,
+                        tr("PE64 — Windows console", "PE64 — Windows console", "PE64 — Windows consola"),
+                        tr(
+                            "« main » et « ExitProcess ». Produit un vrai .exe, lancé par Wine s'il est installé.",
+                            "\"main\" and \"ExitProcess\". Produces a real .exe, run through Wine when installed.",
+                            "«main» y «ExitProcess». Produce un .exe real, ejecutado con Wine si está instalado.",
+                        ),
+                        false,
+                    ),
+                    (
+                        Target::WindowsGui,
+                        tr("PE64 — Windows fenêtré", "PE64 — Windows GUI", "PE64 — Windows con ventanas"),
+                        tr(
+                            "Même chose, sans console : le squelette affiche une MessageBox.",
+                            "Same, with no console: the skeleton shows a MessageBox.",
+                            "Lo mismo, sin consola: el esqueleto muestra un MessageBox.",
+                        ),
+                        false,
+                    ),
+                ] {
+                    let btn = egui::Button::new(RichText::new(label).strong());
+                    let btn = if primary { btn.fill(super::action()) } else { btn };
+                    if ui.add_sized([ui.available_width(), 28.0], btn).clicked() {
+                        chosen = Some(target);
+                    }
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(detail).small().weak());
+                    ui.add_space(10.0);
+                }
+
+                ui.separator();
+                ui.add_space(6.0);
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 26.0],
+                        egui::Button::new(tr("Annuler", "Cancel", "Cancelar")),
+                    )
+                    .clicked()
+                {
+                    self.new_file_prompt = false;
+                }
+                ui.add_space(4.0);
+            });
+        // La croix vaut « Annuler » : rien n'a encore été créé, il n'y a rien à
+        // perdre — contrairement à la boîte « non enregistré ».
+        if !open {
+            self.new_file_prompt = false;
+        }
+        if let Some(t) = chosen {
+            self.create_new_file(t);
+        }
+    }
+
     /// Texte intégral de la licence, embarqué depuis `LICENSE.md` à la racine du
     /// projet : le fichier reste l'unique source de vérité, la fenêtre ne peut
     /// pas se désynchroniser de lui.
@@ -1046,6 +1154,35 @@ impl App {
             "Unified memory view (\"Memory View\" tab — registers → pointed zones)",
             "Vista de memoria unificada (pestaña «Vista memoria» — registros → zonas apuntadas)",
         );
+        let t_pe_h = self.tr3(
+            "Assemblage Windows (PE64)",
+            "Windows assembling (PE64)",
+            "Ensamblado Windows (PE64)",
+        );
+        let t_pe = self.tr3(
+            "Proposer la cible Windows (menu Exécution ▸ Cible)",
+            "Offer the Windows target (Run ▸ Target menu)",
+            "Ofrecer el destino Windows (menú Ejecución ▸ Destino)",
+        );
+        let t_pe_desc = self.tr3(
+            "Assemble le même source en exécutable Windows (.exe PE64) : autre convention \
+             d'appel, fonctions importées de DLL au lieu des appels système. Le panneau \
+             FORMAT montre ce que contient le fichier, et Wine — s'il est installé — \
+             l'exécute. Le pas-à-pas reste réservé à la cible Linux.",
+            "Assembles the same source as a Windows executable (.exe PE64): different calling \
+             convention, DLL-imported functions instead of system calls. The FORMAT panel shows \
+             what the file holds, and Wine — when installed — runs it. Single-stepping stays \
+             reserved for the Linux target.",
+            "Ensambla el mismo código como ejecutable de Windows (.exe PE64): otra convención de \
+             llamada, funciones importadas de DLL en lugar de llamadas al sistema. El panel \
+             FORMATO muestra lo que contiene el archivo, y Wine — si está instalado — lo \
+             ejecuta. El paso a paso queda reservado al destino Linux.",
+        );
+        let t_pe_off = self.tr3(
+            "Décochée, l'application ne propose que Linux : un débutant n'a pas à choisir une cible.",
+            "Unchecked, the application offers Linux only: a beginner should not have to pick a target.",
+            "Sin marcar, la aplicación solo ofrece Linux: un principiante no tiene por qué elegir un destino.",
+        );
         let t_tuto_h = self.tr3("Parcours guidé", "Guided path", "Recorrido guiado");
         let t_tuto = self.tr3(
             "Activer le tutoriel (panneau Tutoriel)",
@@ -1154,6 +1291,22 @@ impl App {
                             ui.label(RichText::new(t_asmstd_what).size(12.5));
                             ui.add_space(5.0);
                             ui.label(RichText::new(t_asmstd_scope).size(12.0).weak());
+                        });
+                        ui.separator();
+
+                        section(ui, t_pe_h);
+                        if ui.checkbox(&mut self.pe_enabled, t_pe).changed() {
+                            // Décocher pendant qu'une cible Windows est active
+                            // laisserait l'IDE dans un état que plus aucun menu
+                            // ne permet de défaire.
+                            self.apply_pe_setting();
+                            changed = true;
+                        }
+                        ui.add_space(4.0);
+                        super::card(ui, |ui| {
+                            ui.label(RichText::new(t_pe_desc).size(12.5));
+                            ui.add_space(5.0);
+                            ui.label(RichText::new(t_pe_off).size(12.0).weak());
                         });
                         ui.separator();
 
@@ -1542,6 +1695,12 @@ impl App {
                     ui.radio_value(&mut self.calc_base, 2, "Bin");
                     ui.radio_value(&mut self.calc_base, 10, "Dec");
                     ui.radio_value(&mut self.calc_base, 8, "Oct");
+                    ui.radio_value(&mut self.calc_base, super::CALC_BASE_ASCII, "ASCII")
+                        .on_hover_text(tr(
+                            "Chaque caractère vaut son code, jusqu'à 8 (la largeur d'un registre). Échappements acceptés : \\0 \\t \\n \\r \\xNN.",
+                            "Each character stands for its code, up to 8 (a register's width). Escapes accepted: \\0 \\t \\n \\r \\xNN.",
+                            "Cada carácter vale su código, hasta 8 (el ancho de un registro). Escapes aceptados: \\0 \\t \\n \\r \\xNN.",
+                        ));
                 });
                 ui.add_space(6.0);
 
@@ -1550,19 +1709,8 @@ impl App {
                     16 => "deadbeef",
                     2 => "10110100",
                     8 => "377",
+                    super::CALC_BASE_ASCII => "Hi!",
                     _ => "42",
-                };
-                // Filtre partagé par les deux opérandes.
-                let sanitize = |s: &mut String| {
-                    if base == 10 {
-                        let neg = s.starts_with('-');
-                        s.retain(|c| c.is_ascii_digit());
-                        if neg {
-                            s.insert(0, '-');
-                        }
-                    } else {
-                        s.retain(|c| c.is_digit(base));
-                    }
                 };
 
                 // ---- Opérande A ----
@@ -1575,16 +1723,12 @@ impl App {
                             .hint_text(hint),
                     );
                 });
-                sanitize(&mut self.calc_input);
+                super::calc_sanitize(&mut self.calc_input, base);
                 let a = super::calc_parse(&self.calc_input, base);
                 if let Some(v) = a
                     && let Some(nv) = self.bit_grid(ui, v, true)
                 {
-                    self.calc_input = super::calc_format(nv, base)
-                        .trim_start_matches("0x")
-                        .trim_start_matches("0b")
-                        .trim_start_matches("0o")
-                        .to_string();
+                    self.calc_input = super::calc_format_bare(nv, base);
                 }
 
                 ui.add_space(6.0);
@@ -1632,16 +1776,12 @@ impl App {
                             .hint_text(hint),
                     );
                 });
-                sanitize(&mut self.calc_input_b);
+                super::calc_sanitize(&mut self.calc_input_b, base);
                 let b_val = super::calc_parse(&self.calc_input_b, base);
                 if let Some(v) = b_val
                     && let Some(nv) = self.bit_grid(ui, v, true)
                 {
-                    self.calc_input_b = super::calc_format(nv, base)
-                        .trim_start_matches("0x")
-                        .trim_start_matches("0b")
-                        .trim_start_matches("0o")
-                        .to_string();
+                    self.calc_input_b = super::calc_format_bare(nv, base);
                 }
 
                 ui.add_space(8.0);
@@ -1672,25 +1812,33 @@ impl App {
                             .num_columns(2)
                             .spacing([16.0, 4.0])
                             .show(ui, |ui| {
-                                for (label, b) in [("Hex", 16), ("Bin", 2), ("Dec", 10), ("Oct", 8)] {
+                                // L'ASCII ferme la liste : c'est la lecture qui
+                                // fait le lien avec les chaînes du programme.
+                                for (label, b) in [
+                                    ("Hex", 16),
+                                    ("Bin", 2),
+                                    ("Dec", 10),
+                                    ("Oct", 8),
+                                    ("ASCII", super::CALC_BASE_ASCII),
+                                ] {
                                     ui.label(RichText::new(label).strong().color(hdr));
-                                    ui.label(
+                                    let txt = ui.label(
                                         RichText::new(super::calc_format(v, b))
                                             .monospace()
                                             .color(mnem),
                                     );
-                                    ui.end_row();
-                                }
-                                // Un caractère imprimable : pratique pour les
-                                // exercices sur les chaînes.
-                                let u = v as u64;
-                                if (0x20..0x7F).contains(&u) {
-                                    ui.label(RichText::new(tr("Caractère", "Character", "Carácter")).strong().color(hdr));
-                                    ui.label(
-                                        RichText::new(format!("'{}'", u as u8 as char))
-                                            .monospace()
-                                            .color(mnem),
-                                    );
+                                    if b == super::CALC_BASE_ASCII {
+                                        // Le détail octet par octet : quel
+                                        // caractère vaut quel code.
+                                        let detail = super::calc_bytes_of(v, super::calc_width_bytes(v))
+                                            .into_iter()
+                                            .map(|byte| {
+                                                format!("{} = 0x{byte:02X} = {byte}", super::calc_ascii_text(byte as i64))
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        txt.on_hover_text(detail);
+                                    }
                                     ui.end_row();
                                 }
                             });
@@ -2178,11 +2326,45 @@ impl App {
                     }
                 });
                 ui.add_space(6.0);
-                ui.label(tr(
-                    "Collez ci-dessous le bloc de licence reçu par e-mail :",
-                    "Paste the license block you received by e-mail below:",
-                    "Pegue abajo el bloque de licencia recibido por correo:",
-                ));
+                ui.horizontal(|ui| {
+                    ui.label(tr(
+                        "Collez ci-dessous le bloc de licence reçu par e-mail :",
+                        "Paste the license block you received by e-mail below:",
+                        "Pegue abajo el bloque de licencia recibido por correo:",
+                    ));
+                    // Bouton de collage : Ctrl+V fonctionne aussi, mais la
+                    // licence arrive par courriel et se colle d'un geste — sans
+                    // avoir à cliquer d'abord dans le champ pour lui donner le
+                    // focus, ce que rien n'indique.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(tr("📋 Coller", "📋 Paste", "📋 Pegar"))
+                            .on_hover_text(tr(
+                                "Colle le contenu du presse-papiers",
+                                "Paste the clipboard contents",
+                                "Pega el contenido del portapapeles",
+                            ))
+                            .clicked()
+                        {
+                            match super::clipboard_text() {
+                                Some(text) => {
+                                    self.license_input = text;
+                                    self.license_error = None;
+                                }
+                                None => {
+                                    self.license_error = Some(
+                                        tr(
+                                            "Le presse-papiers est vide ou illisible : copiez d'abord le bloc de licence.",
+                                            "The clipboard is empty or unreadable: copy the license block first.",
+                                            "El portapapeles está vacío o ilegible: copie primero el bloque de licencia.",
+                                        )
+                                        .to_string(),
+                                    );
+                                }
+                            }
+                        }
+                    });
+                });
                 ui.add_space(6.0);
                 ui.add(
                     egui::TextEdit::multiline(&mut self.license_input)
@@ -2228,14 +2410,22 @@ impl App {
 mod about_tests {
     use super::*;
 
-    /// Le bandeau suit `Cargo.toml` : c'est ce qui l'a empêché de rester sur
-    /// « BÊTA 2 » alors que la version en annonçait une autre.
+    /// Le bandeau annonce la préversion exacte, numéro compris — c'est ce qui
+    /// l'a empêché de rester sur « BÊTA 2 », puis d'afficher « BÊTA » tout court
+    /// quand la version n'en portait plus. Il vient de `crate::version`, seule
+    /// source, et disparaît sur une version finale.
     #[test]
-    fn the_beta_number_comes_from_the_package_version() {
-        let version = env!("CARGO_PKG_VERSION");
-        match version.split_once("-beta.") {
-            Some((_, n)) => assert_eq!(beta_number(), n),
-            None => assert!(beta_number().is_empty(), "une version finale n'annonce pas de bêta"),
+    fn the_banner_announces_the_exact_prerelease() {
+        match crate::version::beta() {
+            Some(n) => {
+                let label = crate::version::beta_label(i18n::Lang::Fr).expect("une bêta s'annonce");
+                assert!(label.contains(n), "« {label} » doit porter le numéro {n}");
+                assert!(!label.ends_with("BÊTA"), "« BÊTA » sans numéro ne dit rien");
+            }
+            None => assert!(
+                crate::version::beta_label(i18n::Lang::Fr).is_none(),
+                "une version finale n'affiche pas de bandeau de préversion"
+            ),
         }
     }
 
@@ -2305,6 +2495,40 @@ mod breakpoint_condition_tests {
         app.open_breakpoint_condition(999);
         let ctx = egui::Context::default();
         let _ = ctx.run(Default::default(), |ctx| app.breakpoint_condition_window(ctx));
+    }
+}
+
+#[cfg(test)]
+mod new_file_format_tests {
+    use super::*;
+
+    /// La boîte du format se rend dans les trois langues sans paniquer, et ne
+    /// s'affiche pas quand rien ne l'attend.
+    #[test]
+    fn the_format_window_renders_in_every_language() {
+        for lang in [i18n::Lang::Fr, i18n::Lang::En, i18n::Lang::Es] {
+            let mut app = App::new();
+            app.lang = lang;
+            app.new_file_prompt = true;
+            let ctx = egui::Context::default();
+            let _ = ctx.run(Default::default(), |ctx| app.new_file_format_window(ctx));
+            assert!(app.new_file_prompt, "elle reste ouverte tant qu'on n'a pas répondu");
+        }
+
+        let mut app = App::new();
+        let ctx = egui::Context::default();
+        let out = ctx.run(Default::default(), |ctx| app.new_file_format_window(ctx));
+        assert!(out.shapes.is_empty(), "rien à peindre sans question en cours");
+    }
+
+    /// Elle compte parmi les dialogues ouverts : sans cela, le rendu à la
+    /// demande laisserait la fenêtre affichée après sa fermeture.
+    #[test]
+    fn the_format_window_counts_as_an_open_dialog() {
+        let mut app = App::new();
+        let before = app.open_dialog_count();
+        app.new_file_prompt = true;
+        assert_eq!(app.open_dialog_count(), before + 1);
     }
 }
 
@@ -2604,12 +2828,33 @@ mod calculator_tests {
             assert!(app.show_calculator, "la fenêtre reste ouverte ({a} {b:?})");
         }
 
-        // Et dans les quatre bases.
-        for base in [16, 2, 10, 8] {
+        // Et dans toutes les bases, ASCII comprise.
+        for base in [16, 2, 10, 8, super::super::CALC_BASE_ASCII] {
             app.calc_base = base;
             app.calc_input = "101".to_string();
             let _ = ctx.run(Default::default(), |ctx| app.calculator_window(ctx));
         }
+    }
+
+    /// En base ASCII, le texte des deux opérandes se lit comme des codes et le
+    /// résultat se relit comme du texte : « a AND \xDF » donne « A ».
+    #[test]
+    fn ascii_base_operates_on_text() {
+        let mut app = App::new();
+        app.show_calculator = true;
+        app.calc_base = super::super::CALC_BASE_ASCII;
+        app.calc_input = "a".to_string();
+        app.calc_input_b = "\\xDF".to_string();
+        app.calc_op = super::super::CalcOp::And;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.calculator_window(ctx));
+
+        // Le filtre de saisie n'a pas mangé l'échappement.
+        assert_eq!(app.calc_input_b, "\\xDF");
+        let a = super::super::calc_parse(&app.calc_input, app.calc_base).unwrap();
+        let b = super::super::calc_parse(&app.calc_input_b, app.calc_base).unwrap();
+        let r = app.calc_op.apply(a, b).unwrap();
+        assert_eq!(super::super::calc_format(r, super::super::CALC_BASE_ASCII), "'A'");
     }
 
     /// Le masquage d'un octet est le cas d'usage type : 0x2A AND 0x0F = 0x0A.

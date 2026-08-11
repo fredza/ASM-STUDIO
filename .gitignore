@@ -14,3 +14,9 @@
 /doc/LICENCE-SYSTEME-INTERNE.md
 /doc/TEST-LICENCE.md
 /doc/CHANGELOG-LICENCE-INTERNE.md
+
+# Compteur de builds, incrémenté par build.rs à chaque compilation. Local à la
+# machine : le suivre en versionné salirait le dépôt à chaque « cargo build »
+# et entrerait en conflit à chaque fusion. Ce qui identifie une livraison, ce
+# sont la version et le commit ; le numéro de build distingue les compilations.
+/build-number.txt

@@ -1,6 +1,7 @@
 mod abi;
 mod app;
 mod assemble;
+mod binfmt;
 mod breakpoint;
 mod debugger;
 mod diagnostic;
@@ -11,6 +12,8 @@ mod exercise;
 mod explain;
 mod i18n;
 mod license;
+mod pe_link;
+mod simd;
 mod srcmap;
 mod syntax;
 mod syscall;
@@ -18,6 +21,8 @@ mod theme;
 mod trial;
 mod tutorial;
 mod updater;
+mod version;
+mod winerun;
 
 fn main() -> eframe::Result {
     let mut viewport = eframe::egui::ViewportBuilder::default()

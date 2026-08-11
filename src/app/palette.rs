@@ -83,6 +83,10 @@ pub(crate) enum Command {
     // Fenêtres
     TogglebPrediction,
     ToggleTutorial,
+    /// Ouvre le parcours guidé à son sommaire.
+    OpenTutorial,
+    /// Refait apparaître le bandeau d'accueil.
+    ShowWelcome,
     ResetTutorial,
     ProgramOutput,
     Calculator,
@@ -95,6 +99,8 @@ pub(crate) enum Command {
     // Préférences : les mêmes bascules que la fenêtre Réglages, à portée de
     // frappe. Elles y restent aussi — la palette n'est pas le seul chemin.
     ToggleTooltips,
+    /// Propose ou retire la cible Windows (PE64).
+    TogglePe,
     ToggleInspectHover,
     ToggleAnimations,
     ToggleAsmstd,
@@ -104,6 +110,9 @@ pub(crate) enum Command {
     SetLang(Lang),
     SetTheme(crate::theme::Choice),
     SetMode(crate::app::UiMode),
+    /// Cible d'assemblage : Linux (ELF, exécutable et débogable) ou Windows
+    /// (PE, assemblé et lisible seulement).
+    SetTarget(crate::assemble::Target),
 }
 
 impl Command {
@@ -228,6 +237,8 @@ impl Command {
             Command::ShowAllPanels => t("Afficher tous les panneaux", "Show all panels", "Mostrar todos los paneles").into(),
             Command::TogglebPrediction => t("Fenêtre Prédiction", "Prediction window", "Ventana Predicción").into(),
             Command::ToggleTutorial => t("Activer/désactiver le tutoriel", "Enable/disable the tutorial", "Activar/desactivar el tutorial").into(),
+            Command::OpenTutorial => t("Ouvrir le tutoriel guidé", "Open the guided tutorial", "Abrir el tutorial guiado").into(),
+            Command::ShowWelcome => t("Revoir l'écran d'accueil", "Show the welcome screen again", "Volver a ver la pantalla de bienvenida").into(),
             Command::ResetTutorial => t(
                 "Réinitialiser la progression du tutoriel",
                 "Reset the tutorial progress",
@@ -251,6 +262,12 @@ impl Command {
                 "Réglages : infobulles de raccourcis",
                 "Settings: shortcut tooltips",
                 "Configuración: información sobre atajos",
+            )
+            .into(),
+            Command::TogglePe => t(
+                "Réglages : assemblage Windows (PE64)",
+                "Settings: Windows assembling (PE64)",
+                "Configuración: ensamblado Windows (PE64)",
             )
             .into(),
             Command::ToggleInspectHover => t(
@@ -289,6 +306,24 @@ impl Command {
             Command::SetTheme(c) => {
                 format!("{} : {}", t("Thème", "Theme", "Tema"), c.label(lang))
             }
+            Command::SetTarget(crate::assemble::Target::Linux) => t(
+                "Cible : Linux (ELF64, exécutable ici)",
+                "Target: Linux (ELF64, runs here)",
+                "Destino: Linux (ELF64, se ejecuta aquí)",
+            )
+            .into(),
+            Command::SetTarget(crate::assemble::Target::Windows) => t(
+                "Cible : Windows console (PE64, assemblé seulement)",
+                "Target: Windows console (PE64, assembled only)",
+                "Destino: Windows consola (PE64, solo ensamblado)",
+            )
+            .into(),
+            Command::SetTarget(crate::assemble::Target::WindowsGui) => t(
+                "Cible : Windows fenêtré (PE64, sans console)",
+                "Target: Windows GUI (PE64, no console)",
+                "Destino: Windows con ventanas (PE64, sin consola)",
+            )
+            .into(),
             Command::SetMode(m) => format!(
                 "{} : {}",
                 t("Mode d'affichage", "Display mode", "Modo de visualización"),
@@ -405,6 +440,8 @@ impl Command {
             Command::ResetLayout,
             Command::TogglebPrediction,
             Command::ToggleTutorial,
+            Command::OpenTutorial,
+            Command::ShowWelcome,
             Command::ResetTutorial,
             Command::ProgramOutput,
             Command::Calculator,
@@ -416,10 +453,14 @@ impl Command {
             Command::ActivateLicense,
             Command::SetMode(crate::app::UiMode::Learning),
             Command::SetMode(crate::app::UiMode::Full),
+            Command::SetTarget(crate::assemble::Target::Linux),
+            Command::SetTarget(crate::assemble::Target::Windows),
+            Command::SetTarget(crate::assemble::Target::WindowsGui),
             Command::SetLang(Lang::Fr),
             Command::SetLang(Lang::En),
             Command::SetLang(Lang::Es),
             Command::ToggleTooltips,
+            Command::TogglePe,
             Command::ToggleInspectHover,
             Command::ToggleAnimations,
             Command::ToggleAsmstd,
@@ -495,9 +536,14 @@ fn fold(s: &str) -> String {
 }
 
 /// Commandes retenues pour une requête, triées de la meilleure à la moins bonne.
-pub(crate) fn filter(query: &str, lang: Lang) -> Vec<Command> {
+///
+/// `pe` dit si l'assemblage Windows est proposé : quand il ne l'est pas, les
+/// cibles Windows sortent de la liste. Proposer une commande sans effet serait
+/// pire que de ne pas la proposer — l'utilisateur la choisit, et rien ne bouge.
+pub(crate) fn filter(query: &str, lang: Lang, pe: bool) -> Vec<Command> {
     let mut scored: Vec<(u32, usize, Command)> = Command::all()
         .into_iter()
+        .filter(|c| pe || !matches!(c, Command::SetTarget(t) if t.is_windows()))
         .enumerate()
         .filter_map(|(i, c)| match_score(query, &c.label(lang)).map(|s| (s, i, c)))
         .collect();
@@ -625,6 +671,8 @@ impl App {
                 self.tutorial_enabled = !self.tutorial_enabled;
                 self.save_settings();
             }
+            Command::OpenTutorial => self.show_tutorial_toc(),
+            Command::ShowWelcome => self.show_welcome_again(),
             // `reset_tutorial` enregistre déjà, et remet l'élève devant l'accueil.
             Command::ResetTutorial => self.reset_tutorial(),
             Command::ProgramOutput => self.show_program_output = true,
@@ -637,6 +685,11 @@ impl App {
             Command::CheckUpdates => self.updater.check(),
             Command::ToggleTooltips => {
                 self.show_tooltips = !self.show_tooltips;
+                self.save_settings();
+            }
+            Command::TogglePe => {
+                self.pe_enabled = !self.pe_enabled;
+                self.apply_pe_setting();
                 self.save_settings();
             }
             Command::ToggleInspectHover => {
@@ -670,6 +723,7 @@ impl App {
                 self.save_settings();
             }
             Command::SetMode(m) => self.set_ui_mode(m),
+            Command::SetTarget(t) => self.set_target(t),
         }
     }
 
@@ -690,7 +744,7 @@ impl App {
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let hdr = self.c_header();
 
-        let matches = filter(&self.palette_query, lang);
+        let matches = filter(&self.palette_query, lang, self.pe_enabled);
         // La sélection reste dans les bornes quand la liste se réduit.
         if self.palette_sel >= matches.len() {
             self.palette_sel = matches.len().saturating_sub(1);
@@ -868,6 +922,60 @@ mod tests {
         }
     }
 
+    /// Les trois cibles d'assemblage se choisissent au clavier, et changer de
+    /// cible depuis la palette a bien l'effet attendu sur l'état.
+    #[test]
+    fn palette_covers_every_build_target() {
+        use crate::assemble::Target;
+        let all = Command::all();
+        for t in [Target::Linux, Target::Windows, Target::WindowsGui] {
+            assert!(all.contains(&Command::SetTarget(t)), "cible {t:?} absente de la palette");
+        }
+        let mut app = App::new();
+        assert_eq!(app.target, Target::Linux, "Linux par défaut");
+        app.run_command(Command::SetTarget(Target::Windows));
+        assert_eq!(app.target, Target::Windows);
+        assert!(!app.target.is_runnable(), "un PE ne se lance pas ici");
+        app.run_command(Command::SetTarget(Target::Linux));
+        assert!(app.target.is_runnable());
+    }
+
+    /// L'assemblage Windows est une option : quand elle est coupée, ses cibles
+    /// disparaissent de la palette, et la cible courante revient à Linux plutôt
+    /// que de rester dans un état que plus aucun menu ne montre.
+    #[test]
+    fn the_windows_target_disappears_with_its_setting() {
+        use crate::assemble::Target;
+
+        let mut app = App::new();
+        assert!(app.pe_enabled, "proposé par défaut");
+        app.run_command(Command::SetTarget(Target::Windows));
+        assert_eq!(app.target, Target::Windows);
+
+        // On coupe l'option depuis la palette : la cible doit suivre.
+        app.run_command(Command::TogglePe);
+        assert!(!app.pe_enabled);
+        assert_eq!(app.target, Target::Linux, "on ne reste pas sur une cible devenue invisible");
+
+        // Et plus personne ne peut y retourner tant qu'elle est coupée.
+        app.run_command(Command::SetTarget(Target::WindowsGui));
+        assert_eq!(app.target, Target::Linux, "la commande reste sans effet");
+
+        // La palette ne propose plus ce qu'elle ne peut pas faire…
+        let hidden = filter("cible", Lang::Fr, false);
+        assert!(
+            !hidden.iter().any(|c| matches!(c, Command::SetTarget(t) if t.is_windows())),
+            "les cibles Windows doivent sortir de la liste"
+        );
+        assert!(
+            hidden.contains(&Command::SetTarget(Target::Linux)),
+            "celle de Linux reste, elle"
+        );
+        // … et les repropose dès qu'on rallume l'option.
+        let shown = filter("cible", Lang::Fr, true);
+        assert!(shown.iter().any(|c| matches!(c, Command::SetTarget(t) if t.is_windows())));
+    }
+
     /// Un thème ajouté au catalogue doit apparaître dans la palette sans qu'on
     /// pense à l'y inscrire : c'est la promesse du module (« toute
     /// l'application au clavier »), et c'est exactement ce qu'on oublie.
@@ -941,7 +1049,7 @@ mod tests {
 
     #[test]
     fn empty_query_returns_everything() {
-        let all = filter("", Lang::Fr);
+        let all = filter("", Lang::Fr, true);
         assert_eq!(all.len(), Command::all().len());
     }
 
@@ -971,25 +1079,25 @@ mod tests {
 
     #[test]
     fn filtering_finds_expected_commands() {
-        let r = filter("lancer", Lang::Fr);
+        let r = filter("lancer", Lang::Fr, true);
         assert!(!r.is_empty());
         assert_eq!(r[0], Command::Run, "« lancer » doit remonter Run en tête");
 
-        let r = filter("console", Lang::Fr);
+        let r = filter("console", Lang::Fr, true);
         assert!(
             r.iter().any(|c| matches!(c, Command::FocusPanel(Panel::Console))),
             "« console » doit proposer d'y aller"
         );
 
-        assert!(filter("xyzzy-introuvable", Lang::Fr).is_empty());
+        assert!(filter("xyzzy-introuvable", Lang::Fr, true).is_empty());
     }
 
     /// L'ordre ne doit pas sautiller entre deux frappes équivalentes : à score
     /// égal, l'ordre de déclaration tranche.
     #[test]
     fn ordering_is_stable() {
-        let a = filter("panneau", Lang::Fr);
-        let b = filter("panneau", Lang::Fr);
+        let a = filter("panneau", Lang::Fr, true);
+        let b = filter("panneau", Lang::Fr, true);
         assert_eq!(a, b);
     }
 
@@ -1115,7 +1223,7 @@ mod tests {
             ("onglet suivant", Command::NextTab),
         ];
         for (query, expected) in cases {
-            let r = filter(query, Lang::Fr);
+            let r = filter(query, Lang::Fr, true);
             assert_eq!(r.first(), Some(&expected), "« {query} » devrait remonter {expected:?}");
         }
     }
@@ -1138,7 +1246,7 @@ mod tests {
 
         // Exécuter une commande referme la palette.
         app.palette_query = "reglages".into();
-        let m = filter(&app.palette_query, app.lang);
+        let m = filter(&app.palette_query, app.lang, true);
         assert!(!m.is_empty());
         app.palette_open = false;
         app.run_command(m[0]);
@@ -1157,7 +1265,7 @@ mod tests {
         app.palette_query = "reglages".into(); // ne laisse qu'une poignée d'entrées
         let _ = ctx.run(Default::default(), |ctx| app.palette_window(ctx));
 
-        let n = filter(&app.palette_query, app.lang).len();
+        let n = filter(&app.palette_query, app.lang, true).len();
         assert!(app.palette_sel < n.max(1), "sélection {} hors de {n}", app.palette_sel);
     }
 }

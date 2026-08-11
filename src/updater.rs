@@ -3,9 +3,11 @@
 //! La vérification tourne dans un thread de fond pour ne pas bloquer l'UI.
 //! Le résultat est récupéré dans `update()` via un canal `mpsc`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
+use base64::Engine;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 
 /// Dépôt GitHub source des releases.
@@ -16,6 +18,17 @@ use serde::Deserialize;
 /// cette tolérance aux redirections près (un dépôt renommé répond en 301, que
 /// `ureq` ne suit pas forcément avec la même méthode).
 const GITHUB_REPO: &str = "fredza/ASM-STUDIO";
+
+/// Clé publique réservée aux mises à jour. Elle est distincte de celle des
+/// licences : une compromission de l'un des processus ne donne pas
+/// automatiquement le contrôle de l'autre.
+///
+/// La clé privée correspondante reste hors de ce dépôt ; chaque release publie
+/// une signature Base64 dans un asset `<binaire>.sig`.
+const UPDATE_PUBLIC_KEY: [u8; 32] = [
+    0xDF, 0xDA, 0xC3, 0x0E, 0x0B, 0xB2, 0xFB, 0x98, 0x8F, 0x58, 0x13, 0xE6, 0x30, 0xDD, 0x39, 0xC9,
+    0x27, 0x44, 0x91, 0x7C, 0x75, 0x04, 0x7C, 0xD7, 0x0C, 0x44, 0x4D, 0xF0, 0xAC, 0x6D, 0x58, 0x39,
+];
 
 /// URL de l'API GitHub Releases.
 fn api_url() -> String {
@@ -32,6 +45,8 @@ pub struct ReleaseInfo {
     pub notes: String,
     /// URL de téléchargement du binaire Linux x86-64.
     pub download_url: String,
+    /// URL de la signature Ed25519 Base64 du binaire exact.
+    pub signature_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +91,10 @@ pub struct Updater {
 
 impl Updater {
     pub fn new() -> Self {
-        Self { state: UpdateState::UpToDate, rx: None }
+        Self {
+            state: UpdateState::UpToDate,
+            rx: None,
+        }
     }
 
     /// Lance la vérification en arrière-plan. Sans effet si déjà en cours.
@@ -107,6 +125,7 @@ impl Updater {
                     *Aucun fichier ne sera modifié.*"
                 .to_string(),
             download_url: "simulate://fake-download".to_string(),
+            signature_url: "simulate://fake-signature".to_string(),
         });
     }
 
@@ -121,7 +140,7 @@ impl Updater {
             let result = if url.starts_with("simulate://") {
                 simulate_download(&tx)
             } else {
-                download_and_install(&url, &tx)
+                download_and_install(&url, &info.signature_url, &tx)
             };
             let _ = tx.send(result);
         });
@@ -133,7 +152,13 @@ impl Updater {
         while let Ok(s) = rx.try_recv() {
             self.state = s;
         }
-        if matches!(self.state, UpdateState::Done | UpdateState::Error(_) | UpdateState::UpToDate | UpdateState::Available(_)) {
+        if matches!(
+            self.state,
+            UpdateState::Done
+                | UpdateState::Error(_)
+                | UpdateState::UpToDate
+                | UpdateState::Available(_)
+        ) {
             self.rx = None;
         }
     }
@@ -153,7 +178,7 @@ fn simulate_download(tx: &Sender<UpdateState>) -> UpdateState {
 
 /// Interroge l'API GitHub et renvoie l'état correspondant.
 fn check_latest() -> UpdateState {
-    let current = env!("CARGO_PKG_VERSION");
+    let current = crate::version::SEMVER;
 
     let body: GhRelease = match ureq::get(&api_url())
         .header("User-Agent", "asm-studio-updater")
@@ -174,15 +199,32 @@ fn check_latest() -> UpdateState {
     // Cherche le binaire Linux x86-64 dans les assets.
     let asset = body.assets.iter().find(|a| {
         let n = a.name.to_lowercase();
-        n.contains("linux") && n.contains("x86_64") && !n.ends_with(".sha256")
+        n.contains("linux")
+            && n.contains("x86_64")
+            && !n.ends_with(".sha256")
+            && !n.ends_with(".sig")
     });
 
     match asset {
-        Some(a) => UpdateState::Available(ReleaseInfo {
-            tag: body.tag_name,
-            notes: body.body.unwrap_or_default(),
-            download_url: a.browser_download_url.clone(),
-        }),
+        Some(a) => {
+            let signature_name = format!("{}.sig", a.name);
+            let Some(signature) = body
+                .assets
+                .iter()
+                .find(|other| other.name == signature_name)
+            else {
+                return UpdateState::Error(format!(
+                    "Release {} trouvée, mais la signature {} est absente.",
+                    body.tag_name, signature_name
+                ));
+            };
+            UpdateState::Available(ReleaseInfo {
+                tag: body.tag_name,
+                notes: body.body.unwrap_or_default(),
+                download_url: a.browser_download_url.clone(),
+                signature_url: signature.browser_download_url.clone(),
+            })
+        }
         None => UpdateState::Error(format!(
             "Release {} trouvée mais aucun binaire Linux x86-64 dans les assets.",
             body.tag_name
@@ -191,11 +233,17 @@ fn check_latest() -> UpdateState {
 }
 
 /// Télécharge le binaire, remplace l'exécutable courant, envoie la progression.
-fn download_and_install(url: &str, tx: &Sender<UpdateState>) -> UpdateState {
-    // Téléchargement dans un fichier temporaire.
-    let tmp = match tempfile_path() {
-        Some(p) => p,
-        None => return UpdateState::Error("Impossible de créer un fichier temporaire.".into()),
+fn download_and_install(url: &str, signature_url: &str, tx: &Sender<UpdateState>) -> UpdateState {
+    // Le temporaire doit vivre à côté de l'exécutable : le renommage final est
+    // alors atomique et ne peut jamais laisser le programme installé tronqué.
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => return UpdateState::Error(format!("current_exe: {e}")),
+    };
+
+    let signature = match download_signature(signature_url) {
+        Ok(signature) => signature,
+        Err(e) => return UpdateState::Error(e),
     };
 
     let resp = match ureq::get(url)
@@ -214,9 +262,9 @@ fn download_and_install(url: &str, tx: &Sender<UpdateState>) -> UpdateState {
         .and_then(|s| s.parse().ok());
 
     let mut reader = resp.into_body().into_reader();
-    let mut file = match std::fs::File::create(&tmp) {
-        Ok(f) => f,
-        Err(e) => return UpdateState::Error(format!("Écriture: {e}")),
+    let (tmp, mut file) = match new_tempfile_beside(&exe) {
+        Ok(pair) => pair,
+        Err(e) => return UpdateState::Error(e),
     };
 
     let mut downloaded: u64 = 0;
@@ -226,18 +274,31 @@ fn download_and_install(url: &str, tx: &Sender<UpdateState>) -> UpdateState {
         let n = match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => n,
-            Err(e) => return UpdateState::Error(format!("Lecture: {e}")),
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return UpdateState::Error(format!("Lecture: {e}"));
+            }
         };
         use std::io::Write;
         if file.write_all(&buf[..n]).is_err() {
+            let _ = std::fs::remove_file(&tmp);
             return UpdateState::Error("Erreur d'écriture disque.".into());
         }
         downloaded += n as u64;
-        if let Some(total) = total {
+        if let Some(total) = total.filter(|n| *n > 0) {
             let _ = tx.send(UpdateState::Downloading(downloaded as f32 / total as f32));
         }
     }
+    if let Err(e) = file.sync_all() {
+        let _ = std::fs::remove_file(&tmp);
+        return UpdateState::Error(format!("Synchronisation disque: {e}"));
+    }
     drop(file);
+
+    if let Err(e) = verify_file_signature(&tmp, &signature) {
+        let _ = std::fs::remove_file(&tmp);
+        return UpdateState::Error(e);
+    }
 
     // Rendre le binaire exécutable.
     #[cfg(unix)]
@@ -246,44 +307,105 @@ fn download_and_install(url: &str, tx: &Sender<UpdateState>) -> UpdateState {
         let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
     }
 
-    // Remplacer l'exécutable courant de façon atomique.
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => return UpdateState::Error(format!("current_exe: {e}")),
-    };
-    // Sur Linux on peut remplacer un binaire en cours d'exécution grâce au rename(2).
+    // Le temporaire et la cible partagent leur système de fichiers : sur Linux
+    // rename(2) remplace aussi un binaire en cours d'exécution sans fenêtre où
+    // l'installation serait absente ou partiellement écrite.
     if let Err(e) = std::fs::rename(&tmp, &exe) {
-        // rename peut échouer entre partitions → copie de secours.
-        if let Err(e2) = std::fs::copy(&tmp, &exe) {
-            return UpdateState::Error(format!("Remplacement: {e} / copie: {e2}"));
-        }
         let _ = std::fs::remove_file(&tmp);
+        return UpdateState::Error(format!("Remplacement atomique: {e}"));
     }
 
     UpdateState::Done
 }
 
-// ---------- Utilitaires ----------
+/// Télécharge et décode une signature Ed25519 encodée en Base64.
+fn download_signature(url: &str) -> Result<Signature, String> {
+    use std::io::Read;
 
-/// Compare deux chaînes de version "X.Y.Z".
-/// Renvoie `true` si `remote > local`.
-fn is_newer(remote: &str, local: &str) -> bool {
-    let parse = |s: &str| -> (u32, u32, u32) {
-        let mut it = s.split('.').filter_map(|p| p.parse().ok());
-        (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
-    };
-    parse(remote) > parse(local)
+    let response = ureq::get(url)
+        .header("User-Agent", "asm-studio-updater")
+        .call()
+        .map_err(|e| format!("Signature de mise à jour: {e}"))?;
+    let mut encoded = String::new();
+    response
+        .into_body()
+        .into_reader()
+        .read_to_string(&mut encoded)
+        .map_err(|e| format!("Lecture de la signature: {e}"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|_| "Signature de mise à jour mal encodée".to_string())?;
+    let raw: [u8; 64] = bytes
+        .try_into()
+        .map_err(|_| "Signature de mise à jour de longueur incorrecte".to_string())?;
+    Ok(Signature::from_bytes(&raw))
 }
 
-fn tempfile_path() -> Option<PathBuf> {
-    let mut p = std::env::temp_dir();
-    p.push(format!("asm_studio_update_{}", std::process::id()));
-    Some(p)
+/// Vérifie le binaire complet avant de le rendre exécutable ou de remplacer
+/// l'installation courante.
+fn verify_file_signature(path: &Path, signature: &Signature) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("Lecture du binaire téléchargé: {e}"))?;
+    verify_signature(&bytes, signature, &UPDATE_PUBLIC_KEY)
+}
+
+fn verify_signature(
+    bytes: &[u8],
+    signature: &Signature,
+    public_key: &[u8; 32],
+) -> Result<(), String> {
+    let key = VerifyingKey::from_bytes(public_key)
+        .map_err(|_| "Clé publique de mise à jour invalide".to_string())?;
+    key.verify(bytes, signature)
+        .map_err(|_| "Signature de mise à jour invalide : installation annulée".to_string())
+}
+
+// ---------- Utilitaires ----------
+
+/// Compare deux versions semver, préversions comprises (voir
+/// [`crate::version::is_newer`], où vit toute la sémantique des numéros).
+fn is_newer(remote: &str, local: &str) -> bool {
+    crate::version::is_newer(remote, local)
+}
+
+/// Crée sans suivre de lien un fichier temporaire unique dans le dossier de
+/// l'exécutable. `create_new` est la propriété de sécurité importante : même
+/// si un autre processus devine le nom, il ne peut pas nous faire écraser un
+/// fichier ou suivre un lien symbolique.
+fn new_tempfile_beside(exe: &Path) -> Result<(PathBuf, std::fs::File), String> {
+    use std::fs::OpenOptions;
+
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "exécutable sans dossier parent".to_string())?;
+    for attempt in 0..128u32 {
+        let name = format!(
+            ".asm-studio-update-{}-{}-{attempt}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        let path = dir.join(name);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("Création du fichier temporaire: {e}")),
+        }
+    }
+    Err("Impossible de réserver un fichier temporaire unique.".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
 
     #[test]
     fn version_comparison() {
@@ -291,5 +413,39 @@ mod tests {
         assert!(is_newer("1.0.0", "0.9.9"));
         assert!(!is_newer("0.3.0", "0.3.0"));
         assert!(!is_newer("0.2.9", "0.3.0"));
+        // Une bêta n'est pas une mise à jour de sa propre finale.
+        assert!(!is_newer("0.4.7-beta.1", "0.4.7"));
+    }
+
+    #[test]
+    fn update_temporary_file_is_created_next_to_the_executable() {
+        let dir = PathBuf::from("build/updater-temp-test");
+        std::fs::create_dir_all(&dir).expect("dossier de test");
+        let exe = dir.join("asm_studio");
+        let (first, first_file) = new_tempfile_beside(&exe).expect("premier temporaire");
+        let (second, second_file) = new_tempfile_beside(&exe).expect("second temporaire");
+
+        assert_eq!(first.parent(), Some(dir.as_path()));
+        assert_eq!(second.parent(), Some(dir.as_path()));
+        assert_ne!(
+            first, second,
+            "deux réservations ne se partagent jamais un nom"
+        );
+
+        drop(first_file);
+        drop(second_file);
+        std::fs::remove_file(first).expect("suppression premier temporaire");
+        std::fs::remove_file(second).expect("suppression second temporaire");
+    }
+
+    #[test]
+    fn only_the_matching_ed25519_signature_is_accepted() {
+        let signing_key = SigningKey::from_bytes(&[11; 32]);
+        let bytes = b"binaire de mise a jour";
+        let signature = signing_key.sign(bytes);
+        let public_key = signing_key.verifying_key().to_bytes();
+
+        assert!(verify_signature(bytes, &signature, &public_key).is_ok());
+        assert!(verify_signature(b"binaire modifie", &signature, &public_key).is_err());
     }
 }

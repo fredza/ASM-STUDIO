@@ -52,15 +52,34 @@ aproximación.
   llamadas, llamadas al sistema).
 - **Disposición acoplable** — cada panel se arrastra, se apila o se desprende
   en una ventana flotante (`egui_dock`), como en un IDE clásico.
-- **Recorrido guiado** — un tutorial de cuatro niveles (Principiante,
-  Intermedio, Avanzado, Experto) que introduce progresivamente registros,
-  tamaños, memoria, banderas, pila y llamadas al sistema.
-- **Ejercicios autocorregidos** — una veintena de ejercicios con verificación
-  automática del resultado.
+- **Recorrido guiado** — un tutorial de cinco niveles (Principiante,
+  Intermedio, Avanzado, Experto y Windows/PE64) que introduce progresivamente
+  registros, tamaños, memoria, banderas, pila y llamadas al sistema. Cada
+  lección carga su programa, abre los paneles que explica y propone los
+  ejercicios que la practican.
+- **Ejercicios autocorregidos** — treinta y seis ejercicios con verificación
+  automática del resultado, cada uno enlazado con la lección que lo explica.
 - **Modo «CPU viva»** — animación de los registros y banderas modificados en
   cada paso, con distintivos de actividad PUSH/POP sobre la pila.
 - **Predicción** — adivine el efecto de la próxima instrucción antes de
   ejecutarla, para afianzar la comprensión.
+- **Registros SSE / x87** — los dieciséis registros XMM y la pila x87, leídos
+  como los lee la instrucción: dos `double`, cuatro `float`, cuatro enteros de
+  32 bits, dieciséis bytes o el hexadecimal en bruto. Con el modo de redondeo
+  de MXCSR y las excepciones levantadas. Escribir `addsd xmm0, xmm1` y leer `5`
+  ya no exige un acto de fe.
+- **Destino Windows (PE64)** — el mismo código fuente se ensambla como un `.exe`
+  de Windows real (`nasm -f win64` y un enlazador integrado: sin `lld-link` ni
+  SDK de Microsoft). Un `extern ExitProcess` se convierte en una auténtica
+  tabla de importación. El binario se desensambla, se abre en el panel FORMATO
+  y, si `wine` está instalado, «Ejecutar» lo ejecuta de verdad: su salida llega
+  a la consola habitual. Lo que queda fuera de alcance es el paso a paso: el
+  depurador habla `ptrace` y sigue las direcciones de la imagen que acaba de
+  escribir, que el cargador de Wine no conserva.
+- **Explorador de formato binario** — encabezado, secciones, permisos, punto de
+  entrada, importaciones y símbolos globales, presentados igual para ELF y para
+  PE. Lo que cuesta una sección en memoria y en disco, y por qué `.bss` no pesa
+  nada.
 - **Calculadora integrada** — hexadecimal por defecto, vista bit a bit,
   operaciones habituales.
 - **Diagnóstico de errores** — los mensajes de `nasm`/`ld` y los fallos en
@@ -189,7 +208,7 @@ Plataforma: **Linux x86-64** únicamente (la ejecución paso a paso se apoya en
 | `eframe` / `egui_dock` | interfaz gráfica y disposición acoplable |
 | `nix` | `ptrace`, gestión de procesos y señales |
 | `capstone` | desensamblado x86-64 |
-| `object` | lectura de archivos ELF |
+| `object` | lectura de ELF/PE y escritura del ejecutable PE |
 | `rfd` | diálogos de archivo nativos (portal XDG) |
 | `ureq` / `serde` | comprobación de actualizaciones (GitHub Releases) |
 
@@ -207,7 +226,11 @@ src/
 ├── app/            interfaz (paneles acoplables, menús, atajos, tutorial…)
 ├── debugger.rs      control por ptrace del proceso depurado
 ├── disasm.rs         desensamblado (capstone)
-├── assemble.rs       invocación de nasm / ld
+├── assemble.rs       invocación de nasm / ld (ELF) o nasm / enlazador integrado (PE)
+├── pe_link.rs         enlazador PE64: secciones, importaciones, reubicaciones
+├── binfmt.rs           explorador de formato binario (ELF y PE)
+├── simd.rs              lectura de los registros XMM / x87
+├── winerun.rs            ejecución del .exe producido, con Wine
 ├── tutorial.rs        contenido del recorrido guiado
 ├── exercise.rs         ejercicios autocorregidos
 ├── i18n.rs              traducciones FR / EN / ES

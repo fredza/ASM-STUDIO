@@ -248,10 +248,37 @@ impl App {
         self.guarded(super::unsaved::PendingAction::NewFile);
     }
 
+    /// Le squelette de départ ne dépend pas de l'humeur : il dépend du format
+    /// visé. Un fichier ELF commence par `_start` et se termine par `syscall` ;
+    /// un fichier PE commence par `main` et appelle `ExitProcess`. Écrire l'un
+    /// pour assembler l'autre ne produit pas un avertissement, mais une erreur
+    /// de nasm à laquelle un débutant ne comprend rien.
     pub(super) fn new_file_now(&mut self) {
-        self.source = "section .data\n\nsection .text\n    global _start\n_start:\n    mov rax, 60      ; sys_exit\n    xor rdi, rdi     ; code 0\n    syscall\n".to_string();
-        // Le nouveau fichier vise le dossier actuellement affiché dans l'explorateur.
-        self.src_path = self.explorer_dir.join("sans-titre.asm");
+        // Tant que l'assemblage Windows est décoché, il n'y a qu'un format
+        // possible : poser la question serait un choix à une seule réponse.
+        if self.pe_enabled {
+            self.new_file_prompt = true;
+            return;
+        }
+        self.create_new_file(crate::assemble::Target::Linux);
+    }
+
+    /// Crée le nouveau fichier pour le format demandé, et pose la cible qui va
+    /// avec : le squelette et le `nasm -f` doivent parler du même format.
+    pub(super) fn create_new_file(&mut self, target: crate::assemble::Target) {
+        use crate::assemble::Target;
+        self.new_file_prompt = false;
+        self.set_target(target);
+        self.source = match target {
+            Target::Linux => super::SKELETON_ELF,
+            Target::Windows => super::SKELETON_PE_CONSOLE,
+            Target::WindowsGui => super::SKELETON_PE_GUI,
+        }
+        .to_string();
+        // Le nouveau fichier vise le dossier actuellement affiché dans
+        // l'explorateur, et porte l'extension du monde dont il relève.
+        let name = if target.is_windows() { "sans-titre-win.asm" } else { "sans-titre.asm" };
+        self.src_path = self.explorer_dir.join(name);
         // Le squelette n'est pas du travail : tant que l'élève n'y a pas
         // touché, fermer ou changer de fichier ne lui coûte rien, et il serait
         // absurde de lui poser la question.
@@ -377,6 +404,98 @@ mod recent_tests {
     fn a_fresh_install_has_an_empty_list() {
         let app = App::new();
         assert!(app.recent_files.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod new_file_tests {
+    use super::super::App;
+    use crate::assemble::Target;
+
+    /// Tant que l'assemblage Windows est décoché, il n'y a qu'un format
+    /// possible : le fichier se crée sans poser de question.
+    #[test]
+    fn without_the_windows_target_no_question_is_asked() {
+        let mut app = App::new();
+        app.pe_enabled = false;
+        app.new_file();
+        assert!(!app.new_file_prompt, "une seule réponse possible, donc pas de question");
+        assert!(app.source.contains("_start"), "squelette ELF");
+        assert_eq!(app.target, Target::Linux);
+    }
+
+    /// Avec les deux formats offerts, le nouveau fichier demande lequel — et ne
+    /// touche à rien tant que la réponse n'est pas venue.
+    #[test]
+    fn with_both_formats_the_question_is_asked_before_anything_changes() {
+        let mut app = App::new();
+        app.pe_enabled = true;
+        app.source = "; mon travail\n".to_string();
+        app.mark_saved();
+
+        app.new_file();
+
+        assert!(app.new_file_prompt, "la question doit être posée");
+        assert_eq!(app.source, "; mon travail\n", "rien n'est écrasé avant la réponse");
+    }
+
+    /// Chaque réponse pose SON squelette et SA cible : un fichier PE qui
+    /// s'assemblerait en ELF n'irait pas plus loin que la première erreur de
+    /// nasm, et c'est exactement ce qu'on veut éviter à un débutant.
+    #[test]
+    fn each_answer_lays_down_its_own_skeleton_and_target() {
+        for (target, needle) in [
+            (Target::Linux, "syscall"),
+            (Target::Windows, "ExitProcess"),
+            (Target::WindowsGui, "MessageBoxA"),
+        ] {
+            let mut app = App::new();
+            app.pe_enabled = true;
+            app.new_file();
+
+            app.create_new_file(target);
+
+            assert!(!app.new_file_prompt, "la boîte se referme sur la réponse");
+            assert_eq!(app.target, target, "la cible suit le squelette");
+            assert!(
+                app.source.contains(needle),
+                "squelette {target:?} : « {needle} » attendu, source :\n{}",
+                app.source
+            );
+            assert!(!app.dirty(), "un squelette n'est pas encore du travail");
+            assert_eq!(
+                app.src_path.extension().and_then(|e| e.to_str()),
+                Some("asm")
+            );
+        }
+    }
+
+    /// Les trois squelettes doivent s'ASSEMBLER tels quels : un point de départ
+    /// qui ne compile pas est pire que pas de point de départ du tout.
+    #[test]
+    fn every_skeleton_assembles_as_is() {
+        use std::path::PathBuf;
+        for (target, tag) in [
+            (Target::Linux, "elf"),
+            (Target::Windows, "pe"),
+            (Target::WindowsGui, "pe-gui"),
+        ] {
+            let mut app = App::new();
+            app.pe_enabled = true;
+            app.create_new_file(target);
+
+            let dir = PathBuf::from(format!("build/squelette-{tag}"));
+            std::fs::create_dir_all(&dir).expect("dossier de travail");
+            app.out_dir = dir.clone();
+            app.src_path = dir.join("sans-titre.asm");
+            app.build();
+
+            assert!(
+                app.binary.is_some(),
+                "squelette {target:?} : l'assemblage échoue\n{}",
+                app.console
+            );
+        }
     }
 }
 

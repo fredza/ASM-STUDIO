@@ -114,6 +114,7 @@ impl App {
             return;
         }
 
+        let mut open_lesson: Option<crate::tutorial::Lesson> = None;
         let (done, total) = exercise::tally(&self.checks);
         let verified = !self.checks.is_empty();
         let all_ok = verified && done == total;
@@ -146,6 +147,32 @@ impl App {
                 if let Some(s) = &self.exercise.statement {
                     card(ui, |ui| {
                         ui.label(RichText::new(s).size(12.5));
+                    });
+                    ui.add_space(6.0);
+                }
+
+                // La leçon dont relève cet exercice. C'est la réciproque du
+                // « S'entraîner » des leçons : l'élève qui ouvre un exercice
+                // par l'explorateur, sans savoir par quel bout le prendre,
+                // retrouve d'un clic ce qui l'explique.
+                if let Some(lesson) = self.lesson_of_current_file() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(tr("Leçon :", "Lesson:", "Lección:"))
+                                .small()
+                                .weak(),
+                        );
+                        if ui
+                            .link(RichText::new(lesson.title.get(lang)).small())
+                            .on_hover_text(tr(
+                                "Ouvre la leçon qui explique cette notion",
+                                "Open the lesson that explains this topic",
+                                "Abre la lección que explica este tema",
+                            ))
+                            .clicked()
+                        {
+                            open_lesson = Some(lesson.clone());
+                        }
                     });
                     ui.add_space(6.0);
                 }
@@ -239,6 +266,19 @@ impl App {
                     }
                 }
             });
+
+        if let Some(lesson) = open_lesson {
+            self.tutorial_enabled = true;
+            self.tutorial_current = Some(lesson.id.to_string());
+            self.save_settings();
+        }
+    }
+
+    /// Leçon dont relève le fichier actuellement ouvert, s'il s'agit d'un
+    /// exercice rattaché au parcours.
+    fn lesson_of_current_file(&self) -> Option<crate::tutorial::Lesson> {
+        let name = self.src_path.file_name()?.to_str()?;
+        crate::tutorial::lesson_of_exercise(name)
     }
 }
 
@@ -332,8 +372,14 @@ _start:
             let t = Panel::Exercise.title(lang);
             assert!(!t.is_empty(), "titre manquant en {lang:?}");
         }
-        // Au pluriel, comme demandé.
-        assert_eq!(Panel::Exercise.title(crate::i18n::Lang::Fr), "Exercices");
+        // Le titre nomme les deux, et au pluriel : le panneau héberge le
+        // parcours ET les attentes du fichier courant. Ne mentionner que les
+        // exercices avait une conséquence concrète — un élève qui avait écarté
+        // le bandeau d'accueil ne retrouvait plus le tutoriel.
+        assert_eq!(
+            Panel::Exercise.title(crate::i18n::Lang::Fr),
+            "Tutoriel / Exercices"
+        );
 
         let mut app = App::new();
         let ctx = egui::Context::default();
@@ -371,7 +417,9 @@ _start:
         use crate::app::dock::Panel;
         let app = App::new();
         assert!(app.panel_is_open(Panel::Exercise), "présent dès le départ");
-        assert_eq!(Panel::ALL.len(), 14, "quatorze panneaux, plus quinze");
+        // Le compte est figé pour qu'un panneau ajouté sans être inscrit dans
+        // `ALL` — donc absent du menu Panneaux et de la palette — se voie.
+        assert_eq!(Panel::ALL.len(), 16, "seize panneaux, ni plus ni moins");
     }
 
     /// Un fichier ordinaire ne déclenche ni panneau ni vérification.

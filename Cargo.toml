@@ -1,6 +1,6 @@
 [package]
 name = "asm_studio"
-version = "0.4.6"
+version = "0.4.7-beta.4"
 edition = "2024"
 # Licence propre au projet, hors nomenclature SPDX : le fichier fait foi.
 license-file = "LICENSE.md"
@@ -39,7 +39,12 @@ libc = "0.2"
 # sans lui, capstone est bâti en mode « diet », sans les mnémoniques en clair,
 # et le panneau de désassemblage n'aurait plus rien à afficher.
 capstone = { version = "0.14", default-features = false, features = ["full", "std", "arch_x86"] }
-object = "0.40"
+# « write » n'est pas dans les features par défaut : il sert au lieur PE
+# (src/pe_link.rs), qui produit l'exécutable Windows sans outil externe — ni
+# lld-link, ni les bibliothèques d'import du SDK Microsoft, introuvables sur la
+# machine d'un élève sous Linux. Coût mesuré sur le binaire de distribution :
+# environ 90 Ko.
+object = { version = "0.40", features = ["write"] }
 # Dialogues fichiers natifs via le portail XDG (GNOME/Wayland), sans GTK.
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # Pilote le futur AsyncFileDialog sur un thread de fond (bloque ce thread, pas l'UI).
@@ -50,4 +55,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 egui_dock = "0.18"
 base64 = "0.22"
+# Lecture du presse-papiers (bouton « Coller » de la boîte d'activation). egui
+# sait écrire dans le presse-papiers mais pas le lire : il n'expose le collage
+# que par l'événement clavier, ce qui ne permet pas de le déclencher depuis un
+# bouton. arboard est déjà là — eframe s'en sert en interne — donc la
+# dépendance directe ne coûte rien au binaire.
+arboard = { version = "3", default-features = false }
 ed25519-dalek = "2"

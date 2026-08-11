@@ -16,6 +16,7 @@ use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nix::sys::ptrace;
@@ -230,6 +231,75 @@ impl MemRegion {
     }
 }
 
+/// Unité de calcul flottant et vectorielle : les seize registres XMM (SSE) et
+/// la pile x87, telles que `PTRACE_GETFPREGS` les rend (format `FXSAVE`).
+///
+/// Les octets sont conservés bruts. Un XMM n'a pas de type : c'est
+/// l'instruction qui décide s'il porte deux `double`, quatre `float` ou seize
+/// octets, et c'est l'interprétation — donc l'affichage — qui tranche
+/// (voir [`crate::simd`]). Convertir ici figerait ce choix trop tôt.
+#[derive(Clone, PartialEq)]
+pub struct FpRegisters {
+    /// XMM0 à XMM15, 128 bits chacun, en ordre naturel (index = numéro).
+    pub xmm: [u128; 16],
+    /// Registres physiques de la pile x87, 80 bits chacun. Attention :
+    /// l'index est le registre *physique*, pas `ST(i)` — la correspondance
+    /// passe par TOP ([`Self::top`]).
+    pub st: [[u8; 10]; 8],
+    /// Mot de contrôle x87 (précision, arrondi, masques d'exception).
+    pub fcw: u16,
+    /// Mot d'état x87 : contient TOP (bits 11-13) et les exceptions levées.
+    pub fsw: u16,
+    /// Tag word *abrégé* du format FXSAVE : un bit par registre physique,
+    /// à 1 quand il est occupé (le format FSAVE en utilisait deux).
+    pub ftw: u8,
+    /// Mot de contrôle/état SSE : arrondi, exceptions, DAZ/FTZ.
+    pub mxcsr: u32,
+}
+
+impl FpRegisters {
+    fn from_raw(r: &libc::user_fpregs_struct) -> Self {
+        let mut xmm = [0u128; 16];
+        for (i, slot) in xmm.iter_mut().enumerate() {
+            // Chaque registre occupe quatre `u32` consécutifs, poids faible en tête.
+            let mut bytes = [0u8; 16];
+            for (j, w) in r.xmm_space[i * 4..i * 4 + 4].iter().enumerate() {
+                bytes[j * 4..j * 4 + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            *slot = u128::from_le_bytes(bytes);
+        }
+        let mut st = [[0u8; 10]; 8];
+        for (i, slot) in st.iter_mut().enumerate() {
+            // Un registre x87 occupe 80 bits utiles dans un créneau de 128.
+            let mut bytes = [0u8; 16];
+            for (j, w) in r.st_space[i * 4..i * 4 + 4].iter().enumerate() {
+                bytes[j * 4..j * 4 + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            slot.copy_from_slice(&bytes[..10]);
+        }
+        FpRegisters {
+            xmm,
+            st,
+            fcw: r.cwd,
+            fsw: r.swd,
+            ftw: r.ftw as u8,
+            mxcsr: r.mxcsr,
+        }
+    }
+
+    /// Sommet de la pile x87 : `ST(0)` est le registre physique `top()`.
+    pub fn top(&self) -> usize {
+        ((self.fsw >> 11) & 0b111) as usize
+    }
+
+    /// Contenu de `ST(i)` (0 = sommet), avec le registre physique qui le porte
+    /// et son occupation d'après le tag word.
+    pub fn st_reg(&self, i: usize) -> (usize, [u8; 10], bool) {
+        let phys = (self.top() + i) % 8;
+        (phys, self.st[phys], self.ftw & (1 << phys) != 0)
+    }
+}
+
 /// État complet du CPU à une étape donnée, conservé pour la timeline (M5).
 ///
 /// La fenêtre de pile est un tableau inline et non un `Vec` : un snapshot est
@@ -240,11 +310,24 @@ pub struct Snapshot {
     pub regs: Registers,
     /// Fenêtre de pile (`STACK_WINDOW` mots de 64 bits) à partir de RSP.
     pub stack: [u64; STACK_WINDOW],
+    /// Registres SSE/x87 du moment — partagés avec les snapshots voisins tant
+    /// qu'ils ne changent pas.
+    ///
+    /// Le bloc pèse 400 octets, contre 272 pour tout le reste du snapshot : le
+    /// copier à chaque instruction triplerait la timeline pour rien, puisque la
+    /// quasi-totalité des programmes ne touche jamais à un XMM. On le lit donc
+    /// à chaque pas (il faut bien savoir s'il a changé) mais on ne le *garde*
+    /// qu'une fois : tant que les octets sont identiques, tous les snapshots
+    /// pointent le même `Arc`. Un programme sans flottants paie huit octets par
+    /// pas ; un programme vectoriel paie le prix plein, et c'est justement
+    /// celui qui veut voir la timeline de ses XMM.
+    pub fp: Option<Arc<FpRegisters>>,
 }
 
 /// Plafond de l'historique. Au-delà, [`Debugger::step`] refuse d'avancer
 /// plutôt que de laisser une boucle infinie remplir la RAM : un snapshot pèse
-/// 272 octets, ce plafond borne donc la timeline à ~136 Mo. Il ne peut pas
+/// 280 octets, ce plafond borne donc la timeline à ~140 Mo — plus les blocs
+/// flottants effectivement distincts, un par changement de XMM. Il ne peut pas
 /// être contourné en oubliant les vieux snapshots — la timeline et
 /// `resume_here` indexent l'historique par numéro d'étape absolu.
 pub const MAX_HISTORY: usize = 500_000;
@@ -325,7 +408,12 @@ impl Debugger {
                         libc::dup2(child_out, 2);
                     }
                 }
-                let _ = ptrace::traceme();
+                // Sans PTRACE_TRACEME, execve réussit mais le parent ne reçoit
+                // jamais le SIGTRAP attendu. Ne pas présenter ce refus de
+                // permission comme un échec mystérieux d'execve.
+                if ptrace::traceme().is_err() {
+                    unsafe { libc::_exit(126) };
+                }
                 let _ = execv(&cpath, std::slice::from_ref(&cpath));
                 // execve a échoué : on sort sans dérouler la pile du parent.
                 unsafe { libc::_exit(127) };
@@ -335,9 +423,17 @@ impl Debugger {
                 // 1re instruction. Si l'enfant est déjà mort, execve a échoué.
                 match waitpid(child, None).map_err(|e| format!("waitpid initial: {e}"))? {
                     WaitStatus::Stopped(_, _) => {}
+                    WaitStatus::Exited(_, 126) => {
+                        return Err(
+                            "le débogage est interdit par le système (ptrace refusé)".to_string()
+                        );
+                    }
+                    WaitStatus::Exited(_, 127) => {
+                        return Err("le programme n'a pas démarré (execve a échoué)".to_string());
+                    }
                     WaitStatus::Exited(_, code) => {
                         return Err(format!(
-                            "le programme n'a pas démarré (execve a échoué, code {code})"
+                            "le programme s'est terminé avant le débogage (code {code})"
                         ));
                     }
                     other => return Err(format!("état initial inattendu: {other:?}")),
@@ -347,7 +443,7 @@ impl Debugger {
                 let io = pipes.map(Pipes::into_parent_side);
                 let mem = open_mem(child)?;
                 let regs = read_regs(child)?;
-                let snap = snapshot_of(&mem, &regs);
+                let snap = snapshot_of(&mem, &regs, read_fpregs(child), None);
                 Ok(Debugger {
                     child,
                     state: RunState::Stopped,
@@ -452,7 +548,7 @@ impl Debugger {
                 let regs = read_regs(self.child)?;
                 // Le snapshot de l'instant de la faute est conservé : l'élève
                 // doit pouvoir inspecter les registres qui l'ont causée.
-                let snap = snapshot_of(&self.mem, &regs);
+                let snap = self.capture(&regs);
                 self.history.push(snap);
                 self.state = RunState::Faulted(Fault {
                     signal: sig,
@@ -462,7 +558,7 @@ impl Debugger {
             }
             _ => {
                 let regs = read_regs(self.child)?;
-                let snap = snapshot_of(&self.mem, &regs);
+                let snap = self.capture(&regs);
                 self.history.push(snap);
                 self.state = RunState::Stopped;
             }
@@ -475,9 +571,7 @@ impl Debugger {
         let Some(io) = self.io.as_mut() else { return };
         let mut buf = [0u8; 8192];
         loop {
-            let n = unsafe {
-                libc::read(io.out.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len())
-            };
+            let n = unsafe { libc::read(io.out.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
             match n {
                 // 0 = EOF (le programme est mort), < 0 = EAGAIN sur un tuyau
                 // vide dans le cas normal : dans les deux cas il n'y a plus
@@ -691,10 +785,31 @@ impl Debugger {
         self.refresh_head()
     }
 
+    /// Capture l'état courant du processus tracé, en réutilisant le bloc
+    /// flottant du snapshot précédent s'il n'a pas changé.
+    fn capture(&self, regs: &Registers) -> Snapshot {
+        snapshot_of(
+            &self.mem,
+            regs,
+            read_fpregs(self.child),
+            self.history.last(),
+        )
+    }
+
     /// Recharge le snapshot de tête depuis le processus (après une édition).
     fn refresh_head(&mut self) -> Result<(), String> {
         let regs = read_regs(self.child)?;
-        let snap = snapshot_of(&self.mem, &regs);
+        // Le snapshot remplacé est encore en queue : c'est bien celui d'avant
+        // qui doit servir de référence pour le partage du bloc flottant.
+        let snap = snapshot_of(
+            &self.mem,
+            &regs,
+            read_fpregs(self.child),
+            self.history
+                .len()
+                .checked_sub(2)
+                .and_then(|i| self.history.get(i)),
+        );
         if let Some(h) = self.history.last_mut() {
             *h = snap;
         }
@@ -705,7 +820,8 @@ impl Debugger {
     /// mémoire unifiée. Les régions sans intérêt pédagogique (bibliothèques
     /// partagées, vvar/vdso) sont écartées afin de garder un schéma lisible.
     pub fn mem_regions(&self) -> Vec<MemRegion> {
-        let Ok(maps) = std::fs::read_to_string(format!("/proc/{}/maps", self.child.as_raw())) else {
+        let Ok(maps) = std::fs::read_to_string(format!("/proc/{}/maps", self.child.as_raw()))
+        else {
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -713,7 +829,9 @@ impl Debugger {
             let mut it = line.split_whitespace();
             let Some(range) = it.next() else { continue };
             let Some(perms) = it.next() else { continue };
-            let Some((s, e)) = range.split_once('-') else { continue };
+            let Some((s, e)) = range.split_once('-') else {
+                continue;
+            };
             let (Ok(start), Ok(end)) = (u64::from_str_radix(s, 16), u64::from_str_radix(e, 16))
             else {
                 continue;
@@ -872,6 +990,15 @@ fn read_regs(pid: Pid) -> Result<Registers, String> {
     Ok(Registers::from_raw(&raw))
 }
 
+/// Lit les registres SSE/x87. Rend `None` plutôt qu'une erreur : un processus
+/// qui vient de mourir n'a plus de registres flottants, et ce n'est pas une
+/// raison pour perdre le snapshot des registres généraux.
+fn read_fpregs(pid: Pid) -> Option<FpRegisters> {
+    ptrace::getregset::<ptrace::regset::NT_PRFPREG>(pid)
+        .ok()
+        .map(|raw| FpRegisters::from_raw(&raw))
+}
+
 /// Lit `len` octets à `addr` via un `/proc/<pid>/mem` déjà ouvert.
 fn read_mem_at(mem: &File, addr: u64, len: usize) -> Result<Vec<u8>, String> {
     use std::os::unix::fs::FileExt;
@@ -898,7 +1025,20 @@ fn write_mem_at(mem: &File, addr: u64, bytes: &[u8]) -> Result<(), String> {
 /// Si elle déborde de la région mappée — RSP à moins de 128 octets du sommet —
 /// la lecture groupée échoue en bloc : on retombe alors mot par mot pour
 /// garder ce qui est lisible, plutôt que d'afficher une pile vide.
-fn snapshot_of(mem: &File, regs: &Registers) -> Snapshot {
+/// `previous` est le snapshot qui précède, s'il existe : quand les registres
+/// flottants n'ont pas bougé — le cas de presque toutes les instructions — son
+/// bloc est repris tel quel au lieu d'en allouer un identique.
+fn snapshot_of(
+    mem: &File,
+    regs: &Registers,
+    fp: Option<FpRegisters>,
+    previous: Option<&Snapshot>,
+) -> Snapshot {
+    let fp = match (fp, previous.and_then(|p| p.fp.as_ref())) {
+        (Some(new), Some(old)) if *old.as_ref() == new => Some(Arc::clone(old)),
+        (Some(new), _) => Some(Arc::new(new)),
+        (None, _) => None,
+    };
     let mut stack = [0u64; STACK_WINDOW];
     match read_mem_at(mem, regs.rsp, STACK_WINDOW * 8) {
         Ok(bytes) => {
@@ -918,6 +1058,7 @@ fn snapshot_of(mem: &File, regs: &Registers) -> Snapshot {
     Snapshot {
         regs: regs.clone(),
         stack,
+        fp,
     }
 }
 
@@ -933,8 +1074,12 @@ mod tests {
     #[test]
     fn step_through_example_sets_flags() {
         // Dossier dédié : évite toute collision avec les autres tests parallèles.
-        let out = assemble::assemble_with_includes(Path::new("examples/test.asm"), Path::new("build/test-dbg"), &[])
-            .expect("assemblage");
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/test.asm"),
+            Path::new("build/test-dbg"),
+            &[],
+        )
+        .expect("assemblage");
         let mut dbg = Debugger::launch(&out.binary).expect("launch");
 
         // mov rax,5 ; push rax ; mov rbx,8 ; cmp rax,rbx  => 4 steps jusqu'au cmp inclus.
@@ -962,8 +1107,12 @@ mod tests {
     /// capture bien la valeur empilée par `push rax`.
     #[test]
     fn history_records_snapshots_and_stack() {
-        let out = assemble::assemble_with_includes(Path::new("examples/test.asm"), Path::new("build/test-hist"), &[])
-            .expect("assemblage");
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/test.asm"),
+            Path::new("build/test-hist"),
+            &[],
+        )
+        .expect("assemblage");
         let mut dbg = Debugger::launch(&out.binary).expect("launch");
 
         assert_eq!(dbg.history.len(), 1, "état initial = 1 snapshot");
@@ -982,8 +1131,12 @@ mod tests {
     /// Après un brk qui agrandit le tas, le segment [heap] doit être détecté.
     #[test]
     fn heap_range_detected_after_brk() {
-        let out = assemble::assemble_with_includes(Path::new("examples/heap.asm"), Path::new("build/test-heap"), &[])
-            .expect("assemblage");
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/heap.asm"),
+            Path::new("build/test-heap"),
+            &[],
+        )
+        .expect("assemblage");
         let mut dbg = Debugger::launch(&out.binary).expect("launch");
 
         assert!(dbg.heap_range().is_none(), "pas de tas au démarrage");
@@ -1020,7 +1173,10 @@ mod tests {
             "la pile doit être détectée"
         );
         // Les régions sont triées et non vides.
-        assert!(regions.windows(2).all(|w| w[0].start <= w[1].start), "régions triées");
+        assert!(
+            regions.windows(2).all(|w| w[0].start <= w[1].start),
+            "régions triées"
+        );
         assert!(regions.iter().all(|r| r.size() > 0), "taille non nulle");
 
         // RIP pointe dans du code, RSP dans la pile : c'est ce que le schéma relie.
@@ -1173,7 +1329,9 @@ mod tests {
         let target = probe.regs().rip;
         drop(probe);
 
-        let done = dbg.run_until(1000, |regs| regs.rip == target).expect("run_until");
+        let done = dbg
+            .run_until(1000, |regs| regs.rip == target)
+            .expect("run_until");
         assert_eq!(done, 3, "trois instructions exécutées");
         assert_eq!(dbg.regs().rip, target, "arrêt sur l'adresse visée");
         assert_eq!(dbg.history.len(), 4, "un snapshot par pas, aucun trou");
@@ -1194,7 +1352,10 @@ mod tests {
         // Condition d'arrêt jamais remplie : seul le budget peut interrompre.
         let done = dbg.run_until(3, |_| false).expect("run_until");
         assert_eq!(done, 3, "exactement le budget");
-        assert!(dbg.is_ready(), "le programme est toujours là, prêt à continuer");
+        assert!(
+            dbg.is_ready(),
+            "le programme est toujours là, prêt à continuer"
+        );
     }
 
     /// Laboratoire mémoire : éditer un registre et écrire en mémoire.
@@ -1212,11 +1373,88 @@ mod tests {
         assert_eq!(dbg.regs().rax, 0xDEAD_BEEF, "RAX doit refléter l'édition");
 
         let rsp = dbg.regs().rsp;
-        dbg.write_mem(rsp, &[0x11, 0x22, 0x33, 0x44]).expect("write mem");
+        dbg.write_mem(rsp, &[0x11, 0x22, 0x33, 0x44])
+            .expect("write mem");
         assert_eq!(
             dbg.read_mem(rsp, 4).expect("read mem"),
             vec![0x11, 0x22, 0x33, 0x44],
             "la mémoire écrite doit être relue à l'identique"
         );
+    }
+
+    /// Les registres XMM sont bien lus, et bien lus *dans le bon ordre* : un
+    /// `addsd` écrit dans les 64 bits bas, un `paddd` dans les quatre cases de
+    /// 32 bits. Se tromper d'ordre passerait inaperçu à l'œil (des chiffres
+    /// s'affichent quand même) mais enseignerait le contraire de la vérité.
+    #[test]
+    fn xmm_registers_are_read_from_the_process() {
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/simd.asm"),
+            Path::new("build/test-simd"),
+            &[],
+        )
+        .expect("assemblage de simd.asm");
+        let mut dbg = Debugger::launch(&out.binary).expect("launch");
+
+        // Jusqu'au `mov rax, 60` : tous les calculs SSE sont faits.
+        for _ in 0..1000 {
+            if !dbg.is_alive() || dbg.regs().rax == 60 {
+                break;
+            }
+            dbg.step().expect("step");
+        }
+        let fp = dbg
+            .head()
+            .fp
+            .as_ref()
+            .expect("registres flottants disponibles");
+
+        // xmm0 = (2.0 + 3.0) × 2.0, dans la case basse ; la haute reste nulle.
+        assert_eq!(f64::from_bits(fp.xmm[0] as u64), 10.0, "xmm0 (double bas)");
+        assert_eq!(
+            fp.xmm[0] >> 64,
+            0,
+            "la moitié haute ne bouge pas sur un addsd"
+        );
+
+        // xmm2 = [1,2,3,4] + [10,20,30,40], quatre entiers de 32 bits.
+        let lanes: Vec<i32> = (0..4)
+            .map(|i| (fp.xmm[2] >> (32 * i)) as u32 as i32)
+            .collect();
+        assert_eq!(lanes, vec![11, 22, 33, 44], "paddd, case basse en premier");
+
+        // Et ce que l'élève lit dans le panneau dit la même chose.
+        assert_eq!(
+            crate::simd::lanes(fp.xmm[2], crate::simd::XmmView::I32),
+            vec!["11", "22", "33", "44"]
+        );
+        assert_eq!(
+            crate::simd::lanes(fp.xmm[0], crate::simd::XmmView::F64)[0],
+            "10"
+        );
+    }
+
+    /// Le bloc flottant est partagé tant qu'il ne change pas : un programme qui
+    /// n'utilise aucun XMM ne doit pas payer 400 octets par instruction.
+    #[test]
+    fn unchanged_fp_block_is_shared_across_snapshots() {
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/test.asm"),
+            Path::new("build/test-fpshare"),
+            &[],
+        )
+        .expect("assemblage");
+        let mut dbg = Debugger::launch(&out.binary).expect("launch");
+        for _ in 0..4 {
+            dbg.step().expect("step");
+        }
+        let first = dbg.history[0].fp.as_ref().expect("bloc flottant initial");
+        for (i, s) in dbg.history.iter().enumerate() {
+            let fp = s.fp.as_ref().expect("bloc flottant");
+            assert!(
+                Arc::ptr_eq(first, fp),
+                "snapshot {i} : test.asm ne touche à aucun XMM, le bloc doit être le même objet"
+            );
+        }
     }
 }

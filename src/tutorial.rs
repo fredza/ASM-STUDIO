@@ -35,14 +35,24 @@ pub enum Level {
     Intermediate,
     Advanced,
     Expert,
+    /// Parcours à part : le même assembleur, mais assemblé pour Windows.
+    ///
+    /// Un niveau plutôt qu'un champ sur chaque leçon, parce que c'en est un :
+    /// on n'y va qu'après avoir compris les registres, la pile et les appels,
+    /// et tout ce qu'on y apprend — convention d'appel Microsoft, imports de
+    /// DLL, espace d'ombre — n'a de sens qu'une fois le modèle Linux acquis.
+    /// La cible d'assemblage s'en déduit ([`Lesson::target`]), sans table
+    /// annexe à tenir à jour.
+    Windows,
 }
 
 impl Level {
-    pub const ALL: [Level; 4] = [
+    pub const ALL: [Level; 5] = [
         Level::Beginner,
         Level::Intermediate,
         Level::Advanced,
         Level::Expert,
+        Level::Windows,
     ];
 
     pub fn title(self, lang: Lang) -> &'static str {
@@ -51,9 +61,14 @@ impl Level {
             Level::Intermediate => i18n::tr3(lang, "Intermédiaire", "Intermediate", "Intermedio"),
             Level::Advanced => i18n::tr3(lang, "Avancé", "Advanced", "Avanzado"),
             Level::Expert => i18n::tr3(lang, "Expert", "Expert", "Experto"),
+            Level::Windows => i18n::tr3(lang, "Windows (PE64)", "Windows (PE64)", "Windows (PE64)"),
         }
     }
 
+    /// Ce niveau demande-t-il que l'assemblage Windows soit activé ?
+    pub fn needs_pe(self) -> bool {
+        self == Level::Windows
+    }
 }
 
 /// Panneau qu'une leçon demande d'ouvrir, désigné par sa clé stable.
@@ -84,6 +99,17 @@ impl Lesson {
     /// Vrai si la leçon a du contenu exécutable à charger.
     pub fn has_starter(&self) -> bool {
         self.starter.is_some()
+    }
+
+    /// Cible d'assemblage que la leçon suppose. Charger une leçon Windows bascule
+    /// l'IDE sur la bonne cible : sans cela, `nasm -f elf64` refuserait son
+    /// `extern ExitProcess`, et l'élève lirait une erreur qui ne parle pas de
+    /// ce qu'il apprend.
+    pub fn target(&self) -> crate::assemble::Target {
+        match self.level {
+            Level::Windows => crate::assemble::Target::Windows,
+            _ => crate::assemble::Target::Linux,
+        }
     }
 }
 
@@ -926,6 +952,156 @@ _start:
     mov rax, 60
     xor rdi, rdi
     syscall
+"#;
+
+// ----------------------------------------------------------------------
+//  Parcours Windows : le même assembleur, un autre système
+// ----------------------------------------------------------------------
+//
+//  Ces programmes s'assemblent en PE64 (`nasm -f win64` + le lieur intégré) et
+//  s'exécutent sous Wine quand il est installé. Leurs attentes ne portent donc
+//  que sur ce qui reste observable sans débogueur : le code de sortie et le
+//  texte du programme. C'est une contrainte, et c'est aussi la leçon — sous
+//  Windows, ASM Studio regarde le résultat, pas les registres.
+
+const L_WIN_PREMIER: &str = r#";@titre Premier programme Windows
+;@enonce Ce programme se termine avec le code 0. Fais-lui rendre 7, comme dans
+;@enonce la toute première leçon — mais sans « syscall ».
+;@attendu exit == 7
+
+; Windows ne se parle pas directement. Là où Linux met un numéro dans RAX et
+; exécute « syscall », un programme Windows APPELLE une fonction d'une DLL :
+;   extern ExitProcess     -> déclare qu'elle vient d'ailleurs
+;   call   ExitProcess     -> le lieur l'inscrit dans la table d'import
+;
+; Le « sub rsp, 40 » n'est pas décoratif : voir la leçon sur la pile.
+bits 64
+default rel
+
+section .text
+    global main
+    extern ExitProcess
+
+main:
+    sub     rsp, 40
+    mov     ecx, 0          ; TODO : le code de sortie voulu
+    call    ExitProcess
+"#;
+
+const L_WIN_APPEL: &str = r#";@titre La convention d'appel Microsoft
+;@enonce Le premier argument ne passe pas par le même registre que sous Linux.
+;@enonce Corrige l'appel pour que le programme rende 42.
+;@attendu exit == 42
+
+; Deux conventions, deux ordres de registres, pour les mêmes arguments :
+;
+;   Linux (System V) :  RDI  RSI  RDX  RCX  R8  R9
+;   Windows (MS x64) :  RCX  RDX  R8   R9   puis la pile
+;
+; C'est l'erreur la plus fréquente en passant d'un monde à l'autre : le
+; programme s'assemble, se lie, s'exécute — et travaille sur la mauvaise valeur.
+bits 64
+default rel
+
+section .text
+    global main
+    extern ExitProcess
+
+main:
+    sub     rsp, 40
+    mov     edi, 42         ; TODO : le réflexe Linux ; quel registre attend Windows ?
+    call    ExitProcess
+"#;
+
+const L_WIN_IMPORTS: &str = r#";@titre Importer une fonction d'une DLL
+;@enonce strlen mesure la chaîne dont l'adresse est dans RCX. Le programme
+;@enonce mesure la mauvaise : vise « mot » pour que le code de sortie soit 7.
+;@attendu exit == 7
+
+; Un « extern » ne contient aucun code : il dit au lieur d'inscrire le nom dans
+; la TABLE D'IMPORT du .exe. Au chargement, Windows y écrit l'adresse réelle de
+; la fonction — c'est l'IAT. Ouvre le panneau FORMAT après avoir assemblé : les
+; fonctions importées y sont listées, avec la DLL qui les fournit.
+;
+; ASM Studio connaît les fonctions usuelles de kernel32, user32 et msvcrt. Pour
+; toute autre, le nom porte sa bibliothèque : « extern gdi32$CreatePen ».
+bits 64
+default rel
+
+section .data
+    mot     db "Bonjour", 0     ; 7 lettres
+    autre   db "Salut", 0       ; 5 lettres
+
+section .text
+    global main
+    extern strlen
+    extern ExitProcess
+
+main:
+    sub     rsp, 40
+    lea     rcx, [autre]    ; TODO : mesurer « mot », pas « autre »
+    call    strlen
+    mov     ecx, eax        ; le résultat de strlen devient le code de sortie
+    call    ExitProcess
+"#;
+
+const L_WIN_FORMAT: &str = r#";@titre Ce que contient un .exe
+;@enonce Le code de sortie doit valoir 12, lu depuis la mémoire. Le programme
+;@enonce lit la mauvaise variable.
+;@attendu exit == 12
+
+; Assemble (Ctrl+B), puis regarde le panneau FORMAT. Un PE et un ELF répondent
+; aux mêmes questions, avec d'autres mots :
+;
+;   .text   le code             (les deux)
+;   .data   les variables       (les deux)
+;   .bss    zéro octet dans le fichier, de la place en mémoire  (les deux)
+;   .idata  la table d'import   (PE seulement — ELF a .plt/.got)
+;
+; Le point d'entrée d'un PE est une RVA : une adresse RELATIVE à la base de
+; l'image (0x140000000 ici). Celui d'un ELF est une adresse absolue.
+bits 64
+default rel
+
+section .data
+    douze   dq 12
+    treize  dq 13
+
+section .text
+    global main
+    extern ExitProcess
+
+main:
+    sub     rsp, 40
+    mov     rcx, [treize]   ; TODO : c'est « douze » qu'il faut lire
+    call    ExitProcess
+"#;
+
+const L_WIN_PILE: &str = r#";@titre L'espace d'ombre
+;@enonce Réserve les 40 octets attendus avant les appels. Le programme doit
+;@enonce rendre 5, et le code doit contenir « sub rsp, 40 ».
+;@attendu exit == 5
+;@requis sub rsp, 40
+
+; Avant TOUT appel, Windows exige que l'appelant réserve 32 octets sur la pile :
+; l'espace d'ombre. L'appelé peut y ranger les quatre premiers arguments, même
+; s'il ne le fait pas. C'est de la place que l'appelant doit à l'appelé.
+;
+; Pourquoi 40 et non 32 ? Parce que RSP doit être multiple de 16 au moment du
+; « call ». À l'entrée de main, l'adresse de retour empilée a décalé RSP de 8 :
+; 32 + 8 remet le compte juste. Oublier ces huit octets fait planter les appels
+; qui utilisent des instructions SSE alignées — c'est-à-dire beaucoup.
+bits 64
+default rel
+
+section .text
+    global main
+    extern ExitProcess
+
+main:
+    sub     rsp, 0          ; TODO : réserver l'espace d'ombre et l'alignement
+    mov     ecx, 5
+    call    ExitProcess
 "#;
 
 const L_TAILLES: &str = r#";@titre Les tailles
@@ -1950,12 +2126,306 @@ pub fn catalogue() -> Vec<Lesson> {
             panels: vec!["editor", "timeline", "instruction"],
             starter: Some(L_PERFORMANCE),
         },
+        Lesson {
+            id: "win_premier",
+            level: Level::Windows,
+            title: t!(
+                "Premier programme Windows",
+                "First Windows program",
+                "Primer programa Windows"
+            ),
+            goal: t!(
+                "Assembler un exécutable Windows et le terminer proprement, sans appel système.",
+                "Assemble a Windows executable and end it cleanly, without a system call.",
+                "Ensamblar un ejecutable de Windows y terminarlo limpiamente, sin llamada al sistema."
+            ),
+            steps: vec![
+                t!(
+                    "Choisis la cible « Windows — PE64 console » (menu Exécution ▸ Cible). Elle est déjà posée par cette leçon.",
+                    "Pick the \"Windows — PE64 console\" target (Run ▸ Target menu). This lesson already sets it.",
+                    "Elige el destino «Windows — PE64 consola» (menú Ejecución ▸ Destino). Esta lección ya lo pone."
+                ),
+                t!(
+                    "Sous Linux, terminer un programme c'est « mov rax, 60 » puis « syscall ». Sous Windows, c'est appeler ExitProcess, une fonction de kernel32.dll.",
+                    "On Linux, ending a program is \"mov rax, 60\" then \"syscall\". On Windows, it is calling ExitProcess, a function of kernel32.dll.",
+                    "En Linux, terminar un programa es «mov rax, 60» y «syscall». En Windows, es llamar a ExitProcess, una función de kernel32.dll."
+                ),
+                t!(
+                    "« extern ExitProcess » ne contient pas de code : il demande au lieur d'inscrire ce nom dans la table d'import du .exe.",
+                    "\"extern ExitProcess\" holds no code: it asks the linker to record that name in the .exe import table.",
+                    "«extern ExitProcess» no contiene código: pide al enlazador que inscriba ese nombre en la tabla de importación del .exe."
+                ),
+                t!(
+                    "Assemble avec Ctrl+B. Si Wine est installé, F5 exécute le programme et son code de sortie apparaît dans la console. Sinon, le panneau FORMAT montre ce que contient le fichier produit.",
+                    "Assemble with Ctrl+B. If Wine is installed, F5 runs the program and its exit code shows in the console. Otherwise, the FORMAT panel shows what the produced file holds.",
+                    "Ensambla con Ctrl+B. Si Wine está instalado, F5 ejecuta el programa y su código de salida aparece en la consola. Si no, el panel FORMATO muestra lo que contiene el archivo."
+                ),
+                t!(
+                    "Il n'y a pas de pas-à-pas ici : Wine exécute le programme, il ne le déroule pas instruction par instruction. Les registres et la timeline restent à la cible Linux.",
+                    "There is no single-stepping here: Wine runs the program, it does not walk it instruction by instruction. Registers and timeline stay with the Linux target.",
+                    "Aquí no hay paso a paso: Wine ejecuta el programa, no lo recorre instrucción por instrucción. Los registros y la línea de tiempo quedan en el destino Linux."
+                ),
+            ],
+            panels: vec!["editor", "console", "format"],
+            starter: Some(L_WIN_PREMIER),
+        },
+        Lesson {
+            id: "win_appel",
+            level: Level::Windows,
+            title: t!(
+                "La convention d'appel Microsoft",
+                "The Microsoft calling convention",
+                "La convención de llamada de Microsoft"
+            ),
+            goal: t!(
+                "Passer les arguments dans les registres qu'attend Windows, et non ceux de Linux.",
+                "Pass arguments in the registers Windows expects, not Linux's.",
+                "Pasar los argumentos en los registros que espera Windows, no los de Linux."
+            ),
+            steps: vec![
+                t!(
+                    "Linux passe les six premiers arguments par RDI, RSI, RDX, RCX, R8, R9. Windows par RCX, RDX, R8, R9, puis la pile.",
+                    "Linux passes the first six arguments in RDI, RSI, RDX, RCX, R8, R9. Windows uses RCX, RDX, R8, R9, then the stack.",
+                    "Linux pasa los seis primeros argumentos por RDI, RSI, RDX, RCX, R8, R9. Windows usa RCX, RDX, R8, R9 y luego la pila."
+                ),
+                t!(
+                    "Rien ne signale l'erreur : le programme s'assemble, se lie et s'exécute — avec la mauvaise valeur. C'est le premier piège du passage d'un monde à l'autre.",
+                    "Nothing flags the mistake: the program assembles, links and runs — with the wrong value. That is the first trap when moving between the two worlds.",
+                    "Nada señala el error: el programa se ensambla, se enlaza y se ejecuta — con el valor equivocado. Es la primera trampa al pasar de un mundo a otro."
+                ),
+                t!(
+                    "Le cinquième argument et les suivants vont sur la pile, APRÈS l'espace d'ombre — c'est le « mov qword [rsp + 32] » qu'on voit dans les appels à WriteFile.",
+                    "The fifth argument onwards goes on the stack, AFTER the shadow space — that is the \"mov qword [rsp + 32]\" seen in WriteFile calls.",
+                    "El quinto argumento en adelante va a la pila, DESPUÉS del espacio de sombra — es el «mov qword [rsp + 32]» que se ve en las llamadas a WriteFile."
+                ),
+                t!(
+                    "Le retour se lit dans RAX des deux côtés : c'est le seul point commun des deux conventions.",
+                    "The return value is read from RAX on both sides: the only thing the two conventions share.",
+                    "El valor de retorno se lee en RAX en ambos lados: lo único que comparten las dos convenciones."
+                ),
+            ],
+            panels: vec!["editor", "console", "disasm"],
+            starter: Some(L_WIN_APPEL),
+        },
+        Lesson {
+            id: "win_pile",
+            level: Level::Windows,
+            title: t!("L'espace d'ombre", "The shadow space", "El espacio de sombra"),
+            goal: t!(
+                "Comprendre pourquoi tout appel Windows commence par réserver 40 octets.",
+                "Understand why every Windows call starts by reserving 40 bytes.",
+                "Entender por qué toda llamada de Windows empieza reservando 40 bytes."
+            ),
+            steps: vec![
+                t!(
+                    "L'appelant doit réserver 32 octets pour l'appelé, même si celui-ci ne s'en sert pas : c'est l'espace d'ombre, de la place où ranger les quatre premiers arguments.",
+                    "The caller must reserve 32 bytes for the callee, even if it never uses them: that is the shadow space, room to spill the first four arguments.",
+                    "El llamador debe reservar 32 bytes para el llamado, aunque no los use: es el espacio de sombra, sitio para volcar los cuatro primeros argumentos."
+                ),
+                t!(
+                    "40 et non 32 : RSP doit être multiple de 16 au moment du « call », et l'adresse de retour empilée à l'entrée de main l'a décalé de 8.",
+                    "40 rather than 32: RSP must be a multiple of 16 at the \"call\", and the return address pushed on entry to main shifted it by 8.",
+                    "40 y no 32: RSP debe ser múltiplo de 16 en el «call», y la dirección de retorno apilada al entrar en main lo desplazó 8."
+                ),
+                t!(
+                    "Un appel mal aligné plante sur les instructions SSE alignées que la bibliothèque système utilise — donc rarement à l'endroit où l'erreur a été commise.",
+                    "A misaligned call faults on the aligned SSE instructions the system library uses — so rarely where the mistake was made.",
+                    "Una llamada mal alineada falla en las instrucciones SSE alineadas que usa la biblioteca del sistema — rara vez donde se cometió el error."
+                ),
+                t!(
+                    "Linux n'a pas d'espace d'ombre, mais exige le même alignement sur 16 octets : la moitié de la règle est commune.",
+                    "Linux has no shadow space, but demands the same 16-byte alignment: half the rule is shared.",
+                    "Linux no tiene espacio de sombra, pero exige la misma alineación de 16 bytes: la mitad de la regla es común."
+                ),
+            ],
+            panels: vec!["editor", "console", "disasm"],
+            starter: Some(L_WIN_PILE),
+        },
+        Lesson {
+            id: "win_imports",
+            level: Level::Windows,
+            title: t!(
+                "Importer une fonction d'une DLL",
+                "Importing a function from a DLL",
+                "Importar una función de una DLL"
+            ),
+            goal: t!(
+                "Appeler du code qui n'est pas dans le programme, et voir comment le .exe le réclame.",
+                "Call code that is not in the program, and see how the .exe asks for it.",
+                "Llamar a código que no está en el programa, y ver cómo el .exe lo reclama."
+            ),
+            steps: vec![
+                t!(
+                    "Le .exe ne contient pas le code de strlen : il contient son NOM, et une case vide que Windows remplira à son adresse au chargement (l'IAT).",
+                    "The .exe holds no code for strlen: it holds its NAME, and an empty slot Windows fills with its address at load time (the IAT).",
+                    "El .exe no contiene el código de strlen: contiene su NOMBRE y una casilla vacía que Windows rellena con su dirección al cargar (la IAT)."
+                ),
+                t!(
+                    "Assemble, puis regarde le panneau FORMAT : les fonctions importées y sont listées avec leur DLL. C'est exactement ce que lit le chargeur de Windows.",
+                    "Assemble, then look at the FORMAT panel: imported functions are listed with their DLL. That is exactly what the Windows loader reads.",
+                    "Ensambla y mira el panel FORMATO: las funciones importadas aparecen con su DLL. Es exactamente lo que lee el cargador de Windows."
+                ),
+                t!(
+                    "Dans le désassemblage, un « call strlen » ne saute pas dans le vide : il atteint un petit relais « jmp [rip+…] » qui lit la case de l'IAT.",
+                    "In the disassembly, a \"call strlen\" does not jump into the void: it reaches a small \"jmp [rip+…]\" thunk that reads the IAT slot.",
+                    "En el desensamblado, un «call strlen» no salta al vacío: llega a un pequeño relevo «jmp [rip+…]» que lee la casilla de la IAT."
+                ),
+                t!(
+                    "ASM Studio connaît les fonctions usuelles de kernel32, user32 et msvcrt. Pour une autre DLL, le nom la porte : « extern gdi32$CreatePen ».",
+                    "ASM Studio knows the usual functions of kernel32, user32 and msvcrt. For another DLL, the name carries it: \"extern gdi32$CreatePen\".",
+                    "ASM Studio conoce las funciones habituales de kernel32, user32 y msvcrt. Para otra DLL, el nombre la lleva: «extern gdi32$CreatePen»."
+                ),
+            ],
+            panels: vec!["editor", "format", "console"],
+            starter: Some(L_WIN_IMPORTS),
+        },
+        Lesson {
+            id: "win_format",
+            level: Level::Windows,
+            title: t!("Ce que contient un .exe", "What an .exe holds", "Lo que contiene un .exe"),
+            goal: t!(
+                "Lire un exécutable Windows comme on lit un ELF : sections, entrée, imports.",
+                "Read a Windows executable the way you read an ELF: sections, entry, imports.",
+                "Leer un ejecutable de Windows como se lee un ELF: secciones, entrada, importaciones."
+            ),
+            steps: vec![
+                t!(
+                    "Les deux formats répondent aux mêmes questions : où commence l'exécution, quel morceau est du code, lequel est modifiable, ce qui vient d'ailleurs.",
+                    "Both formats answer the same questions: where execution starts, which part is code, which is writable, what comes from elsewhere.",
+                    "Ambos formatos responden a las mismas preguntas: dónde empieza la ejecución, qué parte es código, cuál es modificable, qué viene de fuera."
+                ),
+                t!(
+                    "Le panneau FORMAT montre .bss avec zéro octet dans le fichier et de la place en mémoire — vrai des deux côtés, et c'est toute l'idée de cette section.",
+                    "The FORMAT panel shows .bss with zero bytes in the file and room in memory — true on both sides, and that is the whole point of that section.",
+                    "El panel FORMATO muestra .bss con cero bytes en el archivo y sitio en memoria — cierto en ambos lados, y esa es toda la idea de esa sección."
+                ),
+                t!(
+                    "Le point d'entrée d'un PE est une RVA, relative à la base de l'image (0x140000000). Celui d'un ELF est une adresse absolue.",
+                    "A PE entry point is an RVA, relative to the image base (0x140000000). An ELF's is an absolute address.",
+                    "El punto de entrada de un PE es una RVA, relativa a la base de la imagen (0x140000000). El de un ELF es una dirección absoluta."
+                ),
+                t!(
+                    "Assemble le même source pour les deux cibles et compare les deux panneaux FORMAT : c'est le meilleur résumé de ce parcours.",
+                    "Assemble the same source for both targets and compare the two FORMAT panels: it is the best summary of this path.",
+                    "Ensambla el mismo código para ambos destinos y compara los dos paneles FORMATO: es el mejor resumen de este recorrido."
+                ),
+            ],
+            panels: vec!["editor", "format", "memmap"],
+            starter: Some(L_WIN_FORMAT),
+        },
     ]
+}
+
+// ======================================================================
+//  Le pont entre les leçons et les exercices
+// ======================================================================
+//
+//  Deux parcours vivaient côte à côte sans se connaître : vingt-neuf leçons
+//  d'un côté, trente-six exercices auto-corrigés de l'autre, semés dans un
+//  dossier que l'élève ouvrait à la main. Une leçon finie ne menait nulle
+//  part, et un exercice ouvert ne disait pas de quelle notion il relevait —
+//  chacun avait sa progression, aucun n'avait la moitié de l'histoire.
+//
+//  La table ci-dessous les relie, dans les deux sens : une leçon propose ses
+//  exercices d'application, un exercice rappelle la leçon dont il vient. Elle
+//  est déclarée à part plutôt qu'en champ des leçons pour une raison qui se
+//  vérifie : c'est le seul endroit où l'on peut voir, d'un coup d'œil, qu'un
+//  exercice n'est rattaché à rien. Deux tests l'imposent — pas de lien mort,
+//  pas d'exercice orphelin.
+
+/// Exercices d'application, par identifiant de leçon. Les noms sont ceux des
+/// fichiers semés dans `~/.local/share/asm_studio/examples/`.
+const PRACTICE: &[(&str, &[&str])] = &[
+    ("premier_programme", &["ex_code_sortie.asm", "ex_c1_bases.asm", "ex_c2_1_code_retour.asm"]),
+    ("registres", &["ex_c3_2_copier_registres.asm", "ex_somme.asm"]),
+    ("tailles", &["ex_c3_1_tailles.asm"]),
+    ("memoire", &["ex_maximum.asm", "ex_moyenne.asm"]),
+    ("flags", &["ex_c6_3_pair_impair.asm", "ex_c6_1_plus_petit.asm"]),
+    ("pile", &["ex_c5_1_echange.asm", "ex_c5_2_trois_valeurs.asm"]),
+    ("sauts", &["ex_c6_2_trois_nombres.asm"]),
+    (
+        "boucles",
+        &[
+            "ex_factorielle.asm",
+            "ex_c7_1_compte_rebours.asm",
+            "ex_c7_3_multiplication.asm",
+            "ex_fibonacci.asm",
+        ],
+    ),
+    ("mul_div", &["ex_puissance.asm", "ex_c4_1_calculette.asm", "ex_c4_2_division_signee.asm"]),
+    ("fonctions", &["ex_c8_1_soustraire.asm", "ex_c8_2_somme_jusqua.asm"]),
+    ("system_v", &["ex_c8_3_trois_appels.asm"]),
+    (
+        "syscalls",
+        &[
+            "ex_c2_2_mon_message.asm",
+            "ex_c7_2_etoiles.asm",
+            "ex_c10_1_triple.asm",
+            "ex_c10_2_somme_saisie.asm",
+        ],
+    ),
+    ("tableaux", &["ex_tableau.asm", "ex_c9_1_tableau_min.asm", "ex_c9_3_compter_pairs.asm"]),
+    ("chaines", &["ex_longueur.asm", "ex_c11_4_palindrome.asm"]),
+    ("optimisation", &["ex_bits.asm", "ex_c11_2_tri_decroissant.asm"]),
+    ("performance", &["ex_c11_5_premiers.asm", "ex_c11_3_fizzbuzz.asm"]),
+];
+
+/// Exercices qui mettent en pratique une leçon (vide si elle n'en a pas).
+pub fn practice_for(lesson_id: &str) -> &'static [&'static str] {
+    PRACTICE
+        .iter()
+        .find(|(id, _)| *id == lesson_id)
+        .map(|(_, files)| *files)
+        .unwrap_or(&[])
+}
+
+/// Leçon dont relève un exercice, d'après son nom de fichier.
+///
+/// C'est la réciproque : un élève qui ouvre `ex_c7_2_etoiles.asm` sans savoir
+/// par où le prendre doit pouvoir remonter à la leçon qui l'explique.
+pub fn lesson_of_exercise(file_name: &str) -> Option<Lesson> {
+    let id = PRACTICE
+        .iter()
+        .find(|(_, files)| files.contains(&file_name))
+        .map(|(id, _)| *id)?;
+    find(id)
 }
 
 /// Leçons d'un niveau, dans l'ordre.
 pub fn lessons_of(level: Level) -> Vec<Lesson> {
     catalogue().into_iter().filter(|l| l.level == level).collect()
+}
+
+/// Le parcours tel qu'il est réellement proposé : le catalogue, moins les
+/// leçons Windows quand l'assemblage PE est désactivé.
+///
+/// C'est ce parcours-là que compte la progression et que parcourent les boutons
+/// « précédente » et « suivante » : annoncer « leçon 12 sur 29 » puis sauter les
+/// cinq leçons Windows au moment d'avancer serait un compte faux.
+pub fn path(with_pe: bool) -> Vec<Lesson> {
+    catalogue()
+        .into_iter()
+        .filter(|l| with_pe || !l.level.needs_pe())
+        .collect()
+}
+
+/// Rang d'une leçon dans le parcours (0 pour la première), et sa longueur.
+/// `None` si la leçon n'en fait pas partie — un identifiant périmé, ou une
+/// leçon Windows alors que le parcours Windows est éteint.
+pub fn position(id: &str, with_pe: bool) -> Option<(usize, usize)> {
+    let p = path(with_pe);
+    let i = p.iter().position(|l| l.id == id)?;
+    Some((i, p.len()))
+}
+
+/// Leçons qui précèdent et qui suivent celle-ci dans le parcours.
+pub fn neighbours(id: &str, with_pe: bool) -> (Option<Lesson>, Option<Lesson>) {
+    let p = path(with_pe);
+    let Some(i) = p.iter().position(|l| l.id == id) else {
+        return (None, None);
+    };
+    let prev = if i > 0 { p.get(i - 1).cloned() } else { None };
+    (prev, p.get(i + 1).cloned())
 }
 
 /// Retrouve une leçon par son identifiant.
@@ -1987,6 +2457,14 @@ impl Progress {
     /// (terminées, total) pour un niveau.
     pub fn tally(&self, level: Level) -> (usize, usize) {
         let l = lessons_of(level);
+        (l.iter().filter(|x| self.is_done(x.id)).count(), l.len())
+    }
+
+    /// (terminées, total) sur tout le parcours, pour l'indicateur de
+    /// progression : les tallies par niveau disent où l'on en est dans un
+    /// chapitre, pas où l'on en est dans le livre.
+    pub fn overall(&self, with_pe: bool) -> (usize, usize) {
+        let l = path(with_pe);
         (l.iter().filter(|x| self.is_done(x.id)).count(), l.len())
     }
 
@@ -2119,6 +2597,10 @@ mod tests {
 
     /// Les programmes de leçon doivent s'ASSEMBLER : un exemple qui ne compile
     /// pas apprendrait la mauvaise leçon.
+    ///
+    /// Chacun pour SA cible : un starter du parcours Windows passe par
+    /// `nasm -f win64` et le lieur PE, sans quoi son `extern ExitProcess` ferait
+    /// échouer un `ld` qui n'a jamais entendu parler de kernel32.
     #[test]
     fn every_starter_assembles() {
         use std::path::Path;
@@ -2127,13 +2609,97 @@ mod tests {
             let Some(src) = l.starter else { continue };
             let path = format!("build/tutorial/{}.asm", l.id);
             std::fs::write(&path, src).expect("écriture");
-            let out = crate::assemble::assemble_with_includes(
+            let out = crate::assemble::assemble_for(
                 Path::new(&path),
                 Path::new("build/tutorial"),
                 &[],
+                l.target(),
             );
             assert!(out.is_ok(), "{} ne s'assemble pas : {:?}", l.id, out.err());
         }
+    }
+
+    /// Le parcours Windows ne peut promettre que ce qu'il sait vérifier. Sans
+    /// débogueur, une attente sur un registre ne serait jamais contrôlée : ces
+    /// leçons ne portent donc que sur le code de sortie et sur le texte du
+    /// programme. Le test l'impose, pour qu'aucune leçon future ne triche.
+    #[test]
+    fn windows_lessons_only_expect_what_can_be_checked() {
+        for l in lessons_of(Level::Windows) {
+            let src = l.starter.unwrap_or_else(|| panic!("{} : leçon Windows sans programme", l.id));
+            let ex = crate::exercise::parse(src);
+            assert!(ex.is_exercise(), "{} : aucune attente", l.id);
+            for e in &ex.expectations {
+                assert!(
+                    matches!(e.subject, crate::exercise::Subject::ExitCode),
+                    "{} : « {} » porte sur un registre, invérifiable sans débogueur",
+                    l.id,
+                    e.label()
+                );
+            }
+            assert_eq!(l.target(), crate::assemble::Target::Windows);
+        }
+    }
+
+    /// Aucun lien mort : chaque exercice cité par une leçon existe vraiment, et
+    /// chaque leçon citée existe aussi. Un bouton « s'entraîner » qui ouvre le
+    /// vide est pire que pas de bouton.
+    #[test]
+    fn every_practice_link_points_at_something_real() {
+        for (lesson_id, files) in PRACTICE {
+            assert!(find(lesson_id).is_some(), "leçon inconnue dans la table : {lesson_id}");
+            for f in *files {
+                let path = std::path::Path::new("examples_seed").join(f);
+                assert!(path.exists(), "{lesson_id} renvoie à {f}, qui n'existe pas");
+                // Et c'est bien un exercice : sans attentes, rien à corriger.
+                let src = std::fs::read_to_string(&path).expect("lecture");
+                assert!(
+                    crate::exercise::parse(&src).is_exercise(),
+                    "{f} est proposé comme exercice mais ne déclare aucune attente"
+                );
+            }
+        }
+    }
+
+    /// Aucun exercice orphelin : tout ce qui est semé est rattaché à une leçon.
+    ///
+    /// C'est le contrôle qui tient la promesse du parcours. Trente-six exercices
+    /// vivaient dans un dossier, sans lien avec les vingt-neuf leçons ; l'élève
+    /// qui finissait une leçon n'apprenait pas qu'un exercice l'attendait, et
+    /// celui qui ouvrait un exercice ne savait pas de quelle notion il relevait.
+    #[test]
+    fn no_seeded_exercise_is_left_out_of_the_path() {
+        let mut orphans = Vec::new();
+        for entry in std::fs::read_dir("examples_seed").expect("dossier des exemples").flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Les démonstrations (hello_world, boucle…) ne sont pas des
+            // exercices : elles n'ont rien à corriger, donc rien à rattacher.
+            if !name.starts_with("ex_") || !name.ends_with(".asm") {
+                continue;
+            }
+            if lesson_of_exercise(&name).is_none() {
+                orphans.push(name);
+            }
+        }
+        orphans.sort();
+        assert!(
+            orphans.is_empty(),
+            "ces exercices ne sont rattachés à aucune leçon : {orphans:?}"
+        );
+    }
+
+    /// Le lien se lit dans les deux sens, et la réciproque est cohérente : un
+    /// exercice renvoie à la leçon qui le propose.
+    #[test]
+    fn the_link_between_lesson_and_exercise_works_both_ways() {
+        for (lesson_id, files) in PRACTICE {
+            for f in *files {
+                let back = lesson_of_exercise(f).expect("un exercice cité a sa leçon");
+                assert_eq!(&back.id, lesson_id, "{f} : aller-retour incohérent");
+            }
+        }
+        assert!(practice_for("inconnue").is_empty(), "leçon inconnue : aucune pratique");
+        assert!(lesson_of_exercise("pas_un_exercice.asm").is_none());
     }
 
     #[test]
