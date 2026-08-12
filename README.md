@@ -76,8 +76,11 @@ memory — is the genuine process state, not an approximation.
 - **Binary format explorer** — header, sections, permissions, entry point,
   imports and global symbols, shown the same way for ELF and PE. What a
   section costs in memory versus on disk, and why `.bss` weighs nothing.
-- **Built-in calculator** — hexadecimal by default, bit-by-bit view, common
-  operations.
+- **Built-in calculator** — hexadecimal by default, bit-by-bit view and the
+  usual arithmetic/logic operations. It also reads ASCII text as the bytes of
+  a register: `Hi` is `0x4869`, up to eight characters, including `\n` and
+  `\xNN` escapes. This makes it easy to see a string in every base or to
+  apply a bit mask directly to a character.
 - **Error diagnostics** — `nasm`/`ld` errors and runtime crashes rephrased
   in plain language.
 - **Multilingual** — interface available in French, English and Spanish.

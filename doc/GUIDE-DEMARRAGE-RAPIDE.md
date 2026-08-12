@@ -336,8 +336,27 @@ fonctionne depuis n'importe quel dossier.
   instruction, **devinez** la nouvelle valeur d'un registre ; ASM Studio compare
   à l'exécution réelle et tient un score. Excellent pour s'auto-évaluer.
 - **Calculatrice multi-base** (Outils) — conversion instantanée Déc / Hex / Oct /
-  Bin dans les deux sens.
+  Bin / ASCII dans les deux sens. Le mode ASCII lit chaque caractère comme un
+  octet, dans l'ordre d'une valeur de registre : `Hi` devient `0x4869`.
 - **Vérifier les mises à jour** (Outils).
+
+### Calculatrice : nombres, octets et texte
+
+Ouvrez **Outils → Calculatrice**, choisissez la base de saisie, puis entrez A
+et, si nécessaire, B. Sans B, la calculatrice sert simplement à convertir A ;
+avec B, elle applique l'opération sélectionnée. La vue bit à bit et le tableau
+de résultat restent disponibles dans toutes les bases.
+
+Le mode **ASCII** est fait pour relier une chaîne à la valeur qu'elle occupe
+dans un registre : chaque caractère vaut un octet et le premier est à gauche.
+Ainsi `Hi` vaut `0x4869`. Un registre x86-64 ne contenant que huit octets, la
+saisie est limitée à huit caractères (ou huit octets décodés).
+
+Les échappements permettent de manipuler les octets qui ne s'écrivent pas
+directement : `\0`, `\t`, `\n`, `\r`, `\\` et `\xNN` (par exemple
+`\x0A`). Le résultat ASCII s'affiche entre apostrophes et réutilise ces
+échappements pour les octets non imprimables. On peut donc appliquer les
+opérations bit à bit usuelles à du texte : `a AND \xDF` donne `A`.
 
 ---
 

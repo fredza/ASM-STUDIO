@@ -78,8 +78,11 @@ l'état authentique du processus, pas une approximation.
   d'entrée, imports et symboles globaux, présentés de la même façon pour ELF et
   pour PE. Ce qu'une section coûte en mémoire et sur le disque, et pourquoi
   `.bss` ne pèse rien.
-- **Calculatrice intégrée** — hexadécimal par défaut, vue bit à bit, opérations
-  courantes.
+- **Calculatrice intégrée** — hexadécimal par défaut, vue bit à bit et
+  opérations arithmétiques/logiques. Elle lit aussi le texte ASCII comme les
+  octets d'un registre : `Hi` vaut `0x4869`, sur huit caractères au plus, avec
+  les échappements `\n` et `\xNN`. De quoi voir une chaîne dans toutes les
+  bases ou lui appliquer directement un masque de bits.
 - **Diagnostic d'erreurs** — messages d'erreur `nasm`/`ld` et de plantage
   runtime reformulés en langage clair.
 - **Multilingue** — interface en français, anglais et espagnol.

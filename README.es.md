@@ -80,8 +80,11 @@ aproximación.
   entrada, importaciones y símbolos globales, presentados igual para ELF y para
   PE. Lo que cuesta una sección en memoria y en disco, y por qué `.bss` no pesa
   nada.
-- **Calculadora integrada** — hexadecimal por defecto, vista bit a bit,
-  operaciones habituales.
+- **Calculadora integrada** — hexadecimal por defecto, vista bit a bit y las
+  operaciones aritméticas/lógicas habituales. También lee texto ASCII como
+  los bytes de un registro: `Hi` vale `0x4869`, hasta ocho caracteres, con los
+  escapes `\n` y `\xNN`. Así se puede ver una cadena en todas las bases o
+  aplicarle directamente una máscara de bits.
 - **Diagnóstico de errores** — los mensajes de `nasm`/`ld` y los fallos en
   ejecución se reformulan en lenguaje claro.
 - **Multilingüe** — interfaz en francés, inglés y español.
