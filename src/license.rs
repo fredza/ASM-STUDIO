@@ -45,16 +45,13 @@ use crate::app::paths::license_path;
 /// répercuté ici) fait échouer *toutes* les licences avec « signature
 /// invalide », sans autre indice — c'est le seul point de couplage entre
 /// les deux dépôts, il se vérifie en comparant les deux tableaux.
-const PUBLIC_KEY: [u8; 32] = [0xE9, 0x7D, 0xB5, 0x26, 0xD2, 0xB6, 0x9E, 0x9D, 0xDC, 0xDE, 0xAB, 0x49, 0x2E, 0x8E, 0x75, 0x6A, 0x27, 0x2D, 0x28, 0x60, 0xFC, 0xF1, 0xEA, 0xB4, 0x78, 0xCF, 0x34, 0x48, 0x8D, 0x8D, 0xD6, 0xB4];
-
-/// Clés publiques dont la clé privée est publiquement connue, donc à ne
-/// jamais embarquer dans un binaire : celle de la seed tout à zéro (valeur
+const PUBLIC_KEY: [u8; 32] = [0x13, 0x3C, 0x7A, 0x9C, 0xB8, 0x3A, 0xAE, 0x6A, 0x5C, 0xDE, 0x15, 0x8B, 0x19, 0x79, 0x4C, 0xB9, 0x8D, 0xFD, 0x3F, 0xCA, 0xEA, 0x54, 0x4F, 0x77, 0xAA, 0x76, 0x71, 0x34, 0x85, 0x25, 0xF9, 0xF9];
+// jamais embarquer dans un binaire : celle de la seed tout à zéro (valeur
 /// obtenue quand `keygen` n'a pas encore tourné, ou qu'un `private.key` vide
 /// a été chargé) et celle de la paire de test de `mod tests`
 /// (`SigningKey::from_bytes(&[7u8; 32])`, en clair dans ce dépôt public).
 ///
-/// Le scénario que `FORBIDDEN_KEYS` interdit s'est déjà produit : `TEST-LICENCE.md`
-/// demande de coller une clé de test dans `PUBLIC_KEY` puis de **restaurer la
+/// Le scénario que `FORBIDDEN_KEYS` interdit s'est déjà produit : `TEST-LICENCE.md` // demande de coller une clé de test dans `PUBLIC_KEY` puis de **restaurer la
 /// vraie avant de committer**, et la restauration a été oubliée. Le binaire
 /// alors produit refuse *toutes* les vraies licences avec « signature
 /// invalide », sans indice sur la cause — et accepte n'importe quelle licence

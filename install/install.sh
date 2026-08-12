@@ -18,6 +18,12 @@ readonly APP_NAME="ASM Studio"
 readonly BIN_NAME="asm-studio"
 readonly ICON_NAME="asm-studio"
 readonly DESKTOP_NAME="asm-studio.desktop"
+readonly -a WINDOWS_EXAMPLES=(
+    "win_hello_world.asm"
+    "win_arithmetic.asm"
+    "win_boucle.asm"
+    "win_lire_ecrire.asm"
+)
 
 # Couleurs seulement si la sortie est un terminal (sinon les journaux sont sales).
 if [ -t 1 ]; then
@@ -50,6 +56,7 @@ Fichiers installés :
   PREFIX/bin/${BIN_NAME}
   PREFIX/share/applications/${DESKTOP_NAME}
   PREFIX/share/icons/hicolor/256x256/apps/${ICON_NAME}.png
+  XDG_DATA_HOME/asm_studio/examples/win_*.asm  (les 4 exemples PE64 essentiels)
 
 Désinstallation : ./uninstall.sh (mêmes options de préfixe)
 EOF
@@ -108,7 +115,45 @@ find_asset() {
     return 1
 }
 
-step "1/4  Recherche des fichiers"
+# Dans l'archive, les exemples sont sous examples/. Depuis les sources, ils
+# restent dans examples_seed/. Les quatre fichiers sont exigés : une archive
+# incomplète ne doit pas donner l'impression que le support PE64 est installé.
+find_windows_examples_dir() {
+    local c
+    for c in "${SCRIPT_DIR}/examples" "${SCRIPT_DIR}/../examples_seed"; do
+        if [ -f "${c}/win_hello_world.asm" ] \
+           && [ -f "${c}/win_arithmetic.asm" ] \
+           && [ -f "${c}/win_boucle.asm" ] \
+           && [ -f "${c}/win_lire_ecrire.asm" ]; then
+            printf '%s' "$c"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Une installation systeme lancee par sudo doit alimenter l'espace de travail
+# de la personne qui a lance sudo, pas celui de root. XDG_DATA_HOME est pris en
+# compte pour une installation utilisateur et un XDG vide revient au defaut.
+EXAMPLES_OWNER=""
+EXAMPLES_HOME="${HOME}"
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+    EXAMPLES_OWNER="${SUDO_USER}"
+    EXAMPLES_HOME="$(getent passwd "${SUDO_USER}" | cut -d: -f6)"
+    if [ -z "${EXAMPLES_HOME}" ]; then
+        err "impossible de trouver le dossier personnel de ${SUDO_USER}"
+        exit 1
+    fi
+fi
+if [ -z "${EXAMPLES_OWNER}" ] && [ -n "${XDG_DATA_HOME:-}" ]; then
+    EXAMPLES_DATA_HOME="${XDG_DATA_HOME}"
+else
+    EXAMPLES_DATA_HOME="${EXAMPLES_HOME}/.local/share"
+fi
+readonly EXAMPLES_OWNER EXAMPLES_HOME EXAMPLES_DATA_HOME
+readonly EXAMPLES_DIR="${EXAMPLES_DATA_HOME}/asm_studio/examples"
+
+step "1/5  Recherche des fichiers"
 
 if ! BINARY="$(find_binary)"; then
     err "binaire introuvable."
@@ -130,9 +175,17 @@ fi
 readonly DESKTOP_SRC ICON_SRC
 ok "ressources : $(dirname -- "${DESKTOP_SRC}")"
 
+if ! WINDOWS_EXAMPLES_SRC="$(find_windows_examples_dir)"; then
+    err "exemples PE64 introuvables."
+    dim "Attendus dans examples/ (archive) ou examples_seed/ (sources)."
+    exit 1
+fi
+readonly WINDOWS_EXAMPLES_SRC
+ok "exemples PE64 : ${WINDOWS_EXAMPLES_SRC}"
+
 # ------------------------------------------------------ vérification runtime
 
-step "2/4  Vérification des dépendances"
+step "2/5  Vérification des dépendances"
 
 missing_required=()
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -184,7 +237,7 @@ fi
 
 # ---------------------------------------------------------------- installation
 
-step "3/4  Installation dans ${PREFIX}"
+step "3/5  Installation dans ${PREFIX}"
 
 # Droits d'écriture : message clair plutôt qu'un « permission denied » brut.
 for d in "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}"; do
@@ -214,9 +267,43 @@ sed "s|ASM_STUDIO_EXEC|${BIN_DIR}/${BIN_NAME}|" "${DESKTOP_SRC}" \
 chmod 644 "${APP_DIR}/${DESKTOP_NAME}"
 ok "${APP_DIR}/${DESKTOP_NAME}"
 
+# Les exemples se placent dans les donnees utilisateur, meme pour --system.
+# Un fichier deja present est volontairement preserve : il peut etre un
+# programme que l'eleve a renomme ou modifie depuis une installation precedente.
+step "4/5  Installation des exemples PE64"
+
+if [ -n "${EXAMPLES_OWNER}" ]; then
+    EXAMPLES_GROUP="$(id -gn "${EXAMPLES_OWNER}")"
+    install -d -o "${EXAMPLES_OWNER}" -g "${EXAMPLES_GROUP}" "${EXAMPLES_DIR}"
+else
+    install -d "${EXAMPLES_DIR}"
+fi
+
+installed_examples=0
+for example in "${WINDOWS_EXAMPLES[@]}"; do
+    destination="${EXAMPLES_DIR}/${example}"
+    if [ -e "${destination}" ]; then
+        dim "conservé : ${destination}"
+        continue
+    fi
+    if [ -n "${EXAMPLES_OWNER}" ]; then
+        install -o "${EXAMPLES_OWNER}" -g "${EXAMPLES_GROUP}" -m 644 \
+            "${WINDOWS_EXAMPLES_SRC}/${example}" "${destination}"
+    else
+        install -m 644 "${WINDOWS_EXAMPLES_SRC}/${example}" "${destination}"
+    fi
+    installed_examples=$((installed_examples + 1))
+done
+
+if [ "${installed_examples}" -gt 0 ]; then
+    ok "${installed_examples} exemple(s) PE64 dans ${EXAMPLES_DIR}"
+else
+    dim "exemples PE64 deja presents : aucune modification"
+fi
+
 # ------------------------------------------------------- rafraîchissement UI
 
-step "4/4  Mise à jour des caches du bureau"
+step "5/5  Mise à jour des caches du bureau"
 
 if have update-desktop-database; then
     update-desktop-database "${APP_DIR}" 2>/dev/null && ok "base des applications"
@@ -249,8 +336,8 @@ esac
 
 info "Ou depuis le menu des applications : « ${APP_NAME} »."
 echo
-dim "Au premier lancement, une dizaine de programmes d'exemple sont créés dans"
-dim "~/.local/share/asm_studio/examples/ (dont quatre exercices auto-corrigés)."
+dim "Les quatre exemples PE64 sont installes dans ${EXAMPLES_DIR}."
+dim "Les autres programmes d'exemple sont completes au premier lancement."
 dim "Les réglages sont enregistrés dans ~/.config/asm_studio/settings.conf."
 echo
 info "Désinstallation :  ${SCRIPT_DIR}/uninstall.sh"

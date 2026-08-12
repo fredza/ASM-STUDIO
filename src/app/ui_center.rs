@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use eframe::egui::{self, RichText};
 
 use crate::debugger::Flags;
@@ -298,6 +300,32 @@ impl App {
         self.scroll_to_sel = Some(super::dock::Panel::Disasm);
     }
 
+    /// Les trois mesures du source dont chaque image a besoin : combien de
+    /// lignes (gouttière), la plus longue en caractères (largeur de la zone
+    /// défilante) et celle où se trouve le curseur (teintée discrètement —
+    /// sans elle on perd sa place dans un fichier de cent lignes ; elle
+    /// s'efface devant la ligne RIP, qui prime pendant un pas à pas).
+    ///
+    /// Les trois en une passe, parce que c'en était trois : le texte entier
+    /// était parcouru une fois par mesure, à chaque image.
+    fn editor_metrics(&self) -> (usize, usize, Option<usize>) {
+        let cut = self.editor_cursor_byte.min(self.source.len());
+        let (mut lines, mut max_cols, mut cols, mut at_cursor) = (1usize, 0usize, 0usize, 0usize);
+        for (i, c) in self.source.char_indices() {
+            if c == '\n' {
+                lines += 1;
+                max_cols = max_cols.max(cols);
+                cols = 0;
+                if i < cut {
+                    at_cursor += 1;
+                }
+            } else {
+                cols += 1;
+            }
+        }
+        (lines, max_cols.max(cols), Some(at_cursor))
+    }
+
     pub(super) fn editor_ui(&mut self, ui: &mut egui::Ui) {
         // Ligne source courante (RIP) à surligner pendant le débogage.
         let hl = self.current_source_line();
@@ -317,23 +345,21 @@ impl App {
             egui::TextEdit::store_state(ui.ctx(), id, st);
         }
 
-        // Ligne du curseur, discrètement teintée : sans elle, on perd sa place
-        // d'un coup d'œil dans un fichier de cent lignes. Elle s'efface devant
-        // la ligne RIP, qui prime pendant un pas à pas.
-        let cursor_line = Some(self.source[..self.editor_cursor_byte.min(self.source.len())]
-            .matches('\n')
-            .count());
+        let (line_count, max_cols, cursor_line) = self.editor_metrics();
 
         // Recherche active (Ctrl+F) : surlignage par-dessus la coloration
-        // syntaxique, sans le calculer si la barre est fermée ou vide.
-        let matches = self.find_matches();
+        // syntaxique. Rien n'est cherché si la barre est fermée ou vide — la
+        // requête d'une barre refermée par Échap survit dans le champ, et la
+        // chercher à chaque image ne montrerait rien à personne.
+        let matches = if self.show_find && !self.find_query.is_empty() {
+            self.find_matches()
+        } else {
+            Vec::new()
+        };
         let current_offset = (!matches.is_empty())
             .then(|| matches[self.find_current % matches.len()].0);
-        let find_highlight = (self.show_find && !self.find_query.is_empty()).then_some(syntax::FindHighlight {
-            query: self.find_query.as_str(),
-            case_sensitive: self.find_case_sensitive,
-            current: current_offset,
-        });
+        let find_highlight = (!matches.is_empty())
+            .then_some(syntax::FindHighlight { matches: &matches, current: current_offset });
 
         // Parenthèse/crochet correspondant à celui que touche le curseur, tel
         // qu'il était à la fin de la frame précédente — un cran de retard
@@ -355,18 +381,23 @@ impl App {
         };
 
         // Gouttière : numéros de ligne (▶ + accent sur la ligne courante).
-        let line_count = self.source.matches('\n').count() + 1;
         let width = line_count.to_string().len();
         let gfont = egui::FontId::monospace(syntax::FONT_SIZE);
         let mut gutter_job = egui::text::LayoutJob::default();
+        // Un seul tampon réécrit d'une ligne à l'autre : `append` recopie de
+        // toute façon ce qu'on lui donne, et un `format!` par numéro faisait
+        // autant d'allocations que de lignes, à chaque image.
+        let mut num = String::new();
         for i in 1..=line_count {
             if i > 1 {
                 gutter_job.append("\n", 0.0, egui::TextFormat::default());
             }
             let is_cur = hl == Some(i - 1);
             let (marker, color) = if is_cur { ("▶", accent()) } else { (" ", gutter_col()) };
+            num.clear();
+            let _ = write!(num, "{marker}{i:>width$}");
             gutter_job.append(
-                &format!("{marker}{i:>width$}"),
+                &num,
                 0.0,
                 egui::TextFormat {
                     font_id: gfont.clone(),
@@ -378,7 +409,6 @@ impl App {
 
         // Largeur du contenu = ligne la plus longue (pour le scroll horizontal).
         let char_w = ui.fonts_mut(|f| f.glyph_width(&gfont, 'M'));
-        let max_cols = self.source.lines().map(|l| l.chars().count()).max().unwrap_or(0);
         let content_w = (max_cols as f32 + 2.0) * char_w;
 
         // Défilement forcé vers une correspondance de recherche visée
@@ -391,13 +421,33 @@ impl App {
 
         // Cliché d'avant frappe, pour repérer après coup ce qu'un seul
         // caractère tapé a changé (fermeture automatique des paires).
-        let pre_edit_source = self.source.clone();
+        //
+        // Pris seulement quand la frame porte de quoi modifier le texte : sans
+        // cette garde, c'était une copie du source entier à CHAQUE image, y
+        // compris pour un mouvement de souris ou une pulsation de la timeline.
+        // La liste couvre tout ce par quoi un `TextEdit` peut changer — frappe,
+        // collage, coupe, et les touches qui effacent ou annulent.
+        let may_edit = ui.ctx().memory(|m| m.has_focus(super::editor_id()))
+            && ui.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Text(_)
+                            | egui::Event::Paste(_)
+                            | egui::Event::Cut
+                            | egui::Event::Key { .. }
+                    )
+                })
+            });
+        let pre_edit_source = may_edit.then(|| self.source.clone());
 
         // Ligne cliquée dans la gouttière, traitée après le rendu : `self` y
         // est emprunté par le layouter et les zones défilantes. Le clic droit
         // ouvre la condition de la ligne au lieu de basculer le point d'arrêt.
         let mut gutter_click: Option<usize> = None;
         let mut gutter_right_click: Option<usize> = None;
+        // Relevé avant d'entrer dans le rendu, où `self` n'est plus lisible.
+        let gutter_scroll = forced_scroll.unwrap_or(self.editor_scroll_y);
 
         // Points d'arrêt à peindre, résolus avant le rendu pour la même raison
         // (ligne, porte du code). Tant que rien n'a été assemblé, aucune ligne
@@ -424,85 +474,10 @@ impl App {
         let (changed, cursor_range, hover_char, caret, editor_focused) = ui
             .horizontal_top(|ui| {
                 // Gouttière : défilement vertical synchronisé, sans barre ni scroll direct.
-                egui::ScrollArea::vertical()
-                    .id_salt("gutter_scroll")
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .scroll_source(egui::scroll_area::ScrollSource::NONE)
-                    .auto_shrink([true, false])
-                    .vertical_scroll_offset(forced_scroll.unwrap_or(self.editor_scroll_y))
-                    .show(ui, |ui| {
-                        let galley = ui.fonts_mut(|f| f.layout_job(gutter_job));
-                        let row_h = galley.size().y / line_count.max(1) as f32;
-                        let resp = ui.add(
-                            egui::Label::new(galley)
-                                .selectable(false)
-                                .sense(egui::Sense::click()),
-                        );
-                        // Ligne sous le pointeur, pour l'infobulle comme pour
-                        // les clics : la gouttière est un seul widget, c'est la
-                        // hauteur de rangée qui dit de quelle ligne il s'agit.
-                        let line_at = |pos: egui::Pos2| {
-                            let line = ((pos.y - resp.rect.top()) / row_h) as usize + 1;
-                            (line <= line_count).then_some(line)
-                        };
-                        // Pastilles peintes par-dessus les numéros plutôt
-                        // qu'insérées dans le texte : un glyphe de plus dans la
-                        // gouttière décalerait les numéros des seules lignes qui
-                        // en portent un.
-                        let hole = ui.visuals().extreme_bg_color;
-                        let painter = ui.painter();
-                        let x = resp.rect.left() + row_h * 0.35;
-                        for (line, executable, condition) in &bp_marks {
-                            let y = resp.rect.top() + (*line as f32 - 0.5) * row_h;
-                            let c = egui::pos2(x, y);
-                            let r = row_h * 0.24;
-                            // Cercle creux : point d'arrêt posé sur une ligne
-                            // sans code (commentaire, `section`, ligne vide),
-                            // que l'exécution ne rencontrera jamais.
-                            if *executable {
-                                painter.circle_filled(c, r, breakpoint_col());
-                            } else {
-                                painter.circle_stroke(c, r, (1.5, breakpoint_col()));
-                            }
-                            // Anneau : la ligne ne s'arrête que si sa condition
-                            // tient. Le trou au centre se voit d'un coup d'œil
-                            // et ne demande aucun glyphe supplémentaire.
-                            if condition.is_some() && *executable {
-                                painter.circle_filled(c, r * 0.45, hole);
-                            }
-                        }
-                        // Clic dans la gouttière : bascule le point d'arrêt de la
-                        // ligne visée, si elle porte du code exécutable. Clic
-                        // droit : sa condition.
-                        if let Some(pos) = resp.interact_pointer_pos() {
-                            if resp.clicked() {
-                                gutter_click = line_at(pos);
-                            }
-                            if resp.secondary_clicked() {
-                                gutter_right_click = line_at(pos);
-                            }
-                        }
-                        if resp.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                            // Ce que la ligne survolée fera, dit noir sur blanc :
-                            // une pastille à trou n'explique pas d'elle-même
-                            // quelle condition la retient.
-                            if let Some(line) = ui.ctx().pointer_latest_pos().and_then(line_at)
-                                && let Some((_, _, Some(cond))) =
-                                    bp_marks.iter().find(|(l, _, _)| *l == line)
-                            {
-                                egui::Tooltip::always_open(
-                                    ui.ctx().clone(),
-                                    ui.layer_id(),
-                                    egui::Id::new("bp_cond_tip"),
-                                    egui::PopupAnchor::Pointer,
-                                )
-                                .show(|ui| {
-                                    ui.label(RichText::new(format!("⏸ {cond}")).monospace());
-                                });
-                            }
-                        }
-                    });
+                let (click, right_click) =
+                    gutter_ui(ui, gutter_job, line_count, gutter_scroll, &bp_marks);
+                gutter_click = click;
+                gutter_right_click = right_click;
                 ui.separator();
                 // Éditeur : défilement vertical + horizontal ; la gouttière reste fixe.
                 let mut editor_scroll = egui::ScrollArea::both()
@@ -564,8 +539,12 @@ impl App {
         if let Some(index) = hover_char {
             self.inspect_tooltip(ui, index);
         }
-        if changed {
-            self.after_edit(&pre_edit_source, cursor_range);
+        // `pre_edit_source` manque si la frame ne portait rien qui puisse
+        // toucher au texte — auquel cas `changed` ne peut pas être vrai. Si ça
+        // arrivait quand même, l'indentation et les paires automatiques
+        // sauteraient ce caractère : rien n'est perdu, seulement pas assisté.
+        if changed && let Some(before) = &pre_edit_source {
+            self.after_edit(before, cursor_range);
         }
         // Liste d'autocomplétion : seulement quand on tape vraiment dans
         // l'éditeur. Ouverte pendant qu'il a perdu le focus, elle flotterait
@@ -1019,6 +998,103 @@ impl App {
             ui.label(RichText::new(e.affects_flags.join("  ")).monospace().color(changed_col()));
         }
     }
+}
+
+/// La gouttière de l'éditeur : numéros de ligne, pastilles de points
+/// d'arrêt, et les clics qu'on y fait.
+///
+/// Fonction libre et non méthode : pendant tout le rendu de l'éditeur,
+/// `self` est emprunté par le layouter de coloration. Les clics sont donc
+/// rendus à l'appelant — (clic gauche, clic droit), par numéro de ligne —
+/// qui les traite une fois cet emprunt relâché.
+fn gutter_ui(
+    ui: &mut egui::Ui,
+    job: egui::text::LayoutJob,
+    line_count: usize,
+    scroll_y: f32,
+    bp_marks: &[(usize, bool, Option<String>)],
+) -> (Option<usize>, Option<usize>) {
+    let (mut click, mut right_click) = (None, None);
+    egui::ScrollArea::vertical()
+        .id_salt("gutter_scroll")
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .scroll_source(egui::scroll_area::ScrollSource::NONE)
+        .auto_shrink([true, false])
+        .vertical_scroll_offset(scroll_y)
+        .show(ui, |ui| {
+            let galley = ui.fonts_mut(|f| f.layout_job(job));
+            let row_h = galley.size().y / line_count.max(1) as f32;
+            let resp = ui.add(
+                egui::Label::new(galley)
+                    .selectable(false)
+                    .sense(egui::Sense::click()),
+            );
+            // Ligne sous le pointeur, pour l'infobulle comme pour
+            // les clics : la gouttière est un seul widget, c'est la
+            // hauteur de rangée qui dit de quelle ligne il s'agit.
+            let line_at = |pos: egui::Pos2| {
+                let line = ((pos.y - resp.rect.top()) / row_h) as usize + 1;
+                (line <= line_count).then_some(line)
+            };
+            // Pastilles peintes par-dessus les numéros plutôt
+            // qu'insérées dans le texte : un glyphe de plus dans la
+            // gouttière décalerait les numéros des seules lignes qui
+            // en portent un.
+            let hole = ui.visuals().extreme_bg_color;
+            let painter = ui.painter();
+            let x = resp.rect.left() + row_h * 0.35;
+            for (line, executable, condition) in bp_marks {
+                let y = resp.rect.top() + (*line as f32 - 0.5) * row_h;
+                let c = egui::pos2(x, y);
+                let r = row_h * 0.24;
+                // Cercle creux : point d'arrêt posé sur une ligne
+                // sans code (commentaire, `section`, ligne vide),
+                // que l'exécution ne rencontrera jamais.
+                if *executable {
+                    painter.circle_filled(c, r, breakpoint_col());
+                } else {
+                    painter.circle_stroke(c, r, (1.5, breakpoint_col()));
+                }
+                // Anneau : la ligne ne s'arrête que si sa condition
+                // tient. Le trou au centre se voit d'un coup d'œil
+                // et ne demande aucun glyphe supplémentaire.
+                if condition.is_some() && *executable {
+                    painter.circle_filled(c, r * 0.45, hole);
+                }
+            }
+            // Clic dans la gouttière : bascule le point d'arrêt de la
+            // ligne visée, si elle porte du code exécutable. Clic
+            // droit : sa condition.
+            if let Some(pos) = resp.interact_pointer_pos() {
+                if resp.clicked() {
+                    click = line_at(pos);
+                }
+                if resp.secondary_clicked() {
+                    right_click = line_at(pos);
+                }
+            }
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                // Ce que la ligne survolée fera, dit noir sur blanc :
+                // une pastille à trou n'explique pas d'elle-même
+                // quelle condition la retient.
+                if let Some(line) = ui.ctx().pointer_latest_pos().and_then(line_at)
+                    && let Some((_, _, Some(cond))) =
+                        bp_marks.iter().find(|(l, _, _)| *l == line)
+                {
+                    egui::Tooltip::always_open(
+                        ui.ctx().clone(),
+                        ui.layer_id(),
+                        egui::Id::new("bp_cond_tip"),
+                        egui::PopupAnchor::Pointer,
+                    )
+                    .show(|ui| {
+                        ui.label(RichText::new(format!("⏸ {cond}")).monospace());
+                    });
+                }
+            }
+        });
+    (click, right_click)
 }
 
 /// Fermant attendu pour un caractère ouvrant de paire, sinon `None`.

@@ -6,7 +6,7 @@ use crate::i18n;
 use crate::syscall;
 
 use super::{
-    App, accent, action, changed_col, false_col, flag_on, push_col, pop_col,
+    App, accent, action, changed_col, dialog_window, false_col, flag_on, push_col, pop_col,
     micro_stack, micro_static_flags, syscall_details, syscall_labels, SyscallSkin,
 };
 
@@ -75,13 +75,10 @@ impl App {
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mut open = true;
         let mut close = false;
-        egui::Window::new(format!("🔬 Microscope — {} {}", insn.mnemonic, insn.operands))
-            .collapsible(false)
+        dialog_window(ctx, format!("🔬 Microscope — {} {}", insn.mnemonic, insn.operands))
             .resizable(true)
             .default_width(580.0)
             .default_height(560.0)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().id_salt("microscope_scroll").show(ui, |ui| {
@@ -393,11 +390,8 @@ impl App {
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mnem = self.c_mnemonic();
         let mut open = true;
-        egui::Window::new(tr("À propos", "About", "Acerca de"))
-            .collapsible(false)
+        dialog_window(ctx, tr("À propos", "About", "Acerca de"))
             .resizable(true)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
@@ -474,6 +468,17 @@ impl App {
                         ui.end_row();
                         ui.label(tr("Auteur", "Author", "Autor"));
                         ui.label(RichText::new("Frédéric Zawalski.").strong());
+                        ui.end_row();
+                        ui.label(tr("Dépôt", "Repository", "Repositorio"));
+                        ui.hyperlink_to(
+                            RichText::new(crate::updater::repo_label()).monospace(),
+                            crate::updater::repo_url(),
+                        )
+                        .on_hover_text(tr(
+                            "Ouvre le dépôt GitHub du projet dans le navigateur.",
+                            "Opens the project's GitHub repository in the browser.",
+                            "Abre el repositorio GitHub del proyecto en el navegador.",
+                        ));
                         ui.end_row();
                         ui.label(tr("Activation", "Activation", "Activación"));
                         match &self.license {
@@ -613,14 +618,11 @@ impl App {
         let mut close = false;
         let mut remove_breakpoint = false;
         let mut open = true;
-        egui::Window::new(format!(
+        dialog_window(ctx, format!(
             "{} {line}",
             tr("Condition d'arrêt — ligne", "Break condition — line", "Condición de parada — línea")
         ))
-        .collapsible(false)
         .resizable(false)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .default_pos(ctx.content_rect().center())
         .open(&mut open)
         .show(ctx, |ui| {
             ui.set_width(420.0);
@@ -763,15 +765,12 @@ impl App {
         };
 
         let mut open = true;
-        egui::Window::new(tr(
+        dialog_window(ctx, tr(
             "Désactiver la licence ?",
             "Deactivate the license?",
             "¿Desactivar la licencia?",
         ))
-        .collapsible(false)
         .resizable(false)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .default_pos(ctx.content_rect().center())
         .open(&mut open)
         .show(ctx, |ui| {
             ui.set_width(380.0);
@@ -876,11 +875,8 @@ impl App {
 
         let mut chosen: Option<Target> = None;
         let mut open = true;
-        egui::Window::new(tr("Nouveau fichier", "New file", "Archivo nuevo"))
-            .collapsible(false)
+        dialog_window(ctx, tr("Nouveau fichier", "New file", "Archivo nuevo"))
             .resizable(false)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.set_width(420.0);
@@ -981,13 +977,10 @@ impl App {
         let mnem = self.c_mnemonic();
 
         let mut open = true;
-        egui::Window::new(tr("Licence", "License", "Licencia"))
-            .collapsible(false)
+        dialog_window(ctx, tr("Licence", "License", "Licencia"))
             .resizable(true)
             .default_width(560.0)
             .default_height(520.0)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
@@ -1221,15 +1214,12 @@ impl App {
         // s'ajouteront sans pousser le bouton Fermer hors de la fenêtre.
         let max_body_h = (ctx.content_rect().height() * 0.66).max(240.0);
 
-        egui::Window::new(t_title)
-            .collapsible(false)
+        dialog_window(ctx, t_title)
             .resizable(true)
             // Large dès l'ouverture : les libellés d'options tiennent sur une
             // ligne, et il reste de la place pour ce qui viendra ensuite.
             .default_width(640.0)
             .min_width(430.0)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
@@ -1355,11 +1345,8 @@ impl App {
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mnem = self.c_mnemonic();
         let mut open = true;
-        egui::Window::new(tr("Raccourcis clavier", "Keyboard shortcuts", "Atajos de teclado"))
-            .collapsible(false)
+        dialog_window(ctx, tr("Raccourcis clavier", "Keyboard shortcuts", "Atajos de teclado"))
             .resizable(true)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 let rows = [
@@ -1394,6 +1381,7 @@ impl App {
                     ("Ctrl+3", tr("Afficher/masquer les registres", "Show/hide the registers", "Mostrar/ocultar los registros")),
                     ("Ctrl+4", tr("Afficher/masquer la mémoire", "Show/hide memory", "Mostrar/ocultar la memoria")),
                     ("Ctrl+5", tr("Afficher/masquer la fenêtre Prédiction", "Show/hide the Prediction window", "Mostrar/ocultar la ventana Predicción")),
+                    ("Ctrl+Alt+T", tr("Afficher/masquer la barre d'outils", "Show/hide the toolbar", "Mostrar/ocultar la barra de herramientas")),
                     ("Ctrl+Maj+P", tr("Palette de commandes — toute l'application au clavier", "Command palette — the whole app from the keyboard", "Paleta de comandos — toda la aplicación desde el teclado")),
                     ("F6", tr("Panneau suivant (Maj+F6 : précédent)", "Next panel (Shift+F6: previous)", "Panel siguiente (Mayús+F6: anterior)")),
                     ("Ctrl+W", tr("Fermer le panneau focalisé", "Close the focused panel", "Cerrar el panel enfocado")),
@@ -1401,6 +1389,7 @@ impl App {
                     ("Ctrl+Tab", tr("Onglet suivant du panneau focalisé", "Next tab of the focused panel", "Pestaña siguiente del panel enfocado")),
                     ("Tab", tr("Élément interactif suivant (hors éditeur)", "Next interactive element (outside the editor)", "Siguiente elemento interactivo (fuera del editor)")),
                     ("↑ / ↓", tr("Parcourir le panneau focalisé : désassemblage, explorateur, registres, mémoire (une ligne), vue mémoire (un fil)", "Browse the focused panel: disassembly, explorer, registers, memory (one row), memory view (one wire)", "Recorrer el panel enfocado: desensamblado, explorador, registros, memoria (una fila), vista memoria (un hilo)")),
+                    ("F2 / Suppr", tr("Explorateur : renommer / supprimer la sélection", "Explorer: rename / delete selection", "Explorador: renombrar / eliminar la selección")),
                     ("PgUp / PgDn", tr("Mémoire : saut de huit lignes", "Memory: jump eight rows", "Memoria: salto de ocho filas")),
                     ("← / →", tr("Timeline, ou traverser la ligne dans les registres", "Timeline, or move across the row in registers", "Línea de tiempo, o cruzar la fila en los registros")),
                     ("Entrée", tr("Valider : microscope, ouvrir le fichier, éditer le registre", "Confirm: microscope, open the file, edit the register", "Confirmar: microscopio, abrir el archivo, editar el registro")),
@@ -1529,10 +1518,32 @@ impl App {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let hdr = self.c_header();
+        let debugger_waiting_for_input = self.dbg.as_ref().is_some_and(|d| d.is_waiting());
+        // Wine ne remonte pas l'appel Windows `ReadFile` comme ptrace remonte
+        // `read` sous Linux. Tant que le processus PE64 est vivant, son stdin
+        // est néanmoins branché : on affiche donc l'entrée sans attendre un
+        // signal d'attente impossible à obtenir.
+        let wine_input_available = self.wine.as_ref().is_some_and(|run| run.is_running());
+        let waiting_for_input = debugger_waiting_for_input || wine_input_available;
+        // Le champ de la console existe aussi, mais cette fenêtre est celle qui
+        // se rouvre à l'interaction : la réponse doit pouvoir être saisie ici,
+        // sans chercher le panneau Console derrière une disposition dockée.
+        let claim_input_focus = waiting_for_input && !self.program_output_input_focus_claimed;
+        self.program_output_input_focus_claimed = waiting_for_input;
 
         // État de l'exécution, dans les mots du terminal : c'est ce qui donne
         // son sens à une sortie vide (rien écrit ? ou pas encore lancé ?).
-        let (state_txt, state_col) = match self.dbg.as_ref().map(|d| d.state) {
+        let (state_txt, state_col) = if wine_input_available {
+            (
+                tr(
+                    "Exécution Windows (Wine) — saisie disponible",
+                    "Windows execution (Wine) — input available",
+                    "Ejecución Windows (Wine) — entrada disponible",
+                )
+                .to_string(),
+                action(),
+            )
+        } else { match self.dbg.as_ref().map(|d| d.state) {
             None => (
                 tr("Aucune exécution", "No run", "Ninguna ejecución").to_string(),
                 hdr,
@@ -1561,23 +1572,32 @@ impl App {
                 tr("En cours d'exécution", "Running", "En ejecución").to_string(),
                 action(),
             ),
-        };
+        }};
 
         // Corps borné à une fraction de l'écran, comme la fenêtre Réglages :
         // une sortie de mille lignes poussait sinon le pied de page et le
         // bouton « Fermer » hors de la fenêtre, qui débordait de l'écran.
-        let max_body_h = (ctx.content_rect().height() * 0.6).max(160.0);
+        // Une sortie se lit dans une boîte compacte ; le défilement absorbe
+        // les longues traces plutôt que d'agrandir la fenêtre jusqu'à masquer
+        // l'éditeur. La limite est aussi cohérente avec sa taille maximale.
+        let max_body_h = (ctx.content_rect().height() * 0.38).clamp(160.0, 300.0);
         let mut open = true;
         let mut copy = false;
         egui::Window::new(tr("Sortie du programme", "Program output", "Salida del programa"))
             // Identité stable, indépendante du titre : changer de langue ne doit
             // pas faire perdre à la fenêtre sa position et sa taille.
-            .id(egui::Id::new("program_output"))
+            // Nouvelle identité : les très grandes dimensions mémorisées par
+            // les versions précédentes ne doivent pas survivre au retour au
+            // format compact. L'utilisateur peut ensuite la redimensionner.
+            .id(egui::Id::new("program_output_compact"))
             .collapsible(false)
             .resizable(true)
-            .default_width(560.0)
+            .default_width(540.0)
             .min_width(360.0)
-            .default_height(360.0)
+            .max_width(720.0)
+            .default_height(340.0)
+            .min_height(240.0)
+            .max_height(540.0)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
             .open(&mut open)
@@ -1596,6 +1616,52 @@ impl App {
                     });
                 });
                 ui.add_space(4.0);
+
+                if waiting_for_input {
+                    ui.label(
+                        RichText::new(if wine_input_available {
+                            tr(
+                                "Saisissez une réponse pour le programme Windows, puis validez.",
+                                "Enter a response for the Windows program, then submit.",
+                                "Introduzca una respuesta para el programa Windows y envíela.",
+                            )
+                        } else {
+                            tr(
+                                "Le programme attend votre saisie : tapez-la puis validez.",
+                                "The program is waiting for input: type it, then submit.",
+                                "El programa espera una entrada: escríbala y envíela.",
+                            )
+                        })
+                        .color(action()),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("❯").monospace().color(action()));
+                        let hint = tr(
+                            "Saisie à envoyer au programme…",
+                            "Input to send to the program…",
+                            "Entrada para enviar al programa…",
+                        );
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.stdin_input)
+                                .id_salt("program_output_stdin")
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Monospace)
+                                .hint_text(hint),
+                        );
+                        let submit_with_enter = response.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let submit_with_button = ui
+                            .button(tr("Envoyer", "Send", "Enviar"))
+                            .clicked();
+                        if submit_with_enter || submit_with_button {
+                            self.send_stdin();
+                            response.request_focus();
+                        } else if claim_input_focus {
+                            response.request_focus();
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
 
                 // Le terminal se distingue des panneaux de l'IDE par la surface
                 // la plus enfoncée du thème — celle de l'éditeur —, pas par un
@@ -1678,13 +1744,10 @@ impl App {
         let mnem = self.c_mnemonic();
         let hdr = self.c_header();
         let mut open = true;
-        egui::Window::new(tr("Calculatrice", "Calculator", "Calculadora"))
-            .collapsible(false)
+        dialog_window(ctx, tr("Calculatrice", "Calculator", "Calculadora"))
             .resizable(true)
             .default_width(520.0)
             .min_width(400.0)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 // Sélecteur de base d'entrée. Hexa en tête : c'est la base dans
@@ -1881,12 +1944,9 @@ impl App {
         let mut open = true;
         let mut goto_line = false;
         let mut close = false;
-        egui::Window::new(tr("🛑 Le programme a planté", "🛑 The program crashed", "🛑 El programa falló"))
-            .collapsible(false)
+        dialog_window(ctx, tr("🛑 Le programme a planté", "🛑 The program crashed", "🛑 El programa falló"))
             .resizable(true)
             .default_width(520.0)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 // Bandeau de cause, en rouge.
@@ -2017,12 +2077,9 @@ impl App {
 
         let title = tr("Mise à jour", "Update", "Actualización");
         let mut open = true;
-        egui::Window::new(title)
-            .collapsible(false)
+        dialog_window(ctx, title)
             .resizable(false)
             .default_width(420.0)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 match &self.updater.state.clone() {
@@ -2159,14 +2216,11 @@ impl App {
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
 
         let trial_active = crate::trial::is_active();
-        egui::Window::new("")
+        dialog_window(ctx, "")
             .id(egui::Id::new("license_nag"))
             .title_bar(false)
-            .collapsible(false)
             .resizable(false)
             .default_width(360.0)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .frame(
                 egui::Frame::window(&ctx.style())
                     .corner_radius(egui::CornerRadius::same(12))
@@ -2290,12 +2344,9 @@ impl App {
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
 
         let mut open = true;
-        egui::Window::new(tr("Licence ASM Studio", "ASM Studio license", "Licencia de ASM Studio"))
-            .collapsible(false)
+        dialog_window(ctx, tr("Licence ASM Studio", "ASM Studio license", "Licencia de ASM Studio"))
             .resizable(false)
             .default_width(480.0)
-            .pivot(egui::Align2::CENTER_CENTER)
-            .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
                 if let crate::license::LicenseState::Valid(p) = &self.license {

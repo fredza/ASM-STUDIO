@@ -381,6 +381,10 @@ pub struct App {
     /// il ne sera pas repris tant que le programme n'aura pas de nouveau
     /// besoin d'une entrée.
     pub(super) stdin_focus_claimed: bool,
+    /// Même garde, pour le champ de la fenêtre « Sortie du programme ».
+    /// Cette fenêtre s'ouvre justement au moment où un `read` bloque ; elle
+    /// doit donc pouvoir recevoir la frappe sans voler le focus à chaque frame.
+    pub(super) program_output_input_focus_claimed: bool,
     /// Points d'arrêt, par numéro de ligne source (1-based), avec leur
     /// condition éventuelle (`None` = s'arrêter à chaque passage). Posés sur la
     /// ligne et non sur l'adresse : c'est ce que l'élève voit, et ça survit à
@@ -401,6 +405,14 @@ pub struct App {
     pub(super) explorer_dir: PathBuf,
     /// Fichier retenu au clavier dans l'explorateur (surligné, ouvert par Entrée).
     pub(super) explorer_selected: Option<PathBuf>,
+    /// Entrée dont le nom est édité directement dans l'explorateur.
+    pub(super) explorer_renaming: Option<PathBuf>,
+    pub(super) explorer_rename_input: String,
+    /// Boîte légère de création de dossier depuis l'explorateur.
+    pub(super) explorer_new_folder: bool,
+    pub(super) explorer_new_folder_input: String,
+    /// Entrée dont la suppression attend une confirmation explicite.
+    pub(super) explorer_delete: Option<PathBuf>,
     pub(super) view_index: usize,
 
     pub(super) mem_addr: u64,
@@ -509,6 +521,9 @@ pub struct App {
     /// bascule en vue lecture seule (voir `folded_editor_ui`).
     pub(super) folded_labels: std::collections::BTreeSet<String>,
     pub(super) stack_tab: StackTab,
+    /// Barre des actions d'exécution (Lancer, Suivant, Continuer…). Elle peut
+    /// être masquée pour libérer de la hauteur sur un petit écran.
+    pub(super) show_toolbar: bool,
     pub(super) show_tooltips: bool,
     /// Inspection au survol dans l'éditeur (voir [`inspect`]) : la valeur du
     /// mot sous le pointeur, affichée sur place.
@@ -650,6 +665,67 @@ pub struct App {
     pub(super) nag_next_at: Option<f64>,
 }
 
+/// Un réglage persisté : sa clé dans `settings.conf`, comment le lire depuis
+/// l'application, comment l'y réappliquer.
+///
+/// Les valeurs transitent en texte parce que c'est ce qu'est le fichier : une
+/// ligne `clé=valeur`. Chaque entrée porte donc sa propre conversion, ce qui
+/// laisse cohabiter dans la même table un booléen, un identifiant de thème et
+/// une liste de leçons terminées.
+struct Setting {
+    key: &'static str,
+    read: fn(&App) -> String,
+    write: fn(&mut App, &str),
+}
+
+/// Tous les réglages scalaires, dans l'ordre où ils sont écrits.
+///
+/// Une seule table, parce qu'il y en avait deux : une énumération dans
+/// `apply_settings` et une autre dans `settings_content`, qui devaient rester
+/// d'accord à la main. Oublier la première laissait un réglage qui marche
+/// jusqu'au prochain lancement, et personne pour le dire ; oublier la seconde
+/// l'empêchait d'être écrit du tout. Le round-trip est maintenant vrai par
+/// construction, et le test qui le vérifie n'a plus de liste à tenir non plus
+/// (voir `every_preference_survives_a_settings_round_trip`).
+///
+/// Deux clés n'y sont pas, faute d'entrer dans le moule d'une ligne unique :
+/// `recent`, qui en occupe autant qu'il y a de fichiers, et `dock`, qui doit
+/// être appliqué en dernier (voir [`App::apply_settings`]).
+const SETTINGS: &[Setting] = &[
+    // Les identifiants « system », « dark » et « light » sont ceux
+    // qu'écrivaient les versions précédentes : un réglage existant est relu
+    // tel quel.
+    Setting {
+        key: "theme",
+        read: |a| a.theme_pref.key().to_string(),
+        write: |a, v| a.theme_pref = crate::theme::Choice::from_key(v),
+    },
+    Setting { key: "lang", read: |a| a.lang.key().to_string(), write: |a, v| a.lang = Lang::from_key(v) },
+    Setting { key: "mode", read: |a| a.mode.key().to_string(), write: |a, v| a.mode = UiMode::from_key(v) },
+    Setting { key: "tooltips", read: |a| a.show_tooltips.to_string(), write: |a, v| a.show_tooltips = v == "true" },
+    Setting { key: "toolbar", read: |a| a.show_toolbar.to_string(), write: |a, v| a.show_toolbar = v == "true" },
+    Setting { key: "inspect_hover", read: |a| a.inspect_hover.to_string(), write: |a, v| a.inspect_hover = v == "true" },
+    Setting { key: "asmstd", read: |a| a.use_asmstd.to_string(), write: |a, v| a.use_asmstd = v == "true" },
+    Setting { key: "animate", read: |a| a.animate.to_string(), write: |a, v| a.animate = v == "true" },
+    Setting { key: "pedagogy_anim", read: |a| a.pedagogy_anim.to_string(), write: |a, v| a.pedagogy_anim = v == "true" },
+    Setting { key: "pedagogy_memview", read: |a| a.pedagogy_memview.to_string(), write: |a, v| a.pedagogy_memview = v == "true" },
+    Setting { key: "pedagogy_predict", read: |a| a.pedagogy_predict.to_string(), write: |a, v| a.pedagogy_predict = v == "true" },
+    Setting { key: "tutorial", read: |a| a.tutorial_enabled.to_string(), write: |a, v| a.tutorial_enabled = v == "true" },
+    Setting {
+        key: "tutorial_done",
+        read: |a| a.tutorial_progress.to_string(),
+        write: |a, v| a.tutorial_progress = crate::tutorial::Progress::parse(v),
+    },
+    Setting {
+        key: "tutorial_current",
+        read: |a| a.tutorial_current.clone().unwrap_or_default(),
+        write: |a, v| a.tutorial_current = (!v.is_empty()).then(|| v.to_string()),
+    },
+    Setting { key: "welcome_dismissed", read: |a| a.welcome_dismissed.to_string(), write: |a, v| a.welcome_dismissed = v == "true" },
+    Setting { key: "target", read: |a| a.target.key().to_string(), write: |a, v| a.target = crate::assemble::Target::from_key(v) },
+    Setting { key: "pe", read: |a| a.pe_enabled.to_string(), write: |a, v| a.pe_enabled = v == "true" },
+];
+
 impl App {
     pub fn new() -> Self {
         setup_examples();
@@ -681,6 +757,7 @@ impl App {
             pending_syscall: None,
             stdin_input: String::new(),
             stdin_focus_claimed: false,
+            program_output_input_focus_claimed: false,
             breakpoints: std::collections::BTreeMap::new(),
             bp_cond_line: None,
             bp_cond_input: String::new(),
@@ -689,6 +766,11 @@ impl App {
             recent_files: Vec::new(),
             explorer_dir,
             explorer_selected: None,
+            explorer_renaming: None,
+            explorer_rename_input: String::new(),
+            explorer_new_folder: false,
+            explorer_new_folder_input: String::new(),
+            explorer_delete: None,
             view_index: 0,
             mem_addr: 0,
             mem_input: String::new(),
@@ -733,6 +815,7 @@ impl App {
             pending_scroll_to_line: None,
             folded_labels: std::collections::BTreeSet::new(),
             stack_tab: StackTab::Stack,
+            show_toolbar: true,
             show_tooltips: true,
             inspect_hover: true,
             animate: true,
@@ -818,6 +901,7 @@ impl App {
     // ---------- Persistance des réglages ----------
 
     pub(super) fn load_settings(&mut self) {
+        // (voir [`SETTINGS`] pour la table qui décrit le format)
         // Les tests ne doivent pas dépendre de la configuration de la machine :
         // sinon leur résultat change selon la langue choisie par l'utilisateur.
         if cfg!(test) {
@@ -839,27 +923,6 @@ impl App {
             let Some((k, v)) = line.split_once('=') else { continue };
             let v = v.trim();
             match k.trim() {
-                // Les identifiants « system », « dark » et « light » sont
-                // ceux qu'écrivaient les versions précédentes : un réglage
-                // existant est relu tel quel.
-                "theme" => self.theme_pref = crate::theme::Choice::from_key(v),
-                "lang" => self.lang = Lang::from_key(v),
-                "mode" => self.mode = UiMode::from_key(v),
-                "target" => self.target = crate::assemble::Target::from_key(v),
-                "pe" => self.pe_enabled = v == "true",
-                "tutorial" => self.tutorial_enabled = v == "true",
-                "tutorial_done" => self.tutorial_progress = crate::tutorial::Progress::parse(v),
-                "tutorial_current" => {
-                    self.tutorial_current = (!v.is_empty()).then(|| v.to_string())
-                }
-                "tooltips" => self.show_tooltips = v == "true",
-                "inspect_hover" => self.inspect_hover = v == "true",
-                "asmstd" => self.use_asmstd = v == "true",
-                "animate" => self.animate = v == "true",
-                "pedagogy_anim" => self.pedagogy_anim = v == "true",
-                "pedagogy_memview" => self.pedagogy_memview = v == "true",
-                "pedagogy_predict" => self.pedagogy_predict = v == "true",
-                "welcome_dismissed" => self.welcome_dismissed = v == "true",
                 // Une ligne par fichier, dans l'ordre où elles ont été
                 // écrites : pas de séparateur à choisir, donc rien à échapper
                 // dans un chemin qui en contiendrait un.
@@ -869,7 +932,13 @@ impl App {
                     }
                 }
                 "dock" => saved_dock = Some(v.to_string()),
-                _ => {}
+                // Tout le reste vient de la table : une clé inconnue (réglage
+                // retiré, fichier bricolé) est ignorée sans bruit.
+                key => {
+                    if let Some(s) = SETTINGS.iter().find(|s| s.key == key) {
+                        (s.write)(self, v);
+                    }
+                }
             }
         }
         match saved_dock {
@@ -898,34 +967,19 @@ impl App {
     /// [`save_settings`] pour la même raison que [`apply_settings`] : le format
     /// se vérifie alors sans écrire nulle part.
     pub(super) fn settings_content(&self) -> String {
-        let theme = self.theme_pref.key();
-        let recent: String = self
-            .recent_files
-            .iter()
-            .map(|p| format!("recent={}\n", p.display()))
-            .collect();
-        format!(
-            "theme={theme}\nlang={}\nmode={}\ntooltips={}\ninspect_hover={}\nasmstd={}\nanimate={}\n\
-             pedagogy_anim={}\npedagogy_memview={}\npedagogy_predict={}\n\
-             tutorial={}\ntutorial_done={}\ntutorial_current={}\n\
-             welcome_dismissed={}\ntarget={}\npe={}\n{recent}dock={}\n",
-            self.lang.key(),
-            self.mode.key(),
-            self.show_tooltips,
-            self.inspect_hover,
-            self.use_asmstd,
-            self.animate,
-            self.pedagogy_anim,
-            self.pedagogy_memview,
-            self.pedagogy_predict,
-            self.tutorial_enabled,
-            self.tutorial_progress,
-            self.tutorial_current.clone().unwrap_or_default(),
-            self.welcome_dismissed,
-            self.target.key(),
-            self.pe_enabled,
-            self.dock_layout_string(),
-        )
+        let mut out = String::new();
+        for s in SETTINGS {
+            out.push_str(s.key);
+            out.push('=');
+            out.push_str(&(s.read)(self));
+            out.push('\n');
+        }
+        for p in &self.recent_files {
+            out.push_str(&format!("recent={}\n", p.display()));
+        }
+        // En dernier, comme il est relu en dernier.
+        out.push_str(&format!("dock={}\n", self.dock_layout_string()));
+        out
     }
 
     // ---------- Travail non enregistré ----------
@@ -1326,30 +1380,38 @@ mod tests {
     /// l'ajouter au fichier : il fonctionne, jusqu'au prochain lancement.
     #[test]
     fn every_preference_survives_a_settings_round_trip() {
-        // (nom lisible, accès au champ) — la liste que le fichier doit couvrir.
-        type Get = fn(&App) -> bool;
-        type Set = fn(&mut App, bool);
-        let prefs: [(&str, Get, Set); 7] = [
-            ("tooltips", |a| a.show_tooltips, |a, v| a.show_tooltips = v),
-            ("inspect_hover", |a| a.inspect_hover, |a, v| a.inspect_hover = v),
-            ("animate", |a| a.animate, |a, v| a.animate = v),
-            ("asmstd", |a| a.use_asmstd, |a, v| a.use_asmstd = v),
-            ("pedagogy_anim", |a| a.pedagogy_anim, |a, v| a.pedagogy_anim = v),
-            ("pedagogy_memview", |a| a.pedagogy_memview, |a, v| a.pedagogy_memview = v),
-            ("pedagogy_predict", |a| a.pedagogy_predict, |a, v| a.pedagogy_predict = v),
-        ];
-        for (name, get, set) in prefs {
-            // Dans les deux sens : un réglage écrit en dur à `true` passerait le
-            // test si on ne vérifiait que la valeur `true`.
-            for value in [false, true] {
+        for s in SETTINGS {
+            // Un réglage à deux états se teste dans les deux sens : écrit en
+            // dur à `true`, il passerait un test qui ne vérifie que `true`.
+            // Les autres (thème, langue, cible…) ont leurs propres tests, qui
+            // savent quelles valeurs ont un sens ; ici on vérifie au moins que
+            // la clé fait l'aller-retour.
+            let default = (s.read)(&App::new());
+            let values: &[&str] = match default.as_str() {
+                "true" | "false" => &["false", "true"],
+                other => &[other],
+            };
+            for value in values {
                 let mut app = App::new();
-                set(&mut app, value);
+                (s.write)(&mut app, value);
                 let content = app.settings_content();
                 let mut reloaded = App::new();
                 reloaded.apply_settings(&content);
-                assert_eq!(get(&reloaded), value, "« {name} » perdu à la relecture");
+                assert_eq!(&(s.read)(&reloaded), value, "« {} » perdu à la relecture", s.key);
             }
         }
+    }
+
+    /// Relire ce qu'on vient d'écrire doit redonner exactement le même fichier.
+    /// C'est ce qui attrape une clé écrite que personne ne relit — le réglage
+    /// est alors perdu au lancement suivant, sans rien signaler.
+    #[test]
+    fn a_settings_file_read_back_writes_itself_identically() {
+        let app = App::new();
+        let content = app.settings_content();
+        let mut reloaded = App::new();
+        reloaded.apply_settings(&content);
+        assert_eq!(reloaded.settings_content(), content);
     }
 
     /// Un thème choisi doit se retrouver au lancement suivant : c'est tout

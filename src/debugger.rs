@@ -23,6 +23,119 @@ use nix::sys::ptrace;
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, execv, fork};
 
+use crate::i18n::{self, Lang};
+
+/// Ce qui peut empêcher le débogueur de faire ce qu'on lui demande.
+///
+/// Une erreur décrite plutôt qu'une phrase déjà rédigée : ces messages
+/// finissent dans la console de l'élève, qui a pu mettre l'interface en
+/// anglais ou en espagnol. Ce module n'a pas à connaître cette langue — elle
+/// peut même changer entre l'instant de la faute et celui où elle s'affiche.
+/// Il dit ce qui s'est passé ; [`Self::message`] le met en mots, au moment de
+/// l'écrire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DbgError {
+    /// Chemin du binaire non représentable en UTF-8 (ou contenant un zéro).
+    BadPath,
+    /// `ptrace` refusé par le système : durcissement Yama, conteneur sans
+    /// `CAP_SYS_PTRACE`, politique de sécurité.
+    PtraceDenied,
+    /// `execve` a échoué : rien n'a démarré.
+    NoStart,
+    /// Le programme s'est terminé de lui-même avant le premier arrêt.
+    ExitedBeforeStart(i32),
+    /// Premier arrêt dans un état qu'on ne sait pas interpréter.
+    UnexpectedInitialState(String),
+    /// Plafond de l'historique atteint (voir [`MAX_HISTORY`]).
+    HistoryFull(usize),
+    /// L'entrée standard du programme n'a pas pu être redirigée : il n'y a
+    /// nulle part où écrire ce que l'élève tape.
+    NoStdin,
+    /// Le processus n'est pas arrêté : ni lecture ni écriture possible.
+    NotStopped,
+    /// Nom de registre inconnu (saisie du laboratoire mémoire).
+    UnknownRegister(String),
+    /// Un appel système a échoué. `what` dit ce qu'on tentait — `fork`,
+    /// `getregs`, `write @0x...` — et `err` porte le texte de l'OS, qu'on rend
+    /// tel quel : il n'a pas de traduction à offrir, et c'est lui qui permet de
+    /// comprendre ce qui s'est passé.
+    System { what: String, err: String },
+}
+
+impl DbgError {
+    /// Une erreur système, avec ce qu'on tentait de faire.
+    fn sys(what: impl Into<String>, err: impl std::fmt::Display) -> DbgError {
+        DbgError::System { what: what.into(), err: err.to_string() }
+    }
+
+    /// Le message tel qu'il sera montré, dans la langue de l'interface.
+    pub fn message(&self, lang: Lang) -> String {
+        let tr = |fr, en, es| i18n::tr3(lang, fr, en, es);
+        match self {
+            DbgError::BadPath => tr(
+                "chemin du binaire illisible (non-UTF8)",
+                "unreadable binary path (not UTF-8)",
+                "ruta del binario ilegible (no UTF-8)",
+            )
+            .to_string(),
+            DbgError::PtraceDenied => tr(
+                "le débogage est interdit par le système (ptrace refusé)",
+                "debugging is denied by the system (ptrace refused)",
+                "el sistema prohíbe la depuración (ptrace denegado)",
+            )
+            .to_string(),
+            DbgError::NoStart => tr(
+                "le programme n'a pas démarré (execve a échoué)",
+                "the program did not start (execve failed)",
+                "el programa no arrancó (execve falló)",
+            )
+            .to_string(),
+            DbgError::ExitedBeforeStart(code) => format!(
+                "{} ({} {code})",
+                tr(
+                    "le programme s'est terminé avant le débogage",
+                    "the program exited before debugging began",
+                    "el programa terminó antes de la depuración",
+                ),
+                tr("code", "code", "código"),
+            ),
+            DbgError::UnexpectedInitialState(s) => {
+                format!("{} : {s}", tr("état initial inattendu", "unexpected initial state", "estado inicial inesperado"))
+            }
+            DbgError::HistoryFull(max) => format!(
+                "{} ({max} {}) : {}",
+                tr("historique plein", "history full", "historial lleno"),
+                tr("étapes", "steps", "pasos"),
+                tr(
+                    "le programme boucle-t-il ? Relancez-le.",
+                    "is the program looping? Restart it.",
+                    "¿el programa hace un bucle? Reinícielo.",
+                ),
+            ),
+            DbgError::NoStdin => tr(
+                "entrée standard non redirigée",
+                "standard input not redirected",
+                "entrada estándar no redirigida",
+            )
+            .to_string(),
+            DbgError::NotStopped => tr(
+                "le processus n'est pas arrêté",
+                "the process is not stopped",
+                "el proceso no está detenido",
+            )
+            .to_string(),
+            DbgError::UnknownRegister(name) => {
+                format!("{} : {name}", tr("registre inconnu", "unknown register", "registro desconocido"))
+            }
+            DbgError::System { what, err } => format!("{what}: {err}"),
+        }
+    }
+}
+
+/// Le `Result` de ce module. Alias plutôt que `Result<T, DbgError>` répété
+/// trente-six fois — c'est le nombre exact de signatures concernées.
+pub type DbgResult<T> = std::result::Result<T, DbgError>;
+
 /// Sous-ensemble des registres généraux + RIP + EFLAGS que l'on suit.
 #[derive(Clone, Default, PartialEq)]
 pub struct Registers {
@@ -380,11 +493,11 @@ pub struct Debugger {
 
 impl Debugger {
     /// Lance le binaire et s'arrête juste avant sa première instruction.
-    pub fn launch(binary: &Path) -> Result<Self, String> {
+    pub fn launch(binary: &Path) -> DbgResult<Self> {
         let path = binary
             .to_str()
-            .ok_or_else(|| "chemin binaire non-UTF8".to_string())?;
-        let cpath = CString::new(path).map_err(|e| e.to_string())?;
+            .ok_or(DbgError::BadPath)?;
+        let cpath = CString::new(path).map_err(|_| DbgError::BadPath)?;
 
         // Tuyaux créés AVANT le fork pour que l'enfant en hérite. `O_CLOEXEC`
         // sur les quatre extrémités : seules les copies posées par `dup2` (qui
@@ -397,7 +510,7 @@ impl Debugger {
             None => (-1, -1),
         };
 
-        match unsafe { fork() }.map_err(|e| format!("fork: {e}"))? {
+        match unsafe { fork() }.map_err(|e| DbgError::sys("fork", e))? {
             ForkResult::Child => {
                 // Dans l'enfant : uniquement des appels async-signal-safe avant
                 // execve — `dup2` et `_exit` le sont.
@@ -421,22 +534,20 @@ impl Debugger {
             ForkResult::Parent { child } => {
                 // Premier arrêt attendu : SIGTRAP juste après execve, avant la
                 // 1re instruction. Si l'enfant est déjà mort, execve a échoué.
-                match waitpid(child, None).map_err(|e| format!("waitpid initial: {e}"))? {
+                match waitpid(child, None).map_err(|e| DbgError::sys("waitpid initial", e))? {
                     WaitStatus::Stopped(_, _) => {}
                     WaitStatus::Exited(_, 126) => {
-                        return Err(
-                            "le débogage est interdit par le système (ptrace refusé)".to_string()
-                        );
+                        return Err(DbgError::PtraceDenied);
                     }
                     WaitStatus::Exited(_, 127) => {
-                        return Err("le programme n'a pas démarré (execve a échoué)".to_string());
+                        return Err(DbgError::NoStart);
                     }
                     WaitStatus::Exited(_, code) => {
-                        return Err(format!(
-                            "le programme s'est terminé avant le débogage (code {code})"
-                        ));
+                        return Err(DbgError::ExitedBeforeStart(code));
                     }
-                    other => return Err(format!("état initial inattendu: {other:?}")),
+                    other => {
+                        return Err(DbgError::UnexpectedInitialState(format!("{other:?}")));
+                    }
                 }
                 // Le parent lâche les extrémités qui appartiennent à l'enfant :
                 // tant qu'il tient `out_w`, lire `out` ne verrait jamais l'EOF.
@@ -459,14 +570,12 @@ impl Debugger {
     /// obtenu (cas ordinaire) ou au bout de [`STEP_BUDGET`] en laissant l'état
     /// à [`RunState::Running`] — à charge pour l'appelant de rappeler
     /// [`Self::poll`] à chaque frame tant que c'est le cas.
-    pub fn step(&mut self) -> Result<(), String> {
+    pub fn step(&mut self) -> DbgResult<()> {
         if self.state != RunState::Stopped {
             return Ok(());
         }
         if self.history.len() > MAX_HISTORY {
-            return Err(format!(
-                "historique plein ({MAX_HISTORY} étapes) : le programme boucle-t-il ? Relancez-le."
-            ));
+            return Err(DbgError::HistoryFull(MAX_HISTORY));
         }
         // Seul un appel système peut suspendre l'exécution durablement. Une
         // instruction ordinaire s'arrête en quelques microsecondes : l'attendre
@@ -474,12 +583,12 @@ impl Debugger {
         // un tour de boucle et une sieste — deux ordres de grandeur de plus,
         // sur le chemin le plus chaud du débogueur.
         let may_block = self.at_syscall();
-        ptrace::step(self.child, None).map_err(|e| format!("singlestep: {e}"))?;
+        ptrace::step(self.child, None).map_err(|e| DbgError::sys("singlestep", e))?;
         self.state = RunState::Running;
         if may_block {
             return self.poll();
         }
-        let status = waitpid(self.child, None).map_err(|e| format!("waitpid: {e}"))?;
+        let status = waitpid(self.child, None).map_err(|e| DbgError::sys("waitpid", e))?;
         self.finish_step(status)?;
         self.drain_output();
         Ok(())
@@ -496,7 +605,7 @@ impl Debugger {
     /// Récupère l'arrêt en attente si le pas lancé par [`Self::step`] s'est
     /// achevé. Sans effet dans tout autre état. Ne bloque jamais plus de
     /// [`STEP_BUDGET`].
-    pub fn poll(&mut self) -> Result<(), String> {
+    pub fn poll(&mut self) -> DbgResult<()> {
         if self.state != RunState::Running {
             return Ok(());
         }
@@ -507,7 +616,7 @@ impl Debugger {
         self.flush_input()?;
         loop {
             let status = waitpid(self.child, Some(WaitPidFlag::WNOHANG))
-                .map_err(|e| format!("waitpid: {e}"))?;
+                .map_err(|e| DbgError::sys("waitpid", e))?;
             if status != WaitStatus::StillAlive {
                 self.finish_step(status)?;
                 // Le programme a pu écrire juste avant de rendre la main (ou de
@@ -533,7 +642,7 @@ impl Debugger {
     }
 
     /// Enregistre l'arrêt qui vient de survenir.
-    fn finish_step(&mut self, status: WaitStatus) -> Result<(), String> {
+    fn finish_step(&mut self, status: WaitStatus) -> DbgResult<()> {
         match status {
             WaitStatus::Exited(_, code) => {
                 self.state = RunState::Exited(code);
@@ -604,9 +713,9 @@ impl Debugger {
 
     /// Envoie une ligne sur l'entrée standard du programme. C'est ce qui
     /// débloque un `read` en attente (état [`RunState::Running`]).
-    pub fn write_stdin(&mut self, line: &str) -> Result<(), String> {
+    pub fn write_stdin(&mut self, line: &str) -> DbgResult<()> {
         let Some(io) = self.io.as_mut() else {
-            return Err("entrée standard non redirigée".to_string());
+            return Err(DbgError::NoStdin);
         };
         io.outgoing.extend_from_slice(line.as_bytes());
         self.flush_input()
@@ -615,7 +724,7 @@ impl Debugger {
     /// Pousse vers le programme ce qui reste de saisie en attente, sans jamais
     /// attendre. Ce qui ne passe pas — tuyau plein, programme qui ne lit pas
     /// encore — reste en file pour la frame suivante.
-    fn flush_input(&mut self) -> Result<(), String> {
+    fn flush_input(&mut self) -> DbgResult<()> {
         let Some(io) = self.io.as_mut() else {
             return Ok(());
         };
@@ -641,7 +750,15 @@ impl Debugger {
                     }
                     _ => {
                         io.outgoing.drain(..sent);
-                        return Err(format!("écriture sur l'entrée standard : {err}"));
+                        return Err(DbgError::sys(
+                            i18n::tr3(
+                                Lang::Fr,
+                                "écriture sur l'entrée standard",
+                                "writing to standard input",
+                                "escritura en la entrada estándar",
+                            ),
+                            err,
+                        ));
                     }
                 }
             }
@@ -672,7 +789,7 @@ impl Debugger {
         &mut self,
         budget: usize,
         stop: impl Fn(&Registers) -> bool,
-    ) -> Result<usize, String> {
+    ) -> DbgResult<usize> {
         let mut done = 0;
         while done < budget {
             self.step()?;
@@ -740,17 +857,17 @@ impl Debugger {
 
     /// Lit `len` octets à l'adresse `addr` dans l'espace mémoire du tracé (état
     /// courant vivant), via `/proc/<pid>/mem`.
-    pub fn read_mem(&self, addr: u64, len: usize) -> Result<Vec<u8>, String> {
+    pub fn read_mem(&self, addr: u64, len: usize) -> DbgResult<Vec<u8>> {
         read_mem_at(&self.mem, addr, len)
     }
 
     /// Modifie un registre (processus arrêté requis), puis met à jour le
     /// snapshot courant. Utilisé par le « laboratoire mémoire ».
-    pub fn set_register(&mut self, name: &str, value: u64) -> Result<(), String> {
+    pub fn set_register(&mut self, name: &str, value: u64) -> DbgResult<()> {
         if self.state != RunState::Stopped {
-            return Err("le processus n'est pas arrêté".to_string());
+            return Err(DbgError::NotStopped);
         }
-        let mut r = ptrace::getregs(self.child).map_err(|e| format!("getregs: {e}"))?;
+        let mut r = ptrace::getregs(self.child).map_err(|e| DbgError::sys("getregs", e))?;
         match name {
             "RAX" => r.rax = value,
             "RBX" => r.rbx = value,
@@ -770,16 +887,16 @@ impl Debugger {
             "R15" => r.r15 = value,
             "RIP" => r.rip = value,
             "EFLAGS" => r.eflags = value,
-            _ => return Err(format!("registre inconnu: {name}")),
+            _ => return Err(DbgError::UnknownRegister(name.to_string())),
         }
-        ptrace::setregs(self.child, r).map_err(|e| format!("setregs: {e}"))?;
+        ptrace::setregs(self.child, r).map_err(|e| DbgError::sys("setregs", e))?;
         self.refresh_head()
     }
 
     /// Écrit des octets en mémoire (processus arrêté), puis met à jour le snapshot.
-    pub fn write_mem(&mut self, addr: u64, bytes: &[u8]) -> Result<(), String> {
+    pub fn write_mem(&mut self, addr: u64, bytes: &[u8]) -> DbgResult<()> {
         if self.state != RunState::Stopped {
-            return Err("le processus n'est pas arrêté".to_string());
+            return Err(DbgError::NotStopped);
         }
         write_mem_at(&self.mem, addr, bytes)?;
         self.refresh_head()
@@ -797,7 +914,7 @@ impl Debugger {
     }
 
     /// Recharge le snapshot de tête depuis le processus (après une édition).
-    fn refresh_head(&mut self) -> Result<(), String> {
+    fn refresh_head(&mut self) -> DbgResult<()> {
         let regs = read_regs(self.child)?;
         // Le snapshot remplacé est encore en queue : c'est bien celui d'avant
         // qui doit servir de référence pour le partage du bloc flottant.
@@ -957,13 +1074,13 @@ fn set_nonblocking(fd: &OwnedFd) -> Result<(), std::io::Error> {
 }
 
 /// Ouvre `/proc/<pid>/mem` en lecture-écriture, une fois pour la vie du tracé.
-fn open_mem(pid: Pid) -> Result<File, String> {
+fn open_mem(pid: Pid) -> DbgResult<File> {
     let path = format!("/proc/{}/mem", pid.as_raw());
     OpenOptions::new()
         .read(true)
         .write(true)
         .open(&path)
-        .map_err(|e| format!("open {path}: {e}"))
+        .map_err(|e| DbgError::sys(format!("open {path}"), e))
 }
 
 /// Vrai si ce signal traduit une faute matérielle (et non la fin normale d'un
@@ -985,8 +1102,8 @@ fn fault_addr(pid: Pid) -> Option<u64> {
     Some(addr)
 }
 
-fn read_regs(pid: Pid) -> Result<Registers, String> {
-    let raw = ptrace::getregs(pid).map_err(|e| format!("getregs: {e}"))?;
+fn read_regs(pid: Pid) -> DbgResult<Registers> {
+    let raw = ptrace::getregs(pid).map_err(|e| DbgError::sys("getregs", e))?;
     Ok(Registers::from_raw(&raw))
 }
 
@@ -1000,21 +1117,21 @@ fn read_fpregs(pid: Pid) -> Option<FpRegisters> {
 }
 
 /// Lit `len` octets à `addr` via un `/proc/<pid>/mem` déjà ouvert.
-fn read_mem_at(mem: &File, addr: u64, len: usize) -> Result<Vec<u8>, String> {
+fn read_mem_at(mem: &File, addr: u64, len: usize) -> DbgResult<Vec<u8>> {
     use std::os::unix::fs::FileExt;
 
     let mut buf = vec![0u8; len];
     mem.read_exact_at(&mut buf, addr)
-        .map_err(|e| format!("read @0x{addr:X}: {e}"))?;
+        .map_err(|e| DbgError::sys(format!("read @0x{addr:X}"), e))?;
     Ok(buf)
 }
 
 /// Écrit `bytes` à `addr` via un `/proc/<pid>/mem` déjà ouvert.
-fn write_mem_at(mem: &File, addr: u64, bytes: &[u8]) -> Result<(), String> {
+fn write_mem_at(mem: &File, addr: u64, bytes: &[u8]) -> DbgResult<()> {
     use std::os::unix::fs::FileExt;
 
     mem.write_all_at(bytes, addr)
-        .map_err(|e| format!("write @0x{addr:X}: {e}"))?;
+        .map_err(|e| DbgError::sys(format!("write @0x{addr:X}"), e))?;
     Ok(())
 }
 
@@ -1067,6 +1184,35 @@ mod tests {
     use super::*;
     use crate::assemble;
     use std::path::Path;
+
+    /// Les trois langues répondent, et jamais avec le texte d'une autre : ces
+    /// messages partent dans la console de l'élève, qui a pu mettre l'IDE en
+    /// anglais ou en espagnol.
+    #[test]
+    fn every_error_speaks_the_interface_language() {
+        let cases = [
+            DbgError::BadPath,
+            DbgError::PtraceDenied,
+            DbgError::NoStart,
+            DbgError::ExitedBeforeStart(3),
+            DbgError::UnexpectedInitialState("Continued".to_string()),
+            DbgError::HistoryFull(MAX_HISTORY),
+            DbgError::NoStdin,
+            DbgError::NotStopped,
+            DbgError::UnknownRegister("RXX".to_string()),
+        ];
+        for e in cases {
+            let (fr, en, es) = (e.message(Lang::Fr), e.message(Lang::En), e.message(Lang::Es));
+            assert!(!fr.is_empty(), "{e:?} : message vide");
+            assert_ne!(fr, en, "{e:?} : le français et l'anglais disent la même chose");
+            assert_ne!(en, es, "{e:?} : l'anglais et l'espagnol disent la même chose");
+        }
+        // L'erreur système est le seul cas sans traduction : le texte vient de
+        // l'OS, et c'est lui qui explique ce qui s'est passé.
+        let sys = DbgError::sys("getregs", "No such process");
+        assert_eq!(sys.message(Lang::Fr), sys.message(Lang::En));
+        assert!(sys.message(Lang::Es).contains("No such process"));
+    }
 
     /// Assemble l'exemple, le lance sous ptrace, le fait avancer jusqu'à la fin.
     /// Vérifie qu'après `cmp rax, rbx` (5 vs 8) les flags sont cohérents :

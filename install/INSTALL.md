@@ -72,8 +72,10 @@ sudo ./install.sh --system        # /usr/local        (tous les utilisateurs)
 | `PREFIX/bin/asm-studio` | l'exécutable |
 | `PREFIX/share/applications/asm-studio.desktop` | entrée du menu |
 | `PREFIX/share/icons/hicolor/256x256/apps/asm-studio.png` | icône |
+| `~/.local/share/asm_studio/examples/win_*.asm` | les quatre exemples PE64 essentiels |
 
-Rien d'autre n'est touché.
+Les exemples PE64 sont ajoutés seulement s'ils manquent : une version que vous
+avez renommée ou modifiée n'est jamais remplacée.
 
 ### Si la commande `asm-studio` reste introuvable
 
@@ -99,6 +101,9 @@ Au tout premier démarrage, ASM Studio crée son espace de travail :
 ~/.local/share/asm_studio/build/        artefacts d'assemblage
 ~/.config/asm_studio/settings.conf      réglages et disposition des panneaux
 ```
+
+L'installateur dépose déjà les quatre exemples Windows PE64 (`win_*.asm`) ; ils
+sont donc visibles immédiatement, sans devoir attendre le premier lancement.
 
 Les exemples ne sont recréés que s'ils ont disparu : vos modifications ne
 seront jamais écrasées.

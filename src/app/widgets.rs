@@ -45,6 +45,23 @@ pub(super) fn panel_header(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
     ui.add_space(5.0);
 }
 
+/// Le gabarit commun des boîtes de dialogue : jamais repliable, et centrée sur
+/// la zone de travail — pas sur l'écran, ni là où la précédente a été laissée :
+/// c'est au milieu du travail en cours que l'œil se trouve déjà.
+///
+/// Ne fixe que ce que les quinze boîtes de l'application ont en commun. Le
+/// reste — taille de départ, redimensionnement, croix de fermeture — s'ajoute
+/// derrière, en enchaînant le builder d'egui comme d'habitude.
+pub(super) fn dialog_window<'a>(
+    ctx: &egui::Context,
+    title: impl Into<egui::WidgetText>,
+) -> egui::Window<'a> {
+    egui::Window::new(title)
+        .collapsible(false)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
+}
+
 /// Encadré « carte » moderne : fond légèrement teinté, coins arrondis et marge
 /// interne, sur toute la largeur disponible. Structure et aère le contenu
 /// (utile pour une app pédagogique).
@@ -234,46 +251,186 @@ pub(super) fn micro_static_flags(ui: &mut egui::Ui, hdr: Color32, e: &explain::E
     }
 }
 
-/// Rend récursivement l'arbre d'un dossier (style explorateur d'IDE) : dossiers
-/// repliables (`CollapsingHeader`), puis fichiers cliquables. Le fichier ouvert
-/// est surligné ; le clic sur un fichier renseigne `to_open`.
-pub(super) fn dir_tree(
+/// Une ligne visible de l'explorateur. L'arbre est aplati avant le rendu pour
+/// pouvoir utiliser `ScrollArea::show_rows` : même un gros dossier ne redessine
+/// alors que les lignes réellement visibles pendant le défilement.
+#[derive(Clone)]
+pub(super) struct ExplorerEntry {
+    pub(super) path: PathBuf,
+    pub(super) depth: usize,
+    pub(super) is_dir: bool,
+}
+
+/// Action demandée par une ligne de l'explorateur. Les mutations disque restent
+/// dans `App`, jamais dans ce widget sans état.
+pub(super) enum ExplorerAction {
+    Open(PathBuf),
+    Select(PathBuf),
+    Navigate(PathBuf),
+    Rename(PathBuf),
+    Delete(PathBuf),
+}
+
+/// Les trois libellés du menu contextuel, fournis déjà traduits par le panneau.
+pub(super) struct ExplorerRowLabels<'a> {
+    pub(super) open_folder: &'a str,
+    pub(super) rename: &'a str,
+    pub(super) delete: &'a str,
+}
+
+/// Les deux teintes d'une ligne : ce qui est de l'assembleur (dossiers et
+/// sources `.asm`) et le reste. Elles viennent du thème, que ce module ne
+/// connaît pas — comme les libellés viennent de la langue, qu'il ne connaît
+/// pas davantage.
+pub(super) struct ExplorerRowColors {
+    pub(super) asm: Color32,
+    pub(super) other: Color32,
+}
+
+/// Aplatisse les seuls dossiers actuellement dépliés. L'état de dépliage est
+/// persisté par egui, et n'est lu qu'une fois par dossier ouvert — contrairement
+/// à l'ancien `CollapsingHeader` récursif rendu entièrement à chaque frame.
+pub(super) fn explorer_entries(ui: &egui::Ui, root: &Path) -> Vec<ExplorerEntry> {
+    fn visit(ui: &egui::Ui, dir: &Path, depth: usize, out: &mut Vec<ExplorerEntry>) {
+        let (dirs, files) = list_entries(dir);
+        for path in dirs {
+            let id = ui.make_persistent_id(("explorer_open", &path));
+            let open = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false).is_open();
+            out.push(ExplorerEntry { path: path.clone(), depth, is_dir: true });
+            if open {
+                visit(ui, &path, depth + 1, out);
+            }
+        }
+        out.extend(files.into_iter().map(|path| ExplorerEntry { path, depth, is_dir: false }));
+    }
+
+    let mut entries = Vec::new();
+    visit(ui, root, 0, &mut entries);
+    entries
+}
+
+/// Rend une ligne de l'explorateur moderne : sélection, dépliage, menu contextuel
+/// et renommage directement dans l'arbre.
+pub(super) fn explorer_row(
     ui: &mut egui::Ui,
-    dir: &Path,
-    current: &Path,
-    // Amène `current` à l'écran : demandé après un déplacement au clavier.
-    scroll_to_current: bool,
-    asm_col: Color32,
-    other_col: Color32,
-    to_open: &mut Option<PathBuf>,
-) {
-    let (dirs, files) = list_entries(dir);
-    for d in dirs {
-        egui::CollapsingHeader::new(RichText::new(format!("🗀  {}", file_name(&d))).color(asm_col))
-            .id_salt(&d)
-            .default_open(false)
-            .show(ui, |ui| {
-                dir_tree(ui, &d, current, scroll_to_current, asm_col, other_col, to_open)
-            });
-    }
-    for f in files {
-        let is_cur = f == current;
-        let col = if is_cur {
-            changed_col()
-        } else if is_asm(&f) {
-            asm_col
+    entry: &ExplorerEntry,
+    selected: bool,
+    scroll_to_selected: bool,
+    rename_input: Option<&mut String>,
+    labels: ExplorerRowLabels<'_>,
+    colors: ExplorerRowColors,
+) -> Option<ExplorerAction> {
+    let mut action = None;
+    // Une grille à colonnes fixes, et non une succession de widgets dont la
+    // largeur dépend du glyphe : c'est ce qui garde chevrons, icônes et noms
+    // parfaitement alignés entre fichiers et dossiers.
+    let row_width = ui.available_width();
+    ui.allocate_ui_with_layout(
+        egui::vec2(row_width, 22.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+        ui.add_space(entry.depth as f32 * 16.0);
+        if entry.is_dir {
+            let id = ui.make_persistent_id(("explorer_open", &entry.path));
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+            if ui
+                .add_sized(
+                    [18.0, 22.0],
+                    egui::Button::new(if state.is_open() { "⌄" } else { "›" }).frame(false),
+                )
+                .clicked()
+            {
+                state.toggle(ui);
+                state.store(ui.ctx());
+            }
         } else {
-            other_col
+            // Un fichier est le contenu du dossier affiché : son icône démarre
+            // directement à la marge de son niveau, sans une colonne de flèche
+            // vide. C'est la lecture attendue d'un explorateur moderne.
+        }
+        // Colonne réservée à l'icône : aucun décalage lorsque le système de
+        // polices donne une largeur différente aux pictogrammes emoji.
+        ui.add_sized(
+            [20.0, 22.0],
+            egui::Label::new(RichText::new(if entry.is_dir { "🗀" } else { "🗎" }).color(if entry.is_dir { colors.asm } else { colors.other })),
+        );
+        ui.add_space(2.0);
+
+        if let Some(input) = rename_input {
+            let response = ui.add_sized(
+                [ui.available_width(), 22.0],
+                egui::TextEdit::singleline(input).id_salt(("explorer_rename", &entry.path)),
+            );
+            response.request_focus();
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                action = Some(ExplorerAction::Rename(entry.path.clone()));
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                action = Some(ExplorerAction::Select(entry.path.clone()));
+            }
+            return;
+        }
+
+        let color = if selected {
+            changed_col()
+        } else if entry.is_dir || is_asm(&entry.path) {
+            colors.asm
+        } else {
+            colors.other
         };
-        let label = RichText::new(format!("🗎  {}", file_name(&f))).color(col);
-        let resp = ui.add(egui::Button::selectable(is_cur, label));
-        if is_cur && scroll_to_current {
-            resp.scroll_to_me(Some(egui::Align::Center));
+        // `Button` centre son libellé dans la largeur restante. Une ligne
+        // d'explorateur doit au contraire partir de sa marge, quel que soit le
+        // nom du fichier. On gère donc l'interaction et le fond de sélection
+        // séparément, puis on pose un `Label` explicitement aligné à gauche.
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click());
+        let visuals = ui.style().interact_selectable(&response, selected);
+        if selected || response.hovered() {
+            ui.painter().rect_filled(rect, egui::CornerRadius::same(4), visuals.weak_bg_fill);
         }
-        if resp.clicked() {
-            *to_open = Some(f);
+        let painter = ui.painter().with_clip_rect(rect.shrink2(egui::vec2(5.0, 0.0)));
+        let galley = painter.layout_no_wrap(
+            file_name(&entry.path),
+            egui::TextStyle::Button.resolve(ui.style()),
+            color,
+        );
+        painter.galley(
+            egui::pos2(rect.left() + 5.0, rect.center().y - galley.size().y * 0.5),
+            galley,
+            color,
+        );
+        if selected && scroll_to_selected {
+            response.scroll_to_me(Some(egui::Align::Center));
         }
-    }
+        if response.double_clicked() {
+            action = Some(if entry.is_dir {
+                ExplorerAction::Navigate(entry.path.clone())
+            } else {
+                ExplorerAction::Open(entry.path.clone())
+            });
+        } else if response.clicked() {
+            action = Some(if entry.is_dir {
+                ExplorerAction::Select(entry.path.clone())
+            } else {
+                ExplorerAction::Open(entry.path.clone())
+            });
+        }
+        response.context_menu(|ui| {
+            if entry.is_dir && ui.button(labels.open_folder).clicked() {
+                action = Some(ExplorerAction::Navigate(entry.path.clone()));
+                ui.close();
+            }
+            if ui.button(labels.rename).clicked() {
+                action = Some(ExplorerAction::Rename(entry.path.clone()));
+                ui.close();
+            }
+            if ui.button(labels.delete).clicked() {
+                action = Some(ExplorerAction::Delete(entry.path.clone()));
+                ui.close();
+            }
+        });
+    },
+    );
+    action
 }
 
 /// Bouton avec bordure verte (actif/disponible) ou rouge (inactif).

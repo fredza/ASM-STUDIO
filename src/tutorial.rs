@@ -3976,6 +3976,7 @@ mod tests {
                 Path::new("build/tutorial"),
                 &[],
                 l.target(),
+                Lang::Fr,
             );
             assert!(out.is_ok(), "{} ne s'assemble pas : {:?}", l.id, out.err());
         }

@@ -70,15 +70,21 @@ pub(super) fn data_dir() -> PathBuf {
 /// Ce parcours ne se refait pas à chaque démarrage. Un témoin déposé dans le
 /// dossier porte la version qui l'a semé ; tant qu'elle correspond, il n'y a
 /// rien de nouveau à écrire et on s'arrête sur un seul `read` au lieu de
-/// soixante `stat`. Le témoin porte la version *du paquet* et non le numéro de
-/// build : recompiler ne change pas le catalogue, livrer si.
+/// soixante `stat`. Le témoin porte la version *du paquet* et une révision du
+/// catalogue, et non le numéro de build : recompiler ne change pas le
+/// catalogue, livrer si.
 pub(super) fn setup_examples() {
+    // Incrémenté quand on ajoute un exemple sans forcément livrer une nouvelle
+    // version semver. Les installations déjà semées reçoivent ainsi les
+    // nouveaux fichiers, sans jamais réécrire le travail existant.
+    const CATALOGUE_REVISION: &str = "2";
     let dir = data_dir().join("examples");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
     let stamp = dir.join(".semis");
-    if !needs_seeding(std::fs::read_to_string(&stamp).ok().as_deref(), crate::version::SEMVER) {
+    let catalogue_stamp = format!("{}:{CATALOGUE_REVISION}", crate::version::SEMVER);
+    if !needs_seeding(std::fs::read_to_string(&stamp).ok().as_deref(), &catalogue_stamp) {
         return;
     }
 
@@ -94,6 +100,12 @@ pub(super) fn setup_examples() {
         ("longueur_chaine.asm", include_str!("../../examples_seed/longueur_chaine.asm")),
         ("pile_demo.asm",       include_str!("../../examples_seed/pile_demo.asm")),
         ("lire_ecrire.asm",     include_str!("../../examples_seed/lire_ecrire.asm")),
+        // Les quatre fondamentaux Windows gardent leurs jumeaux ELF ci-dessus :
+        // ouvrir l'un d'eux active automatiquement la cible PE64.
+        ("win_hello_world.asm", include_str!("../../examples_seed/win_hello_world.asm")),
+        ("win_arithmetic.asm",  include_str!("../../examples_seed/win_arithmetic.asm")),
+        ("win_boucle.asm",      include_str!("../../examples_seed/win_boucle.asm")),
+        ("win_lire_ecrire.asm", include_str!("../../examples_seed/win_lire_ecrire.asm")),
         // Exercices auto-corrigés : squelettes à compléter (voir src/exercise.rs).
         ("ex_code_sortie.asm",  include_str!("../../examples_seed/ex_code_sortie.asm")),
         ("ex_somme.asm",        include_str!("../../examples_seed/ex_somme.asm")),
@@ -146,7 +158,7 @@ pub(super) fn setup_examples() {
     // Témoin écrit en dernier : si l'écriture des fichiers a échoué en cours de
     // route (disque plein, dossier en lecture seule), le prochain lancement
     // retentera plutôt que de considérer le semis fait.
-    let _ = std::fs::write(&stamp, crate::version::SEMVER);
+    let _ = std::fs::write(&stamp, catalogue_stamp);
 }
 
 /// Le catalogue d'exemples doit-il être parcouru ?
@@ -269,6 +281,10 @@ mod tests {
         // ajoute un : ne pas ressemer pour un « \n ».
         assert!(!needs_seeding(Some("0.4.7\n"), "0.4.7"));
         assert!(needs_seeding(Some(""), "0.4.7"), "témoin vide : on ressème");
+        assert!(
+            needs_seeding(Some("0.4.7:1"), "0.4.7:2"),
+            "une révision de catalogue doit déposer les nouveaux exemples"
+        );
     }
 
     #[test]

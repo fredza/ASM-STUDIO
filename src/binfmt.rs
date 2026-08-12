@@ -306,6 +306,7 @@ mod tests {
             &Path::new("build").join(name),
             &[],
             target,
+            crate::i18n::Lang::Fr,
         );
         out.expect("assemblage").binary
     }
@@ -339,7 +340,7 @@ mod tests {
              extern ExitProcess\nmain:\n  sub rsp, 40\n  mov ecx, [n]\n  call ExitProcess\n",
         )
         .expect("source");
-        let bin = assemble::assemble_for(&asm, dir, &[], Target::Windows)
+        let bin = assemble::assemble_for(&asm, dir, &[], Target::Windows, crate::i18n::Lang::Fr)
             .expect("assemblage PE")
             .binary;
 

@@ -35,6 +35,16 @@ fn api_url() -> String {
     format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest")
 }
 
+/// Page du dépôt, telle qu'affichée dans la fenêtre « À propos ».
+pub fn repo_url() -> String {
+    format!("https://github.com/{GITHUB_REPO}")
+}
+
+/// Le même dépôt sans le protocole : plus court à lire dans l'UI.
+pub fn repo_label() -> String {
+    format!("github.com/{GITHUB_REPO}")
+}
+
 // ---------- Types publics ----------
 
 #[derive(Debug, Clone)]

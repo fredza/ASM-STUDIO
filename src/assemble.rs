@@ -17,6 +17,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::i18n::{self, Lang};
+
 /// Système visé par l'assemblage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Target {
@@ -143,19 +145,25 @@ pub fn assemble_with_includes(
     out_dir: &Path,
     includes: &[PathBuf],
 ) -> Result<BuildOutput, String> {
-    assemble_for(src, out_dir, includes, Target::Linux)
+    assemble_for(src, out_dir, includes, Target::Linux, Lang::Fr)
 }
 
 /// Assemble `src` pour la cible demandée.
+///
+/// `lang` ne sert qu'aux messages : le journal d'assemblage et les erreurs
+/// partent droit dans la console de l'élève, et resteraient sinon en français
+/// dans une interface qu'il a mise en anglais ou en espagnol. Ce que nasm et
+/// ld écrivent eux-mêmes garde évidemment leur langue à eux.
 pub fn assemble_for(
     src: &Path,
     out_dir: &Path,
     includes: &[PathBuf],
     target: Target,
+    lang: Lang,
 ) -> Result<BuildOutput, String> {
     match target {
-        Target::Linux => assemble_elf(src, out_dir, includes),
-        Target::Windows | Target::WindowsGui => assemble_pe(src, out_dir, includes, target),
+        Target::Linux => assemble_elf(src, out_dir, includes, lang),
+        Target::Windows | Target::WindowsGui => assemble_pe(src, out_dir, includes, target, lang),
     }
 }
 
@@ -166,8 +174,9 @@ fn assemble_pe(
     out_dir: &Path,
     includes: &[PathBuf],
     target: Target,
+    lang: Lang,
 ) -> Result<BuildOutput, String> {
-    let (stem, listing, mut log) = nasm(src, out_dir, includes, target)?;
+    let (stem, listing, mut log) = nasm(src, out_dir, includes, target, lang)?;
     let obj = out_dir.join(format!("{stem}.obj"));
     let binary = out_dir.join(format!("{stem}.exe"));
 
@@ -177,16 +186,30 @@ fn assemble_pe(
         crate::pe_link::Subsystem::Console
     };
     log.push_str(&format!("$ (lieur PE intégré) -o {}\n", binary.display()));
-    let report = crate::pe_link::link(&obj, &binary, subsystem)
-        .map_err(|e| format!("Échec du lien PE:\n{log}{e}\n"))?;
+    let report = crate::pe_link::link(&obj, &binary, subsystem, lang)
+        .map_err(|e| {
+            let head = i18n::tr3(lang, "Échec du lien PE", "PE link failed", "Error de enlazado PE");
+            format!("{head}:\n{log}{e}\n")
+        })?;
     log.push_str(&format!(
-        "  point d'entrée : {} (RVA 0x{:X})\n",
-        report.entry.0, report.entry.1
+        "  {} : {} (RVA 0x{:X})\n",
+        i18n::tr3(lang, "point d'entrée", "entry point", "punto de entrada"),
+        report.entry.0,
+        report.entry.1
     ));
     for imp in &report.imports {
-        log.push_str(&format!("  import : {} ← {}\n", imp.func, imp.dll));
+        log.push_str(&format!(
+            "  {} : {} ← {}\n",
+            i18n::tr3(lang, "import", "import", "importación"),
+            imp.func,
+            imp.dll
+        ));
     }
-    log.push_str(&format!("Build OK — {} octets (PE64 Windows)\n", report.size));
+    log.push_str(&format!(
+        "Build OK — {} {} (PE64 Windows)\n",
+        report.size,
+        i18n::tr3(lang, "octets", "bytes", "bytes")
+    ));
     Ok(BuildOutput { binary, listing, log })
 }
 
@@ -198,12 +221,24 @@ fn nasm(
     out_dir: &Path,
     includes: &[PathBuf],
     target: Target,
+    lang: Lang,
 ) -> Result<(String, PathBuf, String), String> {
-    std::fs::create_dir_all(out_dir).map_err(|e| format!("création de {}: {e}", out_dir.display()))?;
+    std::fs::create_dir_all(out_dir).map_err(|e| {
+        let what = i18n::tr3(lang, "création de", "creating", "creación de");
+        format!("{what} {}: {e}", out_dir.display())
+    })?;
     let stem = src
         .file_stem()
         .and_then(|s| s.to_str())
-        .ok_or_else(|| "nom de fichier source invalide".to_string())?
+        .ok_or_else(|| {
+            i18n::tr3(
+                lang,
+                "nom de fichier source invalide",
+                "invalid source file name",
+                "nombre de archivo fuente no válido",
+            )
+            .to_string()
+        })?
         .to_string();
     let obj = out_dir.join(format!(
         "{stem}.{}",
@@ -233,10 +268,16 @@ fn nasm(
         .arg("-l")
         .arg(&listing)
         .output()
-        .map_err(|e| format!("impossible de lancer nasm: {e}"))?;
+        .map_err(|e| {
+            let what = i18n::tr3(lang, "impossible de lancer", "could not run", "no se pudo ejecutar");
+            format!("{what} nasm: {e}")
+        })?;
     log.push_str(&String::from_utf8_lossy(&out.stderr));
     if !out.status.success() {
-        return Err(format!("Échec de nasm:\n{log}"));
+        return Err(format!(
+            "{}:\n{log}",
+            i18n::tr3(lang, "Échec de nasm", "nasm failed", "Error de nasm")
+        ));
     }
     Ok((stem, listing, log))
 }
@@ -245,8 +286,9 @@ fn assemble_elf(
     src: &Path,
     out_dir: &Path,
     includes: &[PathBuf],
+    lang: Lang,
 ) -> Result<BuildOutput, String> {
-    let (stem, listing, mut log) = nasm(src, out_dir, includes, Target::Linux)?;
+    let (stem, listing, mut log) = nasm(src, out_dir, includes, Target::Linux, lang)?;
     let obj = out_dir.join(format!("{stem}.o"));
     let binary = out_dir.join(&stem);
 
@@ -257,10 +299,16 @@ fn assemble_elf(
         .arg(&binary)
         .arg(&obj)
         .output()
-        .map_err(|e| format!("impossible de lancer ld: {e}"))?;
+        .map_err(|e| {
+            let what = i18n::tr3(lang, "impossible de lancer", "could not run", "no se pudo ejecutar");
+            format!("{what} ld: {e}")
+        })?;
     log.push_str(&String::from_utf8_lossy(&ld.stderr));
     if !ld.status.success() {
-        return Err(format!("Échec de ld:\n{log}"));
+        return Err(format!(
+            "{}:\n{log}",
+            i18n::tr3(lang, "Échec de ld", "ld failed", "Error de ld")
+        ));
     }
 
     log.push_str("Build OK\n");
@@ -270,6 +318,35 @@ fn assemble_elf(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un échec d'assemblage est la première chose qu'un débutant voit, et
+    /// souvent plusieurs fois par séance. Il doit lui parler dans la langue
+    /// qu'il a choisie — le message de nasm, lui, reste celui de nasm.
+    #[test]
+    fn build_errors_speak_the_interface_language() {
+        let dir = Path::new("build/i18n-build-errors");
+        std::fs::create_dir_all(dir).expect("dossier de test");
+        let src = dir.join("casse.asm");
+        // Un crochet jamais refermé : nasm ne peut rien en faire. (Un mot
+        // inventé seul sur sa ligne ne suffirait pas — nasm y verrait un
+        // label, qu'il accepte sans les deux-points.)
+        std::fs::write(&src, "section .text\n    global _start\n_start:\n    mov rax, [\n")
+            .expect("écriture du source fautif");
+
+        let msg = |lang| match assemble_for(&src, dir, &[], Target::Linux, lang) {
+            Err(e) => e,
+            Ok(_) => panic!("ce source ne doit pas s'assembler"),
+        };
+        let (fr, en, es) = (msg(Lang::Fr), msg(Lang::En), msg(Lang::Es));
+        assert!(fr.starts_with("Échec de nasm"), "{fr}");
+        assert!(en.starts_with("nasm failed"), "{en}");
+        assert!(es.starts_with("Error de nasm"), "{es}");
+        // Ce que nasm a écrit doit survivre à la traduction : c'est lui qui dit
+        // quelle ligne est fautive.
+        for m in [&fr, &en, &es] {
+            assert!(m.contains("casse.asm"), "{m}");
+        }
+    }
 
     /// La bibliothèque asmstd doit s'assembler via `%include` (dossier examples).
     #[test]
@@ -297,6 +374,7 @@ mod tests {
                 Path::new(dir),
                 &[],
                 target,
+                Lang::Fr,
             )
             .expect("hello-windows.asm doit s'assembler");
             assert_eq!(out.binary.extension().and_then(|e| e.to_str()), Some("exe"));
@@ -304,6 +382,87 @@ mod tests {
             assert!(out.log.contains("point d'entrée : main"), "journal: {}", out.log);
             assert!(out.log.contains("WriteFile ← kernel32.dll"), "journal: {}", out.log);
         }
+    }
+
+    /// Les exemples essentiels ont chacun leur version PE64. Ils ne sont pas
+    /// de simples copies ELF : chaque fichier importe l'API Windows nécessaire
+    /// et devient un vrai `.exe` console.
+    #[test]
+    fn essential_windows_examples_build_as_console_pe64() {
+        for (source, import) in [
+            ("win_hello_world.asm", "WriteFile ← kernel32.dll"),
+            ("win_arithmetic.asm", "WriteFile ← kernel32.dll"),
+            ("win_boucle.asm", "WriteFile ← kernel32.dll"),
+            ("win_lire_ecrire.asm", "ReadFile ← kernel32.dll"),
+        ] {
+            let stem = source.trim_end_matches(".asm");
+            let out = assemble_for(
+                &PathBuf::from("examples_seed").join(source),
+                &PathBuf::from("build/pe-essentials").join(stem),
+                &[],
+                Target::Windows,
+                Lang::Fr,
+            )
+            .unwrap_or_else(|e| panic!("{source} doit s'assembler : {e}"));
+            assert_eq!(out.binary.extension().and_then(|e| e.to_str()), Some("exe"));
+            assert!(out.binary.is_file(), "{source} : .exe absent");
+            assert!(out.log.contains(import), "{source} : import absent\n{}", out.log);
+        }
+    }
+
+    /// Wine est le contrôle de bout en bout : il charge la table d'import de
+    /// nos exemples comme le ferait Windows et vérifie aussi le chemin ReadFile
+    /// → WriteFile. L'absence de Wine ne doit pas empêcher les tests portables.
+    #[test]
+    fn essential_windows_examples_run_under_wine_when_available() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        if Command::new("wine").arg("--version").output().is_err() {
+            eprintln!("wine absent : exécution PE des essentiels non vérifiée");
+            return;
+        }
+        let build = |source: &str| {
+            assemble_for(
+                &PathBuf::from("examples_seed").join(source),
+                &PathBuf::from("build/pe-essentials-wine").join(source.trim_end_matches(".asm")),
+                &[],
+                Target::Windows,
+                Lang::Fr,
+            )
+            .unwrap_or_else(|e| panic!("{source} : {e}"))
+            .binary
+        };
+        let run = |exe: &Path, input: Option<&str>| {
+            let mut child = Command::new("wine")
+                .arg(exe)
+                .env("WINEDEBUG", "-all")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("Wine doit se lancer");
+            if let Some(input) = input {
+                child.stdin.take().expect("stdin Wine").write_all(input.as_bytes()).expect("saisie Wine");
+            }
+            child.wait_with_output().expect("Wine doit se terminer")
+        };
+
+        for (source, expected) in [
+            ("win_hello_world.asm", "Bonjour depuis Windows PE64 !"),
+            ("win_arithmetic.asm", "Resultat = 8"),
+            ("win_boucle.asm", "1\r\n2\r\n"),
+        ] {
+            let out = run(&build(source), None);
+            assert!(out.status.success(), "{source} : {}", String::from_utf8_lossy(&out.stderr));
+            assert!(String::from_utf8_lossy(&out.stdout).contains(expected), "{source} : sortie {:?}", out.stdout);
+        }
+
+        let out = run(&build("win_lire_ecrire.asm"), Some("Z\n"));
+        assert!(out.status.success(), "lire/ecrire : {}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("Tapez un caractere"), "invite manquante : {stdout:?}");
+        assert!(stdout.ends_with('Z'), "caractère lu non réaffiché : {stdout:?}");
     }
 
     /// La cible se persiste et se relit : sans cela, l'élève retrouve la cible

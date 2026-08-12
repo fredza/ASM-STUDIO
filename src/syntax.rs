@@ -23,9 +23,15 @@ use crate::theme::Syntax;
 pub const FONT_SIZE: f32 = 13.0;
 
 /// Recherche active à surligner par-dessus la coloration syntaxique.
+///
+/// Les correspondances sont fournies déjà repérées, et non la requête à
+/// chercher : l'appelant les connaît de toute façon — il lui faut leur nombre
+/// pour la barre de recherche et leur position pour y faire défiler — et les
+/// redemander ici revenait à parcourir tout le source une seconde fois par
+/// image, avec une copie complète en minuscules à chaque passage.
 pub struct FindHighlight<'a> {
-    pub query: &'a str,
-    pub case_sensitive: bool,
+    /// Positions (octets, `[début, fin)`), telles que rendues par [`find_matches`].
+    pub matches: &'a [(usize, usize)],
     /// Offset (en octets, dans le texte complet) du début de la correspondance
     /// active — reçoit un fond plus marqué que les autres.
     pub current: Option<usize>,
@@ -199,7 +205,7 @@ pub fn highlight(
 
     let mut spans = Vec::new();
     if let Some(f) = find {
-        for (s, e) in find_matches(text, f.query, f.case_sensitive) {
+        for &(s, e) in f.matches {
             let bg = if f.current == Some(s) { pal.match_current_bg } else { pal.match_bg };
             spans.push(HlSpan { start: s, end: e, bg });
         }
@@ -427,7 +433,8 @@ mod tests {
     #[test]
     fn highlighting_matches_does_not_lose_or_reorder_text() {
         let src = "    mov rax, rbx ; move rax into itself\n";
-        let find = FindHighlight { query: "rax", case_sensitive: false, current: None };
+        let matches = find_matches(src, "rax", false);
+        let find = FindHighlight { matches: &matches, current: None };
         let job = highlight(src, pal(), None, None, Some(&find), None);
         assert_eq!(job.text, src, "le surlignage ne doit jamais altérer le texte affiché");
         // Les deux occurrences de "rax" doivent porter le fond de correspondance.
@@ -443,7 +450,7 @@ mod tests {
     fn the_current_match_gets_a_distinct_background() {
         let src = "rax rax\n";
         let matches = find_matches(src, "rax", false);
-        let find = FindHighlight { query: "rax", case_sensitive: false, current: Some(matches[1].0) };
+        let find = FindHighlight { matches: &matches, current: Some(matches[1].0) };
         let job = highlight(src, pal(), None, None, Some(&find), None);
         let current_hits = job.sections.iter().filter(|s| s.format.background == pal().match_current_bg).count();
         let other_hits = job.sections.iter().filter(|s| s.format.background == pal().match_bg).count();

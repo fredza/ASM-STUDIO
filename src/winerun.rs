@@ -22,6 +22,8 @@ use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
+use crate::i18n::{self, Lang};
+
 /// Wine est-il utilisable ? Vérifié à chaque lancement plutôt que mis en cache :
 /// l'installer pendant que l'IDE tourne doit suffire à s'en servir.
 pub fn available() -> bool {
@@ -46,6 +48,42 @@ pub struct WineRun {
     stdin_pending: Vec<u8>,
     /// Code de sortie, une fois le processus terminé.
     exit: Option<i32>,
+}
+
+/// Ce qui peut empêcher d'écrire sur l'entrée du programme.
+///
+/// Décrit plutôt que rédigé : `poll` reprend une écriture différée et jette
+/// l'erreur (elle sera rapportée à la prochaine saisie de l'élève), il n'a donc
+/// aucune langue à fournir. Seul [`WineRun::write_stdin`], appelé depuis
+/// l'interface, en connaît une.
+enum StdinError {
+    /// Le programme a fermé son entrée, ou n'en a jamais eu.
+    Closed,
+    /// L'écriture a échoué pour une autre raison, avec le texte de l'OS.
+    Io(String),
+}
+
+impl StdinError {
+    fn message(&self, lang: Lang) -> String {
+        match self {
+            StdinError::Closed => i18n::tr3(
+                lang,
+                "l'entrée standard du programme est fermée",
+                "the program's standard input is closed",
+                "la entrada estándar del programa está cerrada",
+            )
+            .to_string(),
+            StdinError::Io(e) => {
+                let what = i18n::tr3(
+                    lang,
+                    "écriture sur l'entrée du programme",
+                    "writing to the program's input",
+                    "escritura en la entrada del programa",
+                );
+                format!("{what}: {e}")
+            }
+        }
+    }
 }
 
 impl WineRun {
@@ -121,26 +159,30 @@ impl WineRun {
     }
 
     /// Envoie une ligne à l'entrée standard du programme.
-    pub fn write_stdin(&mut self, s: &str) -> Result<(), String> {
+    ///
+    /// `lang` ne sert qu'au message d'erreur, qui part dans la console de
+    /// l'élève — la même que celle d'un programme Linux, et dans la même
+    /// langue que le reste de l'interface.
+    pub fn write_stdin(&mut self, s: &str, lang: Lang) -> Result<(), String> {
         self.stdin_pending.extend_from_slice(s.as_bytes());
-        self.flush_stdin()
+        self.flush_stdin().map_err(|e| e.message(lang))
     }
 
     /// Vide autant que possible l'entrée en attente, sans attendre que Wine
     /// lise. Appelée aussi à chaque sondage pour reprendre une écriture qui
     /// avait rencontré `EAGAIN`.
-    fn flush_stdin(&mut self) -> Result<(), String> {
+    fn flush_stdin(&mut self) -> Result<(), StdinError> {
         let Some(stdin) = self.child.stdin.as_mut() else {
-            return Err("l'entrée standard du programme est fermée".to_string());
+            return Err(StdinError::Closed);
         };
         while !self.stdin_pending.is_empty() {
             match stdin.write(&self.stdin_pending) {
-                Ok(0) => return Err("l'entrée standard du programme est fermée".to_string()),
+                Ok(0) => return Err(StdinError::Closed),
                 Ok(n) => {
                     self.stdin_pending.drain(..n);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
-                Err(e) => return Err(format!("écriture sur l'entrée du programme: {e}")),
+                Err(e) => return Err(StdinError::Io(e.to_string())),
             }
         }
         Ok(())
@@ -217,7 +259,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("dossier");
         let asm = dir.join(format!("{name}.asm"));
         std::fs::write(&asm, source).expect("source");
-        assemble::assemble_for(&asm, &dir, &[], Target::Windows)
+        assemble::assemble_for(&asm, &dir, &[], Target::Windows, crate::i18n::Lang::Fr)
             .expect("assemblage PE")
             .binary
     }

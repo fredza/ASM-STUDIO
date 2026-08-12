@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8-beta.9] - 2026-08-12
+
+### Added
+- **The file explorer can now be edited**: Rename in place with `F2`, create a
+  sub-folder, delete an entry — each from the tree itself or the command
+  palette. A name that would leave the displayed folder is refused, and the
+  open file, the selection and the recent paths follow a rename, including
+  when a parent folder is the one being renamed.
+- **IDE keyboard shortcuts**: Find and replace (`Ctrl+F`, `Ctrl+H`, `F3`,
+  `Shift+F3`) stay active while the editor has focus. Labels fold with
+  `Ctrl+Shift+[` and unfold with `Ctrl+Shift+]`, `Ctrl+1`…`Ctrl+4` toggle the
+  layout panels, `Ctrl+5` the predict-the-value mode and `Ctrl+Alt+T` the
+  toolbar.
+- **The four essential Windows examples**: `win_hello_world.asm`,
+  `win_arithmetic.asm`, `win_boucle.asm` and `win_lire_ecrire.asm` ship with
+  the archive and are installed into the workspace, so PE64 is usable without
+  writing an import table by hand. Each one is checked as a real console PE64,
+  and run under Wine when Wine is available.
+- **Repository link in the About dialog**: The project's GitHub repository is
+  now one click away from “About”.
+
+### Changed
+- **Build and debugger messages speak the interface language**: What NASM and
+  `ld` write themselves keeps their own wording, but everything ASM Studio says
+  around them now follows the language the student picked.
+- **The explorer only draws what is visible**: The tree is flattened before
+  rendering, so a large folder no longer redraws every row on each frame.
+- **Dialog windows share one template**: The fifteen dialogs open centred on the
+  workspace rather than where the previous one was left.
+
+### Fixed
+- **`install.sh` run through sudo**: The examples are installed into the
+  workspace of the user who invoked sudo, not into root's.
+
 ## [0.4.8-beta.8] - 2026-08-12
 
 ### Added

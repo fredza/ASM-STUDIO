@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::i18n;
 
@@ -34,6 +34,151 @@ fn push_bounded(buf: &mut String, s: &str, lang: i18n::Lang) {
 }
 
 impl App {
+    /// Un nom saisi dans l'explorateur doit désigner une seule entrée locale :
+    /// ni chemin relatif, ni parent, ni séparateur qui ferait sortir du dossier.
+    fn valid_explorer_name(name: &str) -> bool {
+        !name.is_empty()
+            && name != "."
+            && name != ".."
+            && !name.contains(['/', '\\'])
+            && Path::new(name).file_name().is_some_and(|part| part == name)
+    }
+
+    pub(super) fn begin_explorer_rename(&mut self, path: PathBuf) {
+        self.explorer_rename_input = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .into_owned();
+        self.explorer_selected = Some(path.clone());
+        self.explorer_renaming = Some(path);
+    }
+
+    /// Applique le renommage initié directement dans l'arbre et maintient les
+    /// références internes cohérentes (fichier ouvert, sélection et récents).
+    pub(super) fn finish_explorer_rename(&mut self) {
+        let Some(from) = self.explorer_renaming.take() else { return };
+        let name = self.explorer_rename_input.trim();
+        if !Self::valid_explorer_name(name) {
+            self.log(i18n::tr3(
+                self.lang,
+                "Nom invalide : utilisez un nom simple, sans / ni \\.",
+                "Invalid name: use one simple name, without / or \\.",
+                "Nombre no válido: use un solo nombre, sin / ni \\.",
+            ));
+            self.explorer_renaming = Some(from);
+            return;
+        }
+        let Some(parent) = from.parent() else {
+            self.explorer_renaming = Some(from);
+            return;
+        };
+        let to = parent.join(name);
+        if to == from {
+            return;
+        }
+        match std::fs::rename(&from, &to) {
+            Ok(()) => {
+                self.replace_explorer_path(&from, &to);
+                self.explorer_selected = Some(to.clone());
+                self.status = format!("{} {}", i18n::tr(self.lang, "Renommé :", "Renamed:"), to.display());
+                self.save_settings();
+            }
+            Err(e) => {
+                self.log(&format!(
+                    "{} {}: {e}",
+                    i18n::tr(self.lang, "Impossible de renommer", "Cannot rename"),
+                    from.display()
+                ));
+                self.explorer_renaming = Some(from);
+            }
+        }
+    }
+
+    /// Crée un dossier enfant dans le dossier affiché. Le nom est contrôlé ici
+    /// aussi, car l'action peut ensuite être exposée par la palette.
+    pub(super) fn create_explorer_folder(&mut self) {
+        let name = self.explorer_new_folder_input.trim();
+        if !Self::valid_explorer_name(name) {
+            self.log(i18n::tr3(
+                self.lang,
+                "Nom de dossier invalide.",
+                "Invalid folder name.",
+                "Nombre de carpeta no válido.",
+            ));
+            return;
+        }
+        let path = self.explorer_dir.join(name);
+        match std::fs::create_dir(&path) {
+            Ok(()) => {
+                self.explorer_new_folder = false;
+                self.explorer_new_folder_input.clear();
+                self.explorer_selected = Some(path.clone());
+                self.status = format!("{} {}", i18n::tr(self.lang, "Dossier créé :", "Folder created:"), path.display());
+            }
+            Err(e) => self.log(&format!(
+                "{} {}: {e}",
+                i18n::tr(self.lang, "Impossible de créer le dossier", "Cannot create folder"),
+                path.display()
+            )),
+        }
+    }
+
+    pub(super) fn delete_explorer_entry(&mut self, path: PathBuf) {
+        // Le contenu non enregistré du fichier ouvert mérite d'être sauvegardé
+        // avant une suppression : sinon le prochain Ctrl+S le recréerait à
+        // l'identique, ce qui serait très déroutant.
+        if path == self.src_path && self.dirty() {
+            self.log(i18n::tr3(
+                self.lang,
+                "Enregistrez ou abandonnez les modifications avant de supprimer ce fichier ouvert.",
+                "Save or discard changes before deleting this open file.",
+                "Guarde o descarte los cambios antes de eliminar este archivo abierto.",
+            ));
+            return;
+        }
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match result {
+            Ok(()) => {
+                self.recent_files.retain(|recent| !recent.starts_with(&path));
+                if self.explorer_selected.as_ref().is_some_and(|selected| selected.starts_with(&path)) {
+                    self.explorer_selected = None;
+                }
+                self.status = format!("{} {}", i18n::tr(self.lang, "Supprimé :", "Deleted:"), path.display());
+                self.save_settings();
+            }
+            Err(e) => self.log(&format!(
+                "{} {}: {e}",
+                i18n::tr(self.lang, "Impossible de supprimer", "Cannot delete"),
+                path.display()
+            )),
+        }
+    }
+
+    /// Remplace `from` par `to` dans tous les chemins liés à l'explorateur.
+    /// Fonctionne aussi lorsqu'un dossier parent est renommé.
+    fn replace_explorer_path(&mut self, from: &Path, to: &Path) {
+        let replace = |path: &Path| path.strip_prefix(from).ok().map(|tail| to.join(tail));
+        if let Some(path) = replace(&self.explorer_dir) {
+            self.explorer_dir = path;
+        }
+        if let Some(path) = replace(&self.src_path) {
+            self.src_path = path;
+        }
+        if let Some(selected) = self.explorer_selected.as_ref().and_then(|path| replace(path)) {
+            self.explorer_selected = Some(selected);
+        }
+        for recent in &mut self.recent_files {
+            if let Some(path) = replace(recent) {
+                *recent = path;
+            }
+        }
+    }
+
     pub(super) fn log(&mut self, s: &str) {
         self.console_push(s);
         if !s.ends_with('\n') {
@@ -61,6 +206,13 @@ impl App {
     /// Les deux destinations sont indissociables — écrire dans l'une sans
     /// l'autre ferait diverger silencieusement ce que montrent les deux vues.
     pub(super) fn program_out_push(&mut self, s: &str) {
+        // Une écriture du programme est une interaction visible : sa fenêtre
+        // dédiée doit revenir d'elle-même, même si l'élève l'avait fermée après
+        // le message précédent. La console peut rester en arrière-plan, mais
+        // elle ne doit pas cacher la réponse de `write` ou l'écho d'un `read`.
+        if !s.is_empty() {
+            self.show_program_output = true;
+        }
         let lang = self.lang;
         push_bounded(&mut self.program_output, s, lang);
         push_bounded(&mut self.console, s, lang);
@@ -336,6 +488,49 @@ impl App {
 }
 
 #[cfg(test)]
+mod explorer_ops_tests {
+    use super::super::App;
+
+    fn test_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("asm-studio-explorer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dossier temporaire");
+        dir
+    }
+
+    #[test]
+    fn renaming_an_open_file_keeps_explorer_and_recent_paths_in_sync() {
+        let dir = test_dir();
+        let old = dir.join("avant.asm");
+        let new = dir.join("apres.asm");
+        std::fs::write(&old, "; test\n").expect("fichier témoin");
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.src_path = old.clone();
+        app.explorer_selected = Some(old.clone());
+        app.recent_files = vec![old.clone()];
+        app.begin_explorer_rename(old);
+        app.explorer_rename_input = "apres.asm".to_string();
+        app.finish_explorer_rename();
+
+        assert!(new.is_file());
+        assert_eq!(app.src_path, new);
+        assert_eq!(app.explorer_selected, Some(dir.join("apres.asm")));
+        assert_eq!(app.recent_files, vec![dir.join("apres.asm")]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn explorer_names_cannot_escape_the_displayed_folder() {
+        for name in ["", ".", "..", "a/b", "a\\b"] {
+            assert!(!App::valid_explorer_name(name), "{name:?} doit être refusé");
+        }
+        assert!(App::valid_explorer_name("mon-exercice.asm"));
+    }
+}
+
+#[cfg(test)]
 mod recent_tests {
     use super::super::{App, MAX_RECENT};
     use std::path::PathBuf;
@@ -547,6 +742,19 @@ mod console_tests {
         for msg in ["Running...", "Hello, world!", "SIGSEGV"] {
             assert!(app.console.contains(msg), "la console garde tout : {msg} manque");
         }
+    }
+
+    #[test]
+    fn program_output_reopens_its_window_for_each_new_program_write() {
+        let mut app = App::new();
+        assert!(!app.show_program_output);
+
+        app.program_out_push("première écriture\n");
+        assert!(app.show_program_output, "un write doit montrer sa sortie");
+
+        app.show_program_output = false; // l'élève la ferme entre deux writes
+        app.program_out_push("seconde écriture\n");
+        assert!(app.show_program_output, "le write suivant doit la rouvrir");
     }
 
     /// Le tampon de sortie hérite du plafond de la console : une boucle `write`

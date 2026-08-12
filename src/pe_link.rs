@@ -36,6 +36,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::i18n::{self, Lang};
+
 use object::pe;
 use object::write::pe::{NtHeaders, Writer};
 use object::{Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget};
@@ -191,14 +193,31 @@ struct Placed {
 }
 
 /// Lie `obj` (un COFF x86-64) en un exécutable PE64 écrit dans `out`.
-pub fn link(obj: &Path, out: &Path, subsystem: Subsystem) -> Result<LinkReport, String> {
+pub fn link(
+    obj: &Path,
+    out: &Path,
+    subsystem: Subsystem,
+    lang: Lang,
+) -> Result<LinkReport, String> {
     let data = std::fs::read(obj).map_err(|e| format!("lecture de {}: {e}", obj.display()))?;
     let file = object::File::parse(&*data).map_err(|e| format!("objet illisible: {e}"))?;
     if file.format() != object::BinaryFormat::Coff {
-        return Err("l'objet n'est pas au format COFF (assemblez avec « nasm -f win64 »)".into());
+        return Err(i18n::tr3(
+            lang,
+            "l'objet n'est pas au format COFF (assemblez avec « nasm -f win64 »)",
+            "the object is not in COFF format (assemble with \"nasm -f win64\")",
+            "el objeto no está en formato COFF (ensamble con «nasm -f win64»)",
+        )
+        .into());
     }
     if file.architecture() != object::Architecture::X86_64 {
-        return Err("seul le x86-64 est pris en charge".into());
+        return Err(i18n::tr3(
+            lang,
+            "seul le x86-64 est pris en charge",
+            "only x86-64 is supported",
+            "solo se admite x86-64",
+        )
+        .into());
     }
 
     // 1) Répartir les sections de l'objet dans les quatre sections de sortie.
@@ -259,7 +278,7 @@ pub fn link(obj: &Path, out: &Path, subsystem: Subsystem) -> Result<LinkReport, 
         if raw.is_empty() {
             continue;
         }
-        let (dll, func, direct) = resolve_import(raw)?;
+        let (dll, func, direct) = resolve_import(raw, lang)?;
         let n = imports.len();
         let idx = *imports.entry((dll, func)).or_insert(n);
         iat_of.insert(raw.to_string(), idx);
@@ -374,8 +393,12 @@ pub fn link(obj: &Path, out: &Path, subsystem: Subsystem) -> Result<LinkReport, 
         })
         .ok_or_else(|| {
             format!(
-                "aucun point d'entrée : déclarez « global main » (ou {}) dans le source",
-                ENTRY_NAMES[1..].join(", ")
+                "{} : {} « global main » ({} {}) {}",
+                i18n::tr3(lang, "aucun point d'entrée", "no entry point", "sin punto de entrada"),
+                i18n::tr3(lang, "déclarez", "declare", "declare"),
+                i18n::tr3(lang, "ou", "or", "o"),
+                ENTRY_NAMES[1..].join(", "),
+                i18n::tr3(lang, "dans le source", "in the source", "en el código fuente"),
             )
         })?;
 
@@ -406,7 +429,13 @@ pub fn link(obj: &Path, out: &Path, subsystem: Subsystem) -> Result<LinkReport, 
         }
         for (offset, reloc) in sec.relocations() {
             let RelocationTarget::Symbol(target) = reloc.target() else {
-                return Err("relocation vers une cible non symbolique, non prise en charge".into());
+                return Err(i18n::tr3(
+                    lang,
+                    "relocation vers une cible non symbolique, non prise en charge",
+                    "relocation to a non-symbolic target, not supported",
+                    "reubicación hacia un destino no simbólico, no admitida",
+                )
+                .into());
             };
             let name = file
                 .symbol_by_index(target)
@@ -419,13 +448,13 @@ pub fn link(obj: &Path, out: &Path, subsystem: Subsystem) -> Result<LinkReport, 
                     // ce cas ne devrait pas survenir, et le dire vaut mieux que
                     // d'écrire une adresse fausse.
                     Some(_) => format!("symbole « {name} » non résolu (erreur interne du lieur)"),
-                    None => unknown_symbol_message(&name),
+                    None => unknown_symbol_message(&name, lang),
                 }
             })?;
             let place = rva_of(p.out) + p.offset + offset as u32;
             let buf = contents.get_mut(&p.out).expect("section de sortie allouée");
             let at = (p.offset + offset as u32) as usize;
-            apply_reloc(buf, at, place, s, reloc.flags(), &name)?;
+            apply_reloc(buf, at, place, s, reloc.flags(), &name, lang)?;
         }
     }
 
@@ -512,20 +541,34 @@ pub fn link(obj: &Path, out: &Path, subsystem: Subsystem) -> Result<LinkReport, 
 
 /// Message d'erreur pour un `extern` que le catalogue ne connaît pas. Il doit
 /// donner la sortie de secours, sinon l'élève est bloqué sans recours.
-fn unknown_symbol_message(name: &str) -> String {
-    format!(
-        "« {name} » n'est ni défini dans le programme, ni connu du catalogue de DLL.\n\
-         S'il s'agit d'une fonction Windows, nommez sa bibliothèque : « extern user32${name} » \
-         pour l'importer de user32.dll.\n\
-         S'il s'agit d'une étiquette à vous, elle manque au source (faute de frappe ?)."
-    )
+fn unknown_symbol_message(name: &str, lang: Lang) -> String {
+    match lang {
+        Lang::Fr => format!(
+            "« {name} » n'est ni défini dans le programme, ni connu du catalogue de DLL.\n\
+             S'il s'agit d'une fonction Windows, nommez sa bibliothèque : « extern user32${name} » \
+             pour l'importer de user32.dll.\n\
+             S'il s'agit d'une étiquette à vous, elle manque au source (faute de frappe ?)."
+        ),
+        Lang::En => format!(
+            "\"{name}\" is neither defined in the program nor known to the DLL catalogue.\n\
+             If it is a Windows function, name its library: \"extern user32${name}\" \
+             imports it from user32.dll.\n\
+             If it is a label of your own, it is missing from the source (a typo?)."
+        ),
+        Lang::Es => format!(
+            "«{name}» no está definido en el programa ni figura en el catálogo de DLL.\n\
+             Si es una función de Windows, nombre su biblioteca: «extern user32${name}» \
+             la importa de user32.dll.\n\
+             Si es una etiqueta suya, falta en el código fuente (¿una errata?)."
+        ),
+    }
 }
 
 /// Décide de quelle DLL vient un symbole indéfini.
 ///
 /// Rend `(dll, fonction, direct)`, où `direct` dit que le symbole désigne
 /// l'entrée d'IAT (`__imp_…`) et non une adresse de code appelable.
-fn resolve_import(raw: &str) -> Result<(String, String, bool), String> {
+fn resolve_import(raw: &str, lang: Lang) -> Result<(String, String, bool), String> {
     let (explicit_dll, rest) = match raw.split_once('$') {
         Some((dll, func)) if !dll.is_empty() && !func.is_empty() => {
             let dll = if dll.ends_with(".dll") {
@@ -544,7 +587,7 @@ fn resolve_import(raw: &str) -> Result<(String, String, bool), String> {
     let dll = match explicit_dll {
         Some(d) => d,
         None => dll_for(func)
-            .ok_or_else(|| unknown_symbol_message(raw))?
+            .ok_or_else(|| unknown_symbol_message(raw, lang))?
             .to_string(),
     };
     Ok((dll, func.to_string(), direct))
@@ -563,9 +606,18 @@ fn apply_reloc(
     target: u32,
     flags: RelocationFlags,
     name: &str,
+    lang: Lang,
 ) -> Result<(), String> {
     let RelocationFlags::Coff { typ } = flags else {
-        return Err(format!("relocation de format inattendu sur « {name} »"));
+        return Err(format!(
+            "{} « {name} »",
+            i18n::tr3(
+                lang,
+                "relocation de format inattendu sur",
+                "unexpected relocation format on",
+                "formato de reubicación inesperado en",
+            )
+        ));
     };
     let read32 = |b: &[u8]| i32::from_le_bytes(b[at..at + 4].try_into().expect("4 octets"));
     match typ {
@@ -598,14 +650,26 @@ fn apply_reloc(
             buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
         }
         pe::IMAGE_REL_AMD64_ADDR32 => {
-            return Err(format!(
-                "« {name} » est utilisé en adresse absolue 32 bits, que l'image chargée à \
-                 0x{IMAGE_BASE:X} ne permet pas. Utilisez un adressage relatif (« lea rax, [rel {name}] »)."
-            ));
+            return Err(match lang {
+                Lang::Fr => format!(
+                    "« {name} » est utilisé en adresse absolue 32 bits, que l'image chargée à \
+                     0x{IMAGE_BASE:X} ne permet pas. Utilisez un adressage relatif (« lea rax, [rel {name}] »)."
+                ),
+                Lang::En => format!(
+                    "\"{name}\" is used as a 32-bit absolute address, which an image loaded at \
+                     0x{IMAGE_BASE:X} does not allow. Use RIP-relative addressing (\"lea rax, [rel {name}]\")."
+                ),
+                Lang::Es => format!(
+                    "«{name}» se usa como dirección absoluta de 32 bits, algo que una imagen cargada en \
+                     0x{IMAGE_BASE:X} no permite. Use direccionamiento relativo («lea rax, [rel {name}]»)."
+                ),
+            });
         }
         other => {
             return Err(format!(
-                "relocation COFF de type {other:?} non prise en charge (« {name} »)"
+                "{} {other:?} {} (« {name} »)",
+                i18n::tr3(lang, "relocation COFF de type", "COFF relocation of type", "reubicación COFF de tipo"),
+                i18n::tr3(lang, "non prise en charge", "is not supported", "no admitida"),
             ));
         }
     }
@@ -777,7 +841,7 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         let exe = dir.join(format!("{name}.exe"));
-        let report = link(&obj, &exe, Subsystem::Console).expect("le lien doit réussir");
+        let report = link(&obj, &exe, Subsystem::Console, Lang::Fr).expect("le lien doit réussir");
         (exe, report)
     }
 
@@ -986,20 +1050,20 @@ mod tests {
         assert_eq!(dll_for("printf"), Some("msvcrt.dll"));
         assert_eq!(dll_for("CreatePen"), None);
 
-        let (dll, func, direct) = resolve_import("gdi32$CreatePen").expect("DLL explicite");
+        let (dll, func, direct) = resolve_import("gdi32$CreatePen", Lang::Fr).expect("DLL explicite");
         assert_eq!(
             (dll.as_str(), func.as_str(), direct),
             ("gdi32.dll", "CreatePen", false)
         );
 
-        let (dll, func, direct) = resolve_import("__imp_ExitProcess").expect("entrée d'IAT");
+        let (dll, func, direct) = resolve_import("__imp_ExitProcess", Lang::Fr).expect("entrée d'IAT");
         assert_eq!(
             (dll.as_str(), func.as_str(), direct),
             ("kernel32.dll", "ExitProcess", true)
         );
 
         // Et un symbole inconnu explique quoi faire, au lieu d'un code d'erreur.
-        let err = resolve_import("MaFonctionAMoi").expect_err("doit échouer");
+        let err = resolve_import("MaFonctionAMoi", Lang::Fr).expect_err("doit échouer");
         assert!(
             err.contains("extern user32$"),
             "le message doit montrer la sortie de secours: {err}"
@@ -1023,7 +1087,7 @@ mod tests {
             .expect("nasm");
         assert!(out.status.success());
         let err =
-            link(&obj, &dir.join("noentry.exe"), Subsystem::Console).expect_err("doit échouer");
+            link(&obj, &dir.join("noentry.exe"), Subsystem::Console, Lang::Fr).expect_err("doit échouer");
         assert!(err.contains("global main"), "message inattendu: {err}");
     }
 

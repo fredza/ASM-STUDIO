@@ -35,6 +35,9 @@ pub(crate) enum Command {
     Save,
     SaveAs,
     ClearRecent,
+    ExplorerNewFolder,
+    ExplorerRename,
+    ExplorerDelete,
     Quit,
     // Éditeur
     Find,
@@ -99,6 +102,7 @@ pub(crate) enum Command {
     // Préférences : les mêmes bascules que la fenêtre Réglages, à portée de
     // frappe. Elles y restent aussi — la palette n'est pas le seul chemin.
     ToggleTooltips,
+    ToggleToolbar,
     /// Propose ou retire la cible Windows (PE64).
     TogglePe,
     ToggleInspectHover,
@@ -134,6 +138,24 @@ impl Command {
                 "Fichier : Vider la liste des récents",
                 "File: Clear the recent list",
                 "Archivo: Vaciar la lista de recientes",
+            )
+            .into(),
+            Command::ExplorerNewFolder => t(
+                "Explorateur : Nouveau dossier",
+                "Explorer: New folder",
+                "Explorador: Nueva carpeta",
+            )
+            .into(),
+            Command::ExplorerRename => t(
+                "Explorateur : Renommer la sélection",
+                "Explorer: Rename selection",
+                "Explorador: Renombrar la selección",
+            )
+            .into(),
+            Command::ExplorerDelete => t(
+                "Explorateur : Supprimer la sélection",
+                "Explorer: Delete selection",
+                "Explorador: Eliminar la selección",
             )
             .into(),
             Command::Quit => t("Fichier : Quitter", "File: Quit", "Archivo: Salir").into(),
@@ -264,6 +286,12 @@ impl Command {
                 "Configuración: información sobre atajos",
             )
             .into(),
+            Command::ToggleToolbar => t(
+                "Affichage : afficher/masquer la barre d'outils",
+                "View: show/hide the toolbar",
+                "Vista: mostrar/ocultar la barra de herramientas",
+            )
+            .into(),
             Command::TogglePe => t(
                 "Réglages : assemblage Windows (PE64)",
                 "Settings: Windows assembling (PE64)",
@@ -338,6 +366,7 @@ impl Command {
             Command::New => "Ctrl+N",
             Command::Open => "Ctrl+O",
             Command::Save => "Ctrl+S",
+            Command::ExplorerRename => "F2",
             Command::Build => "Ctrl+B",
             Command::Find => "Ctrl+F",
             Command::FindReplace => "Ctrl+H",
@@ -371,6 +400,7 @@ impl Command {
             Command::NextTab => "Ctrl+Tab",
             Command::PrevTab => "Ctrl+Maj+Tab",
             Command::TogglebPrediction => "Ctrl+5",
+            Command::ToggleToolbar => "Ctrl+Alt+T",
             Command::Shortcuts => "F1",
             _ => return None,
         })
@@ -395,6 +425,9 @@ impl Command {
             Command::Save,
             Command::SaveAs,
             Command::ClearRecent,
+            Command::ExplorerNewFolder,
+            Command::ExplorerRename,
+            Command::ExplorerDelete,
             Command::Find,
             Command::FindReplace,
             Command::FindNext,
@@ -460,6 +493,7 @@ impl Command {
             Command::SetLang(Lang::En),
             Command::SetLang(Lang::Es),
             Command::ToggleTooltips,
+            Command::ToggleToolbar,
             Command::TogglePe,
             Command::ToggleInspectHover,
             Command::ToggleAnimations,
@@ -567,6 +601,22 @@ impl App {
             Command::ClearRecent => {
                 self.recent_files.clear();
                 self.save_settings();
+            }
+            Command::ExplorerNewFolder => {
+                self.explorer_new_folder_input.clear();
+                self.explorer_new_folder = true;
+                self.show_panel(Panel::Explorer);
+                self.focus_panel(Panel::Explorer);
+            }
+            Command::ExplorerRename => {
+                if let Some(path) = self.explorer_selected.clone() {
+                    self.begin_explorer_rename(path);
+                }
+            }
+            Command::ExplorerDelete => {
+                if let Some(path) = self.explorer_selected.clone() {
+                    self.explorer_delete = Some(path);
+                }
             }
             // Pas de `ViewportCommand::Close` ici : `run_command` n'a pas le
             // contexte egui sous la main, et surtout la fermeture doit passer
@@ -685,6 +735,10 @@ impl App {
             Command::CheckUpdates => self.updater.check(),
             Command::ToggleTooltips => {
                 self.show_tooltips = !self.show_tooltips;
+                self.save_settings();
+            }
+            Command::ToggleToolbar => {
+                self.show_toolbar = !self.show_toolbar;
                 self.save_settings();
             }
             Command::TogglePe => {
@@ -1151,6 +1205,7 @@ mod tests {
         let mut app = App::new();
         let before = (
             app.show_tooltips,
+            app.show_toolbar,
             app.inspect_hover,
             app.animate,
             app.use_asmstd,
@@ -1158,6 +1213,7 @@ mod tests {
             app.pedagogy_memview,
         );
         app.run_command(Command::ToggleTooltips);
+        app.run_command(Command::ToggleToolbar);
         app.run_command(Command::ToggleInspectHover);
         app.run_command(Command::ToggleAnimations);
         app.run_command(Command::ToggleAsmstd);
@@ -1166,6 +1222,7 @@ mod tests {
         assert_eq!(
             (
                 !app.show_tooltips,
+                !app.show_toolbar,
                 !app.inspect_hover,
                 !app.animate,
                 !app.use_asmstd,

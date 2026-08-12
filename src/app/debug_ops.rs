@@ -60,7 +60,7 @@ impl App {
         // (et non plus dans un `build/` global relatif au répertoire courant).
         self.out_dir = super::abs_dir_of(&self.src_path).join("build");
         let includes = self.include_dirs();
-        match assemble::assemble_for(&self.src_path, &self.out_dir, &includes, self.target) {
+        match assemble::assemble_for(&self.src_path, &self.out_dir, &includes, self.target, self.lang) {
             Ok(out) => {
                 self.log(&out.log);
                 // Mapping adresse → ligne source (suivi dans l'éditeur).
@@ -217,6 +217,7 @@ impl App {
         self.pending_syscall = None;
         self.stdin_input.clear();
         self.stdin_focus_claimed = false;
+        self.program_output_input_focus_claimed = false;
         // La boîte montre la sortie de CETTE exécution : garder celle d'avant
         // ferait lire à l'élève un résultat qui n'est plus le sien. La console,
         // elle, garde tout — c'est son rôle de raconter la séance.
@@ -233,7 +234,8 @@ impl App {
                 self.dbg = Some(dbg);
             }
             Err(e) => {
-                self.log(&e);
+                let msg = e.message(self.lang);
+                self.log(&msg);
                 self.status = i18n::tr(self.lang, "Échec lancement", "Launch failed").to_string();
             }
         }
@@ -266,10 +268,12 @@ impl App {
             (insn.mnemonic == "syscall").then(|| (syscall::format_call(d.regs()), d.regs().rax))
         });
 
+        let lang = self.lang;
         if let Some(d) = self.dbg.as_mut()
             && let Err(e) = d.step()
         {
-            self.log(&e);
+            let msg = e.message(lang);
+            self.log(&msg);
             return;
         }
         self.step_in_flight = true;
@@ -282,13 +286,22 @@ impl App {
     /// Sans ce sondage, un `read` sur l'entrée standard bloquerait le
     /// `waitpid` — donc l'interface entière — jusqu'à la saisie.
     pub(super) fn poll_debugger(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         if let Some(d) = self.dbg.as_mut()
             && d.is_waiting()
             && let Err(e) = d.poll()
         {
-            self.log(&e);
+            let msg = e.message(lang);
+            self.log(&msg);
         }
         self.drain_program_output();
+        // Un `read` bloquant est aussi une interaction, même si le programme
+        // n'a pas encore écrit le moindre octet : afficher sa sortie dédiée
+        // donne immédiatement le contexte et le champ de saisie de la console
+        // n'apparaît plus comme une demande sortie de nulle part.
+        if self.dbg.as_ref().is_some_and(|d| d.is_waiting()) {
+            self.show_program_output = true;
+        }
         if self.step_in_flight {
             self.finish_step_if_done();
         }
@@ -459,12 +472,14 @@ impl App {
         // compte donc aussi dans la sortie « telle qu'au terminal » — c'est
         // précisément le terminal qui produirait cet écho.
         self.program_out_push(&line);
+        let lang = self.lang;
         if let Some(d) = self.dbg.as_mut() {
             if let Err(e) = d.write_stdin(&line) {
-                self.log(&e);
+                let msg = e.message(lang);
+                self.log(&msg);
             }
         } else if let Some(run) = self.wine.as_mut()
-            && let Err(e) = run.write_stdin(&line)
+            && let Err(e) = run.write_stdin(&line, lang)
         {
             self.log(&e);
         }
@@ -478,6 +493,7 @@ impl App {
             return;
         };
         if state == RunState::Running {
+            self.show_program_output = true;
             self.status = i18n::tr(
                 self.lang,
                 "En attente d'une entrée du programme…",
@@ -549,11 +565,13 @@ impl App {
         // Sortie et journal se reconstruisent après coup : le premier pas peut
         // très bien être celui qui exécute un appel système.
         self.pending_syscall = None;
+        let lang = self.lang;
         let done = match self.dbg.as_mut() {
             Some(d) => match d.run_until(RUN_BUDGET, |regs| stops_here(&stops, regs)) {
                 Ok(n) => n,
                 Err(e) => {
-                    self.log(&e);
+                    let msg = e.message(lang);
+                    self.log(&msg);
                     return;
                 }
             },
@@ -739,7 +757,10 @@ impl App {
                 self.dbg = Some(d);
                 self.rebuild_trace(); // resynchronise call stack + syscalls
             }
-            Err(e) => self.log(&e),
+            Err(e) => {
+                let msg = e.message(self.lang);
+                self.log(&msg);
+            }
         }
     }
 
@@ -1222,6 +1243,10 @@ mod tests {
             app.dbg.as_ref().is_some_and(|d| d.is_waiting()),
             "le programme doit être suspendu sur son read"
         );
+        assert!(
+            app.show_program_output,
+            "un read en attente doit ouvrir la fenêtre de sortie"
+        );
         assert!(app.run_pending.is_some(), "le « continuer » est mis en attente");
         // Pendant l'attente, ptrace n'a pas la main : ni pas à pas, ni écriture
         // de registre. Les boutons et l'édition s'appuient là-dessus pour se
@@ -1239,6 +1264,10 @@ mod tests {
 
         app.stdin_input = "coucou".to_string();
         app.send_stdin();
+        assert!(
+            app.show_program_output,
+            "l'écho de la saisie doit maintenir la sortie visible"
+        );
         // Le déblocage prend quelques frames (le syscall doit aboutir).
         for _ in 0..200 {
             app.poll_debugger(&ctx);

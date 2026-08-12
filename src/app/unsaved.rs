@@ -18,7 +18,7 @@ use eframe::egui::{self, RichText};
 
 use crate::i18n;
 
-use super::{App, false_col};
+use super::{App, dialog_window, false_col};
 
 /// Un geste réclamé par l'élève, qui écraserait le tampon d'édition.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -124,15 +124,12 @@ impl App {
         // croix (elle vaudrait « Annuler », mais autant l'exiger explicitement)
         // — `open` reste donc à `true` et seuls les boutons décident.
         let mut choice: Option<Choice> = None;
-        egui::Window::new(tr(
+        dialog_window(ctx, tr(
             "Modifications non enregistrées",
             "Unsaved changes",
             "Cambios sin guardar",
         ))
-        .collapsible(false)
         .resizable(false)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .default_pos(ctx.content_rect().center())
         .show(ctx, |ui| {
             ui.set_width(400.0);
             ui.add_space(4.0);

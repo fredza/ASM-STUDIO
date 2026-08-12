@@ -10,7 +10,7 @@ use super::{
     changed_color, changed_color2, lerp_color,
     panel_header, icon_img, icon_tab,
     hex_dump_rows, parse_hex, parse_hex_bytes,
-    dir_tree,
+    explorer_entries, explorer_row, ExplorerAction, ExplorerRowColors, ExplorerRowLabels,
 };
 use super::pedagogy::bit_diff_strip;
 
@@ -222,7 +222,10 @@ impl App {
                                 self.status = format!("{} {} 0x{addr:X}", bytes.len(), tr("octet(s) écrit(s) @", "byte(s) written @", "byte(s) escrito(s) @"));
                                 self.mem_poke.clear();
                             }
-                            Err(e) => self.log(&e),
+                            Err(e) => {
+                                let msg = e.message(lang);
+                                self.log(&msg);
+                            }
                         }
                     }
                     _ => self.status = tr("Octets hexa invalides (ex. « 48 65 6C »)", "Invalid hex bytes (e.g. \"48 65 6C\")", "Bytes hexadecimales inválidos (ej. «48 65 6C»)").to_string(),
@@ -628,7 +631,10 @@ impl App {
             self.edit_reg = None;
             match self.dbg.as_mut().unwrap().set_register(name, v) {
                 Ok(_) => self.status = format!("{name} = 0x{v:X}"),
-                Err(e) => self.log(&e),
+                Err(e) => {
+                    let msg = e.message(lang);
+                    self.log(&msg);
+                }
             }
         } else if stop_edit {
             self.edit_reg = None;
@@ -664,60 +670,68 @@ impl App {
             .map(|((n, v), (_, p))| (*n, *v, p))
             .collect();
 
-        // Des cartes qui occupent la largeur au lieu de six sigles perdus dans un
-        // coin : jusqu'à trois par ligne quand la place le permet, deux sinon.
-        let cols = ((ui.available_width() / 150.0).floor() as usize).clamp(1, 3);
-        ui.add_space(4.0);
-        for chunk in items.chunks(cols) {
-            ui.columns(cols, |c| {
-                for (j, (name, val, pval)) in chunk.iter().enumerate() {
-                    let changed = *val != *pval;
-                    // Vert quand actif, gris quand inactif, orange quand il vient
-                    // de basculer — l'œil repère le drapeau qui a changé.
-                    let (fill, stroke_col, accent) = if changed {
-                        let cc = changed_color(flash);
-                        (cc.linear_multiply(0.20), cc, cc)
-                    } else if *val {
-                        (flag_on().linear_multiply(0.16), flag_on().linear_multiply(0.55), flag_on())
-                    } else {
-                        (c[j].visuals().faint_bg_color, flag_off().linear_multiply(0.30), flag_off())
-                    };
-                    egui::Frame::new()
-                        .fill(fill)
-                        .stroke(egui::Stroke::new(1.0_f32, stroke_col))
-                        .corner_radius(egui::CornerRadius::same(8))
-                        .inner_margin(egui::Margin::symmetric(10, 8))
-                        .show(&mut c[j], |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        RichText::new(*name)
-                                            .monospace()
-                                            .strong()
-                                            .size(16.0)
-                                            .color(accent),
-                                    );
-                                    ui.label(RichText::new(full(name)).small().weak());
-                                });
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(
-                                            RichText::new(if *val { "1" } else { "0" })
-                                                .monospace()
-                                                .strong()
-                                                .size(22.0)
-                                                .color(accent),
+        // La bande CPU du dock peut être très basse. L'ancien plafond de trois
+        // cartes imposait deux lignes, dont la seconde était coupée sans barre
+        // de défilement : c'était le « glitch » visible dans Flags. Six cartes
+        // compactes tiennent sur une ligne quand la largeur le permet, et le
+        // ScrollArea conserve l'accès aux lignes restantes dans un panneau étroit.
+        let cols = ((ui.available_width() / 130.0).floor() as usize).clamp(1, 6);
+        egui::ScrollArea::vertical()
+            .id_salt("flags_cards_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(3.0);
+                for chunk in items.chunks(cols) {
+                    ui.columns(cols, |c| {
+                        for (j, (name, val, pval)) in chunk.iter().enumerate() {
+                            let changed = *val != *pval;
+                            // Vert quand actif, gris quand inactif, orange quand il vient
+                            // de basculer — l'œil repère le drapeau qui a changé.
+                            let (fill, stroke_col, accent) = if changed {
+                                let cc = changed_color(flash);
+                                (cc.linear_multiply(0.20), cc, cc)
+                            } else if *val {
+                                (flag_on().linear_multiply(0.16), flag_on().linear_multiply(0.55), flag_on())
+                            } else {
+                                (c[j].visuals().faint_bg_color, flag_off().linear_multiply(0.30), flag_off())
+                            };
+                            egui::Frame::new()
+                                .fill(fill)
+                                .stroke(egui::Stroke::new(1.0_f32, stroke_col))
+                                .corner_radius(egui::CornerRadius::same(7))
+                                .inner_margin(egui::Margin::symmetric(7, 5))
+                                .show(&mut c[j], |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
+                                            ui.label(
+                                                RichText::new(*name)
+                                                    .monospace()
+                                                    .strong()
+                                                    .size(14.0)
+                                                    .color(accent),
+                                            );
+                                            ui.label(RichText::new(full(name)).small().weak());
+                                        });
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    RichText::new(if *val { "1" } else { "0" })
+                                                        .monospace()
+                                                        .strong()
+                                                        .size(18.0)
+                                                        .color(accent),
+                                                );
+                                            },
                                         );
-                                    },
-                                );
-                            });
-                        });
+                                    });
+                                });
+                        }
+                    });
+                    ui.add_space(5.0);
                 }
             });
-            ui.add_space(8.0);
-        }
     }
 
     // ---------- Explorateur de fichiers (panneau de gauche) ----------
@@ -755,7 +769,9 @@ impl App {
             "Archivo nuevo en esta carpeta — se pregunta el formato (ELF o PE)",
         );
 
-        // Barre : nouveau fichier, nom du dossier racine, remonter d'un cran.
+        // Barre d'outils : les actions usuelles restent visibles, sans cacher
+        // l'arbre derrière un menu. Le clic droit d'une ligne apporte ensuite
+        // renommer/supprimer directement là où l'on travaille.
         let mut go_up = false;
         let mut new_here = false;
         ui.horizontal(|ui| {
@@ -771,6 +787,16 @@ impl App {
             if self.tip(ui.small_button("✚"), new_tip).clicked() {
                 new_here = true;
             }
+            if self
+                .tip(
+                    ui.small_button("🗀+"),
+                    i18n::tr3(self.lang, "Nouveau dossier", "New folder", "Nueva carpeta"),
+                )
+                .clicked()
+            {
+                self.explorer_new_folder_input.clear();
+                self.explorer_new_folder = true;
+            }
             let root = self
                 .explorer_dir
                 .file_name()
@@ -781,27 +807,145 @@ impl App {
         });
         if go_up && let Some(p) = self.explorer_dir.parent() {
             self.explorer_dir = p.to_path_buf();
+            self.explorer_selected = None;
         }
         if new_here {
             self.new_file();
         }
         ui.separator();
 
-        // Arbre de fichiers (dossiers repliables + fichiers cliquables).
+        // Arbre virtualisé : au défilement, `show_rows` ne rend que la tranche
+        // visible au lieu de reconstruire l'intégralité de l'arborescence.
         let asm_col = self.c_mnemonic();
         let other_col = self.c_bytes();
         // Le repère suit la sélection clavier quand il y en a une, sinon le
         // fichier ouvert : sans cela, les flèches déplaceraient un curseur invisible.
         let cur = self.explorer_selected.clone().unwrap_or_else(|| self.src_path.clone());
         let scroll_here = self.take_scroll_request(super::dock::Panel::Explorer);
-        let mut to_open = None;
-        egui::ScrollArea::both().id_salt("explorer_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            ui.spacing_mut().indent = 14.0;
-            let root = self.explorer_dir.clone();
-            dir_tree(ui, &root, &cur, scroll_here, asm_col, other_col, &mut to_open);
-        });
-        if let Some(f) = to_open {
-            self.open_file(f);
+        let root = self.explorer_dir.clone();
+        let entries = explorer_entries(ui, &root);
+        let renaming = self.explorer_renaming.clone();
+        let mut explorer_action = None;
+        let row_h = 24.0;
+        egui::ScrollArea::vertical()
+            .id_salt("explorer_scroll")
+            .auto_shrink([false, false])
+            .show_rows(ui, row_h, entries.len(), |ui, rows| {
+                for index in rows {
+                    let entry = &entries[index];
+                    let renaming_this = renaming.as_ref() == Some(&entry.path);
+                    let action = explorer_row(
+                        ui,
+                        entry,
+                        entry.path == cur,
+                        scroll_here && entry.path == cur,
+                        renaming_this.then_some(&mut self.explorer_rename_input),
+                        ExplorerRowLabels {
+                            open_folder: i18n::tr3(self.lang, "Ouvrir ce dossier", "Open this folder", "Abrir esta carpeta"),
+                            rename: i18n::tr3(self.lang, "Renommer", "Rename", "Renombrar"),
+                            delete: i18n::tr3(self.lang, "Supprimer…", "Delete…", "Eliminar…"),
+                        },
+                        ExplorerRowColors { asm: asm_col, other: other_col },
+                    );
+                    if action.is_some() {
+                        explorer_action = action;
+                    }
+                }
+            });
+        if entries.is_empty() {
+            ui.weak(i18n::tr3(self.lang, "Ce dossier est vide.", "This folder is empty.", "Esta carpeta está vacía."));
+        }
+        match explorer_action {
+            Some(ExplorerAction::Open(path)) => {
+                self.explorer_selected = Some(path.clone());
+                self.open_file(path);
+            }
+            Some(ExplorerAction::Select(path)) => {
+                if self.explorer_renaming.as_ref() == Some(&path) {
+                    self.explorer_renaming = None;
+                }
+                self.explorer_selected = Some(path);
+            }
+            Some(ExplorerAction::Navigate(path)) => {
+                self.explorer_dir = path;
+                self.explorer_selected = None;
+            }
+            Some(ExplorerAction::Rename(path)) => {
+                if self.explorer_renaming.as_ref() == Some(&path) {
+                    self.finish_explorer_rename();
+                } else {
+                    self.begin_explorer_rename(path);
+                }
+            }
+            Some(ExplorerAction::Delete(path)) => self.explorer_delete = Some(path),
+            None => {}
+        }
+        self.explorer_dialogs(ui.ctx());
+    }
+
+    /// Les opérations avec nom ou suppression ont une confirmation explicite,
+    /// mais le renommage reste directement dans la ligne de l'arbre.
+    fn explorer_dialogs(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        if self.explorer_new_folder {
+            let mut open = true;
+            let mut create = false;
+            let mut cancel = false;
+            egui::Window::new(tr("Nouveau dossier", "New folder", "Nueva carpeta"))
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label(tr("Nom du dossier", "Folder name", "Nombre de la carpeta"));
+                    let response = ui.add(egui::TextEdit::singleline(&mut self.explorer_new_folder_input).desired_width(280.0));
+                    response.request_focus();
+                    ui.horizontal(|ui| {
+                        if ui.button(tr("Créer", "Create", "Crear")).clicked()
+                            || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                        {
+                            create = true;
+                        }
+                        if ui.button(tr("Annuler", "Cancel", "Cancelar")).clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if create {
+                self.create_explorer_folder();
+            }
+            if !open || cancel {
+                self.explorer_new_folder = false;
+            }
+        }
+        if let Some(path) = self.explorer_delete.clone() {
+            let mut confirm = false;
+            let mut cancel = false;
+            egui::Window::new(tr("Supprimer ?", "Delete?", "¿Eliminar?"))
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(if path.is_dir() {
+                        tr("Le dossier et tout son contenu seront supprimés.", "The folder and all of its contents will be deleted.", "La carpeta y todo su contenido se eliminarán.")
+                    } else {
+                        tr("Ce fichier sera supprimé.", "This file will be deleted.", "Este archivo se eliminará.")
+                    });
+                    ui.label(RichText::new(path.display().to_string()).monospace().weak());
+                    ui.horizontal(|ui| {
+                        if ui.button(RichText::new(tr("Supprimer", "Delete", "Eliminar")).color(false_col())).clicked() {
+                            confirm = true;
+                        }
+                        if ui.button(tr("Annuler", "Cancel", "Cancelar")).clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if confirm {
+                self.explorer_delete = None;
+                self.delete_explorer_entry(path);
+            } else if cancel {
+                self.explorer_delete = None;
+            }
         }
     }
 

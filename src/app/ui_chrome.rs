@@ -112,6 +112,92 @@ impl App {
 
     // ---------- Raccourcis ----------
 
+    /// Recherche et remplacement : Ctrl+F, Ctrl+H, F3 et Maj+F3.
+    ///
+    /// Actifs même quand l'éditeur a le focus, comme Ctrl+S/O/N/B : ce sont
+    /// des gestes d'IDE, pas des gestes de champ de texte.
+    fn handle_find_shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::Key;
+
+        // Ctrl+F ouvre la recherche, Ctrl+H la recherche-remplacement.
+        let (find, replace) = ctx.input(|i| {
+            let c = i.modifiers.ctrl;
+            (c && i.key_pressed(Key::F), c && i.key_pressed(Key::H))
+        });
+        if find || replace {
+            self.show_find = true;
+            self.find_replace_mode = replace;
+            self.show_panel(super::dock::Panel::Editor);
+            self.focus_panel(super::dock::Panel::Editor);
+            ctx.memory_mut(|m| m.request_focus(super::find_query_id()));
+        }
+        // F3 / Maj+F3 : correspondance suivante / précédente, même barre
+        // fermée — elle se rouvre pour qu'on revoie le surlignage.
+        let (f3, f3_back) = ctx.input(|i| {
+            let p = i.key_pressed(Key::F3);
+            (p && !i.modifiers.shift, p && i.modifiers.shift)
+        });
+        if (f3 || f3_back) && !self.find_query.is_empty() {
+            self.show_find = true;
+            if f3_back {
+                self.find_prev();
+            } else {
+                self.find_next();
+            }
+        }
+    }
+
+    /// Repli des labels : Ctrl+Maj+[ replie celui sous le curseur, Ctrl+Maj+]
+    /// déplie tout — mêmes touches que VSCode (Fold / Unfold).
+    ///
+    /// Le second est simplifié en « tout déplier » plutôt que « déplier celui
+    /// sous le curseur » : sans curseur vivant une fois replié (vue lecture
+    /// seule), viser un label précis au clavier n'aurait pas de sens.
+    fn handle_fold_shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::Key;
+
+        let (fold, unfold_all) = ctx.input(|i| {
+            let c = i.modifiers.ctrl && i.modifiers.shift;
+            (c && i.key_pressed(Key::OpenBracket), c && i.key_pressed(Key::CloseBracket))
+        });
+        if fold {
+            self.fold_label_at_cursor();
+        }
+        if unfold_all {
+            self.unfold_all();
+        }
+    }
+
+    /// Affichage : Ctrl+1..4 basculent un panneau de la disposition, Ctrl+5 le
+    /// mode « prédire la valeur ». Chacun est un réglage persistant, d'où
+    /// l'enregistrement en fin de course — une seule fois, quel qu'en soit le
+    /// nombre basculé dans la même image.
+    fn handle_panel_shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::Key;
+        use super::dock::Panel;
+
+        let quick: [(egui::Key, Panel); 4] = [
+            (Key::Num1, Panel::Explorer),
+            (Key::Num2, Panel::Instruction),
+            (Key::Num3, Panel::Registers),
+            (Key::Num4, Panel::Memory),
+        ];
+        let mut toggled = false;
+        for (key, panel) in quick {
+            if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(key)) {
+                self.toggle_panel(panel);
+                toggled = true;
+            }
+        }
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::Num5)) {
+            self.pedagogy_predict = !self.pedagogy_predict;
+            toggled = true;
+        }
+        if toggled {
+            self.save_settings();
+        }
+    }
+
     pub(super) fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::Key;
 
@@ -119,6 +205,13 @@ impl App {
         // egui n'ouvre pas ses menus au clavier, la palette les remplace.
         if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(Key::P)) {
             self.open_palette();
+            return;
+        }
+        // La barre occupe une ligne entière sur les petits écrans. Ce raccourci
+        // correspond au menu Affichage et à la palette de commandes.
+        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.alt && i.key_pressed(Key::T)) {
+            self.show_toolbar = !self.show_toolbar;
+            self.save_settings();
             return;
         }
         // Palette ouverte : elle capte tout, sinon Échap arrêterait le
@@ -200,48 +293,8 @@ impl App {
             let line = self.editor_ln;
             self.open_breakpoint_condition(line);
         }
-        // Ctrl+F ouvre la recherche, Ctrl+H la recherche-remplacement —
-        // toujours actifs même si l'éditeur a le focus (comme Ctrl+S/O/N/B).
-        let (find, replace) = ctx.input(|i| {
-            let c = i.modifiers.ctrl;
-            (c && i.key_pressed(Key::F), c && i.key_pressed(Key::H))
-        });
-        if find || replace {
-            self.show_find = true;
-            self.find_replace_mode = replace;
-            self.show_panel(super::dock::Panel::Editor);
-            self.focus_panel(super::dock::Panel::Editor);
-            ctx.memory_mut(|m| m.request_focus(super::find_query_id()));
-        }
-        // F3 / Maj+F3 : correspondance suivante / précédente, même barre
-        // fermée — elle se rouvre pour qu'on revoie le surlignage.
-        let (f3, f3_back) = ctx.input(|i| {
-            let p = i.key_pressed(Key::F3);
-            (p && !i.modifiers.shift, p && i.modifiers.shift)
-        });
-        if (f3 || f3_back) && !self.find_query.is_empty() {
-            self.show_find = true;
-            if f3_back {
-                self.find_prev();
-            } else {
-                self.find_next();
-            }
-        }
-        // Ctrl+Maj+[ replie le label sous le curseur, Ctrl+Maj+] déplie tout
-        // — mêmes touches que VSCode (Fold / Unfold), le second simplifié en
-        // « tout déplier » plutôt que « déplier celui sous le curseur » : sans
-        // curseur vivant une fois replié (vue lecture seule), viser un label
-        // précis au clavier n'aurait pas de sens.
-        let (fold, unfold_all) = ctx.input(|i| {
-            let c = i.modifiers.ctrl && i.modifiers.shift;
-            (c && i.key_pressed(Key::OpenBracket), c && i.key_pressed(Key::CloseBracket))
-        });
-        if fold {
-            self.fold_label_at_cursor();
-        }
-        if unfold_all {
-            self.unfold_all();
-        }
+        self.handle_find_shortcuts(ctx);
+        self.handle_fold_shortcuts(ctx);
         // Gestes d'édition (Tab, Alt+↑↓, Ctrl+D…) et autocomplétion : traités
         // avant tout le reste, et RETIRÉS du flux d'événements — c'est ce qui
         // empêche le champ de texte, puis les blocs suivants, de les revoir.
@@ -299,28 +352,7 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::F1)) {
             self.show_shortcuts = !self.show_shortcuts;
         }
-        // Affichage : Ctrl+1..5 bascule un panneau de la disposition.
-        use super::dock::Panel;
-        let quick: [(egui::Key, Panel); 4] = [
-            (Key::Num1, Panel::Explorer),
-            (Key::Num2, Panel::Instruction),
-            (Key::Num3, Panel::Registers),
-            (Key::Num4, Panel::Memory),
-        ];
-        let mut toggled = false;
-        for (key, panel) in quick {
-            if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(key)) {
-                self.toggle_panel(panel);
-                toggled = true;
-            }
-        }
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::Num5)) {
-            self.pedagogy_predict = !self.pedagogy_predict;
-            toggled = true;
-        }
-        if toggled {
-            self.save_settings();
-        }
+        self.handle_panel_shortcuts(ctx);
 
         // Les flèches pilotent le panneau focalisé, sauf si l'on tape dedans.
         let editing = self.typing_in_focused_panel(ctx);
@@ -330,11 +362,13 @@ impl App {
         // Le panneau focalisé décide de ce que font les flèches : chaque liste
         // se parcourt au clavier, Entrée valide.
         if !editing {
-            let (up, down, enter) = ctx.input(|i| {
+            let (up, down, enter, rename, delete) = ctx.input(|i| {
                 (
                     i.key_pressed(Key::ArrowUp),
                     i.key_pressed(Key::ArrowDown),
                     i.key_pressed(Key::Enter),
+                    i.key_pressed(Key::F2),
+                    i.key_pressed(Key::Delete),
                 )
             });
             match self.focused_panel() {
@@ -351,7 +385,18 @@ impl App {
                         self.move_explorer_selection(down);
                     }
                     if enter && let Some(f) = self.explorer_selected.clone() {
-                        self.open_file(f);
+                        if f.is_dir() {
+                            self.explorer_dir = f;
+                            self.explorer_selected = None;
+                        } else {
+                            self.open_file(f);
+                        }
+                    }
+                    if rename && let Some(path) = self.explorer_selected.clone() {
+                        self.begin_explorer_rename(path);
+                    }
+                    if delete && let Some(path) = self.explorer_selected.clone() {
+                        self.explorer_delete = Some(path);
                     }
                 }
                 Some(super::dock::Panel::Memory) => {
@@ -824,6 +869,22 @@ impl App {
         }
 
         ui.separator();
+        if ui
+            .checkbox(
+                &mut self.show_toolbar,
+                tr("Barre d'outils", "Toolbar", "Barra de herramientas"),
+            )
+            .on_hover_text(tr(
+                "Afficher ou cacher les boutons Lancer, Suivant et Continuer (Ctrl+Alt+T).",
+                "Show or hide the Run, Step and Continue buttons (Ctrl+Alt+T).",
+                "Mostrar u ocultar los botones Ejecutar, Siguiente y Continuar (Ctrl+Alt+T).",
+            ))
+            .changed()
+        {
+            self.save_settings();
+        }
+
+        ui.separator();
         ui.menu_button(tr("Panneaux", "Panels", "Paneles"), |ui| {
             ui.label(
                 RichText::new(tr(
@@ -897,6 +958,9 @@ impl App {
     }
 
     pub(super) fn toolbar(&mut self, ctx: &egui::Context) {
+        if !self.show_toolbar {
+            return;
+        }
         egui::TopBottomPanel::top("toolbar")
             .frame(
                 egui::Frame::new()
@@ -992,48 +1056,9 @@ impl App {
                 // débutant. Retirées : la barre ne montre que ce qui agit.
                 // (Réglages : accessible via le menu Aide — pas de doublon ici.)
 
-                // À droite, trois repères que l'on devait auparavant chercher
-                // dans les menus : état du programme, niveau de l'interface et
-                // format qui sera produit. Ce sont des badges de contexte, pas
-                // des boutons — leur discrétion évite de concurrencer « Lancer ».
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let target = match self.target {
-                        crate::assemble::Target::Linux => "ELF64 · Linux",
-                        crate::assemble::Target::Windows => "PE64 · Windows",
-                        crate::assemble::Target::WindowsGui => "PE64 GUI · Windows",
-                    };
-                    let target_color = if self.target.is_runnable() { flag_on() } else { warn_col() };
-                    egui::Frame::new()
-                        .fill(target_color.linear_multiply(0.12))
-                        .stroke(egui::Stroke::new(1.0_f32, target_color.gamma_multiply(0.6)))
-                        .corner_radius(egui::CornerRadius::same(6))
-                        .inner_margin(egui::Margin::symmetric(7, 3))
-                        .show(ui, |ui| ui.label(RichText::new(target).small().strong().color(target_color)));
-                    ui.add_space(4.0);
-
-                    egui::Frame::new()
-                        .fill(accent().linear_multiply(0.10))
-                        .stroke(egui::Stroke::new(1.0_f32, accent().gamma_multiply(0.55)))
-                        .corner_radius(egui::CornerRadius::same(6))
-                        .inner_margin(egui::Margin::symmetric(7, 3))
-                        .show(ui, |ui| {
-                            ui.label(RichText::new(self.mode.label(lang)).small().strong().color(accent()));
-                        });
-                    ui.add_space(4.0);
-
-                    let (state, state_color) = if running {
-                        (tr("EN COURS", "RUNNING", "EN CURSO"), flag_on())
-                    } else {
-                        (tr("PRÊT", "READY", "LISTO"), flag_off())
-                    };
-                    egui::Frame::new()
-                        .fill(state_color.linear_multiply(0.12))
-                        .corner_radius(egui::CornerRadius::same(6))
-                        .inner_margin(egui::Margin::symmetric(7, 3))
-                        .show(ui, |ui| {
-                            ui.label(RichText::new(format!("● {state}")).small().strong().color(state_color));
-                        });
-                });
+                // L'état du programme et le format produit sont déjà dans la
+                // barre d'état. Les répéter ici gaspille l'espace réservé aux
+                // actions et donne l'impression de trois boutons sans action.
             });
             });
         });
@@ -1233,7 +1258,10 @@ impl App {
                             ),
                         ),
                         crate::assemble::Target::WindowsGui => (
-                            "PE64 ⊞",
+                            // L'indicateur donne le FORMAT du binaire, non son
+                            // type d'interface : Windows console et fenêtré
+                            // restent tous deux des PE64.
+                            "PE64",
                             tr(
                                 "Cible Windows fenêtrée : même chose, sans console au lancement.",
                                 "Windows GUI target: same, with no console at startup.",
@@ -1245,6 +1273,17 @@ impl App {
                     // il ne fait que s'assembler : la couleur porte la nuance.
                     let col = if self.target.is_runnable() { flag_on() } else { warn_col() };
                     ui.label(RichText::new(fmt).color(col).strong()).on_hover_text(tip);
+                    // Le mode apprentissage est un contexte, pas une commande :
+                    // il est annoncé une seule fois dans la barre d'état et
+                    // disparaît en mode complet. Il rappelle que la disposition
+                    // montre les panneaux essentiels et le parcours guidé.
+                    if self.mode == super::UiMode::Learning {
+                        ui.separator();
+                        ui.label(
+                            RichText::new(self.mode.label(lang)).color(accent()).strong(),
+                        )
+                        .on_hover_text(self.mode.description(lang));
+                    }
                     ui.separator();
                     match &self.focused_panel_name {
                         Some(name) => {
@@ -1539,6 +1578,14 @@ mod keyboard_tests {
         assert!(!app.show_shortcuts, "2e appui : referme");
         frame(&mut app, &ctx, key(egui::Key::F1));
         assert!(app.show_shortcuts, "3e appui : rouvre");
+
+        // --- Ctrl+Alt+T : barre d'outils ---
+        let toolbar = key_mod(egui::Key::T, egui::Modifiers::CTRL | egui::Modifiers::ALT);
+        assert!(app.show_toolbar, "visible par défaut");
+        frame(&mut app, &ctx, toolbar.clone());
+        assert!(!app.show_toolbar, "Ctrl+Alt+T la cache");
+        frame(&mut app, &ctx, toolbar);
+        assert!(app.show_toolbar, "et le second appui la réaffiche");
 
         // --- Ctrl+1..4 : panneaux ; Ctrl+5 : fenêtre Prédiction ---
         for (k, panel) in [
@@ -1836,7 +1883,7 @@ mod status_bar_tests {
         for (target, expected) in [
             (Target::Linux, "ELF64"),
             (Target::Windows, "PE64"),
-            (Target::WindowsGui, "PE64 ⊞"),
+            (Target::WindowsGui, "PE64"),
         ] {
             let mut app = App::new();
             app.pe_enabled = true;
@@ -1851,6 +1898,24 @@ mod status_bar_tests {
                 "cible {target:?} : « {expected} » attendu dans la barre d'état, vu : {texts:?}"
             );
         }
+    }
+
+    #[test]
+    fn learning_indicator_lives_only_in_the_status_bar_while_that_mode_is_active() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        let learning = ctx.run(Default::default(), |ctx| app.status_bar(ctx));
+        assert!(
+            collect_text(&learning.shapes).iter().any(|text| text == "Apprentissage"),
+            "le repère doit être présent dans son propre mode"
+        );
+
+        app.set_ui_mode(crate::app::UiMode::Full);
+        let full = ctx.run(Default::default(), |ctx| app.status_bar(ctx));
+        assert!(
+            !collect_text(&full.shapes).iter().any(|text| text == "Apprentissage"),
+            "le repère ne doit pas occuper la barre en mode complet"
+        );
     }
 
     /// Tout le texte peint pendant une frame, à plat.

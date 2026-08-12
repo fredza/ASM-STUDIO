@@ -38,6 +38,12 @@ readonly ARCH="linux-x86_64"
 readonly PKG="asm-studio-${VERSION}-${ARCH}"
 readonly DIST="${ROOT}/dist"
 readonly STAGE="${DIST}/${PKG}"
+readonly -a WINDOWS_EXAMPLES=(
+    "win_hello_world.asm"
+    "win_arithmetic.asm"
+    "win_boucle.asm"
+    "win_lire_ecrire.asm"
+)
 
 step "Compilation (release)"
 # Le script de build (hash git, date) n'est réexécuté que si .git/HEAD ou
@@ -79,7 +85,7 @@ fi
 
 step "Assemblage de ${PKG}"
 rm -rf -- "${STAGE}"
-mkdir -p -- "${STAGE}/assets"
+mkdir -p -- "${STAGE}/assets" "${STAGE}/examples"
 
 install -m 755 target/release/asm_studio "${STAGE}/asm-studio"
 ok "asm-studio (binaire)"
@@ -102,6 +108,15 @@ ok "documentation"
 install -m 644 assets/asm-studio.desktop "${STAGE}/assets/"
 install -m 644 assets/icon.png           "${STAGE}/assets/"
 ok "ressources (.desktop, icône)"
+
+for example in "${WINDOWS_EXAMPLES[@]}"; do
+    if [ ! -f "examples_seed/${example}" ]; then
+        err "exemple PE64 manquant : examples_seed/${example}"
+        exit 1
+    fi
+    install -m 644 "examples_seed/${example}" "${STAGE}/examples/${example}"
+done
+ok "4 exemples PE64 essentiels"
 
 step "Archive"
 tar -C "${DIST}" -czf "${DIST}/${PKG}.tar.gz" "${PKG}"
