@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8-beta.8] - 2026-08-12
+
+### Added
+- **Refined workspace UI**: The menu bar now carries a compact ASM Studio
+  identity and the action bar keeps the program state, learning mode and output
+  target visible at a glance. Docked-panel tabs gained clear visual markers,
+  while cards and section headers now have a more deliberate hierarchy.
+
+### Changed
+- **The About dialog now states the exact beta**: Version information is again
+  a single source of truth. `0.4.8-beta.8` automatically renders as
+  “VERSION BÊTA 8” (and its English and Spanish equivalents), so the banner
+  cannot drift from the package version.
+
 ## [0.4.7] - 2026-08-11
 
 ### Added

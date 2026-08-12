@@ -163,6 +163,7 @@ mod tests {
         assert!(is_newer("0.4.7", "0.4.7-beta.4"), "la finale l'emporte sur sa bêta");
         assert!(!is_newer("0.4.7-beta.4", "0.4.7"));
         assert!(is_newer("0.4.7-beta.5", "0.4.7-beta.4"));
+        assert!(is_newer("0.4.8-beta.8", "0.4.7"));
         assert!(!is_newer("0.4.7-beta.4", "0.4.7-beta.4"), "égalité : rien à faire");
         assert!(is_newer("0.4.7-rc.1", "0.4.7-beta.9"), "rc après bêta");
         assert!(is_newer("0.5.0-beta.1", "0.4.7"), "le numéro passe avant le rang");
