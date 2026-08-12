@@ -223,6 +223,12 @@ impl App {
     pub(super) fn open_file_now(&mut self, path: PathBuf) {
         match std::fs::read_to_string(&path) {
             Ok(content) => {
+                // Un fichier ouvert n'annonce pas son format : il se lit dans
+                // le code. Sans cela, ouvrir un source Windows depuis
+                // l'explorateur laissait la cible sur Linux, et Build répondait
+                // par une erreur de nasm sur `extern ExitProcess` — un message
+                // qui ne parle pas du vrai problème.
+                self.adopt_detected_target(&content);
                 self.source = content;
                 // L'explorateur reflète le dossier du fichier ouvert.
                 self.explorer_dir = abs_dir_of(&path);

@@ -69,6 +69,59 @@ impl Target {
     }
 }
 
+/// Pour quelle cible ce source est-il écrit ? `None` quand rien ne tranche.
+///
+/// Un fichier ouvert n'annonce pas son format, et le lire avec la mauvaise
+/// cible ne produit pas un avertissement mais une erreur de nasm qui ne parle
+/// pas du bon sujet : `extern ExitProcess` refusé en `elf64`, ou `_start`
+/// introuvable en `win64`. Les deux mondes se distinguent pourtant à des signes
+/// francs, qu'aucun programme ne porte par hasard.
+///
+/// La règle est délibérément prudente : ce qui décide doit être hors de portée
+/// de l'autre monde. `syscall` n'existe pas dans un programme Windows, et
+/// `ExitProcess` n'existe pas dans un programme Linux ; en revanche `main` ou
+/// `default rel` se rencontrent des deux côtés et ne prouvent rien. Un source
+/// qui porterait les deux marques — un fichier à moitié converti — ne renvoie
+/// rien plutôt que de trancher au hasard.
+pub fn detect_target(source: &str) -> Option<Target> {
+    // Les commentaires mentent : une explication peut nommer `syscall` dans un
+    // fichier Windows, et le tutoriel ne s'en prive pas. Seul le code compte.
+    let code = source
+        .lines()
+        .map(|l| l.split(';').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
+
+    let has_word = |w: &str| {
+        code.match_indices(w).any(|(i, _)| {
+            let before = code[..i].chars().next_back();
+            let after = code[i + w.len()..].chars().next();
+            let edge = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
+            edge(before) && edge(after)
+        })
+    };
+
+    // Un `extern` d'une fonction Windows, ou l'une des DLL nommées à la volée
+    // (`extern gdi32$CreatePen`), ne laisse aucun doute.
+    let windows = has_word("exitprocess")
+        || has_word("getstdhandle")
+        || has_word("writefile")
+        || has_word("messageboxa")
+        || has_word("messageboxw")
+        || code.contains("$")
+        || code.contains("-f win64");
+    // `syscall` est l'instruction que Windows n'a pas, et `_start` le point
+    // d'entrée que son lieur ne cherche pas.
+    let linux = has_word("syscall") || has_word("_start");
+
+    match (windows, linux) {
+        (true, false) => Some(Target::Windows),
+        (false, true) => Some(Target::Linux),
+        _ => None,
+    }
+}
+
 pub struct BuildOutput {
     /// Chemin du binaire produit (ELF prêt pour ptrace, ou `.exe` PE64).
     pub binary: PathBuf,
@@ -263,6 +316,27 @@ mod tests {
         // Une clé inconnue (réglage d'une version future, fichier abîmé) ne
         // doit pas empêcher de démarrer : Linux, la cible qui marche partout.
         assert_eq!(Target::from_key("plan9"), Target::Linux);
+    }
+
+    #[test]
+    fn source_target_detection_uses_code_not_comments() {
+        assert_eq!(
+            detect_target("global _start\n_start:\n    syscall\n"),
+            Some(Target::Linux)
+        );
+        assert_eq!(
+            detect_target("global main\nextern ExitProcess\nmain:\n    call ExitProcess\n"),
+            Some(Target::Windows)
+        );
+        assert_eq!(
+            detect_target("; syscall and ExitProcess are only documentation\nglobal main\nmain:\n    ret\n"),
+            None
+        );
+        assert_eq!(
+            detect_target("global _start\nextern ExitProcess\n_start:\n    syscall\n"),
+            None,
+            "un source mélangé ne doit pas choisir une cible arbitrairement"
+        );
     }
 }
 

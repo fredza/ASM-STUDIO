@@ -33,6 +33,24 @@ fn stops_here(stops: &StopMap, regs: &crate::debugger::Registers) -> bool {
 }
 
 impl App {
+    /// Adopte la cible que le source ouvert permet d'identifier.
+    ///
+    /// Un fichier `.asm` n'embarque pas son format. Quand ses marqueurs sont
+    /// non ambigus, les ignorer fait assembler un source Windows en ELF (ou
+    /// l'inverse) et produit un diagnostic NASM qui ne correspond pas au
+    /// problème. Ouvrir un tel fichier doit donc aussi réactiver l'option PE si
+    /// elle était masquée dans les réglages : autrement `set_target` refuserait
+    /// précisément la cible que le source réclame.
+    pub(super) fn adopt_detected_target(&mut self, source: &str) {
+        let Some(target) = assemble::detect_target(source) else {
+            return;
+        };
+        if target.is_windows() {
+            self.pe_enabled = true;
+        }
+        self.set_target(target);
+    }
+
     /// Enregistre puis assemble le programme de l'utilisateur, pour la cible
     /// courante : `nasm` + `ld` sous Linux, `nasm -f win64` + le lieur intégré
     /// pour Windows.
@@ -811,6 +829,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assemble::Target;
     use std::path::PathBuf;
 
     /// Une application prête à exécuter `source`. `tag` distingue les
@@ -823,6 +842,21 @@ mod tests {
         app.source = source.to_string();
         app.launch();
         app
+    }
+
+    #[test]
+    fn opening_a_recognisable_source_adopts_its_target() {
+        let mut app = App::new();
+        app.pe_enabled = false;
+
+        app.adopt_detected_target("global main\nextern ExitProcess\nmain:\n    call ExitProcess\n");
+
+        assert!(app.pe_enabled, "un source PE réactive sa cible");
+        assert_eq!(app.target, Target::Windows);
+
+        app.adopt_detected_target("global _start\n_start:\n    syscall\n");
+
+        assert_eq!(app.target, Target::Linux);
     }
 
     /// Neuf lignes, dont six instructions : les numéros comptent, les tests

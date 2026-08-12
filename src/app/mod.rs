@@ -553,6 +553,13 @@ pub struct App {
     pub(super) tutorial_enabled: bool,
     pub(super) tutorial_progress: crate::tutorial::Progress,
     pub(super) tutorial_current: Option<String>,
+    /// Indices déjà demandés, et pour quelle leçon. L'identifiant est gardé avec
+    /// le compte pour que changer de leçon reparte de zéro sans qu'aucun chemin
+    /// d'ouverture n'ait à y penser — il y en a quatre, et l'oubli d'un seul
+    /// livrerait la solution d'une leçon à qui vient d'ouvrir la suivante.
+    /// Volontairement non persisté : les indices se redemandent d'une session à
+    /// l'autre, ce qui coûte un clic et laisse une chance de trouver seul.
+    pub(super) tutorial_hints: Option<(String, usize)>,
     /// Mode d'affichage : apprentissage (épuré) ou complet.
     pub(super) mode: UiMode,
     /// Bandeau d'accueil (mode apprentissage) écarté une fois pour toutes.
@@ -756,6 +763,7 @@ impl App {
             welcome_dismissed: false,
             tutorial_progress: crate::tutorial::Progress::default(),
             tutorial_current: None,
+            tutorial_hints: None,
             scroll_to_sel: None,
             mode: UiMode::Learning,
             palette_open: false,

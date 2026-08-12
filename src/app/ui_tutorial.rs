@@ -225,20 +225,36 @@ impl App {
                         // Une leçon sans étape n'est pas encore écrite : on la
                         // montre pour que le parcours soit lisible, mais grisée.
                         let planned = lesson.steps.is_empty();
+                        // Une leçon s'ouvre quand celle d'avant est validée.
+                        // Elle reste visible : voir la suite du chemin fait
+                        // partie de ce qui donne envie de le prendre.
+                        let locked = !self.tutorial_progress.is_unlocked(lesson.id, self.pe_enabled);
                         ui.horizontal(|ui| {
                             ui.label(
-                                RichText::new(if done { "✔" } else { "○" })
-                                    .color(if done { flag_on() } else { self.c_bytes() }),
+                                RichText::new(if done {
+                                    "✔"
+                                } else if locked {
+                                    "🔒"
+                                } else {
+                                    "○"
+                                })
+                                .color(if done { flag_on() } else { self.c_bytes() }),
                             );
                             let mut txt = RichText::new(lesson.title.get(lang)).size(12.5);
-                            if planned {
+                            if planned || locked {
                                 txt = txt.weak();
                             }
                             let resp = ui.add(egui::Label::new(txt).sense(egui::Sense::click()));
-                            if resp.hovered() {
+                            if resp.hovered() && !locked {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                             }
-                            if resp.clicked() {
+                            if locked {
+                                resp.on_hover_text(tr(
+                                    "Validez la leçon précédente pour ouvrir celle-ci.",
+                                    "Validate the previous lesson to open this one.",
+                                    "Valide la lección anterior para abrir esta.",
+                                ));
+                            } else if resp.clicked() {
                                 to_load = Some(lesson.clone());
                             }
                             if planned {
@@ -350,6 +366,25 @@ impl App {
         !self.checks.is_empty() && self.checks.iter().all(|c| c.passed())
     }
 
+    /// Combien d'indices ont déjà été demandés pour cette leçon.
+    ///
+    /// Le compte est rangé avec l'identifiant de la leçon qui l'a demandé :
+    /// interrogé pour une autre, il repart de zéro. C'est ce qui évite d'avoir
+    /// à remettre un compteur à zéro dans chacun des chemins qui ouvrent une
+    /// leçon — le sommaire, « Reprendre », les flèches, la validation.
+    pub(super) fn hints_shown(&self, id: &str) -> usize {
+        match &self.tutorial_hints {
+            Some((lesson, n)) if lesson == id => *n,
+            _ => 0,
+        }
+    }
+
+    /// Délivre un indice de plus pour cette leçon.
+    pub(super) fn reveal_hint(&mut self, id: &str) {
+        let n = self.hints_shown(id) + 1;
+        self.tutorial_hints = Some((id.to_string(), n));
+    }
+
     /// Contenu d'une leçon ouverte.
     pub(super) fn lesson_ui(&mut self, ui: &mut egui::Ui, lesson: &Lesson) {
         let lang = self.lang;
@@ -360,8 +395,13 @@ impl App {
         let mut toggle_done = false;
         let mut go_to: Option<Lesson> = None;
         let mut open_exercise: Option<String> = None;
+        let mut reveal = false;
         let done = self.tutorial_progress.is_done(lesson.id);
         let (prev, next) = crate::tutorial::neighbours(lesson.id, self.pe_enabled);
+        // Le compte d'indices ne vaut que pour la leçon qui l'a demandé : ouvrir
+        // une autre leçon repart de zéro, sans qu'aucun des chemins d'ouverture
+        // n'ait à s'en souvenir.
+        let shown = self.hints_shown(lesson.id);
 
         ui.horizontal(|ui| {
             if ui
@@ -395,6 +435,43 @@ impl App {
                     );
                     ui.add_space(2.0);
                     ui.label(RichText::new(lesson.goal.get(lang)).size(12.5));
+
+                    // L'objectif dit ce qu'on saura faire ; « à quoi ça sert »
+                    // dit pourquoi quelqu'un a eu besoin de l'inventer. Sans
+                    // cette phrase, une leçon sur les flags est une liste de
+                    // lettres à retenir plutôt qu'une réponse à une question.
+                    if let Some(why) = &lesson.why {
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(tr("À quoi ça sert", "What it is for", "Para qué sirve"))
+                                .small()
+                                .strong()
+                                .color(hdr),
+                        );
+                        ui.add_space(2.0);
+                        ui.add(egui::Label::new(RichText::new(why.get(lang)).size(12.5)).wrap());
+                    }
+
+                    // Le prérequis n'est pas écrit dans la leçon : il est lu sur
+                    // le parcours. Une leçon déplacée emporte son prérequis avec
+                    // elle, là où un texte saisi à la main aurait menti.
+                    if let Some(p) = &prev {
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "{} « {} »",
+                                tr("Vient après :", "Comes after:", "Viene después de:"),
+                                p.title.get(lang)
+                            ))
+                            .size(11.5)
+                            .weak(),
+                        )
+                        .on_hover_text(tr(
+                            "Cette leçon suppose la précédente acquise.",
+                            "This lesson assumes the previous one is understood.",
+                            "Esta lección supone adquirida la anterior.",
+                        ));
+                    }
                 });
                 ui.add_space(8.0);
 
@@ -448,6 +525,103 @@ impl App {
                     {
                         reload = true;
                     }
+                }
+
+                // Les indices. Le parcours ne s'ouvre qu'en validant : rester
+                // bloqué n'est donc plus une gêne, c'est un cul-de-sac. Ils sont
+                // délivrés un par un, du plus vague au plus précis, et le
+                // dernier dicte la solution — mieux vaut une leçon finie avec
+                // l'indice ultime qu'un élève qui referme l'IDE.
+                if !lesson.hints.is_empty() {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(tr("Coup de pouce", "A nudge", "Un empujón"))
+                            .small()
+                            .strong()
+                            .color(hdr),
+                    );
+                    ui.add_space(2.0);
+                    for (i, hint) in lesson.hints.iter().take(shown).enumerate() {
+                        ui.horizontal_top(|ui| {
+                            ui.label(RichText::new("💡").size(12.0));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(hint.get(lang)).size(12.5).color(
+                                        // Le dernier indice donne la solution :
+                                        // il se distingue des autres, pour que
+                                        // le choix de le lire reste un choix.
+                                        if i + 1 == lesson.hints.len() {
+                                            accent()
+                                        } else {
+                                            ui.visuals().text_color()
+                                        },
+                                    ),
+                                )
+                                .wrap(),
+                            );
+                        });
+                        ui.add_space(4.0);
+                    }
+                    if shown < lesson.hints.len() {
+                        let last = shown + 1 == lesson.hints.len();
+                        let label = if shown == 0 {
+                            tr("💡 Un indice ?", "💡 A hint?", "💡 ¿Una pista?")
+                        } else if last {
+                            tr("💡 Montrer la solution", "💡 Show the solution", "💡 Mostrar la solución")
+                        } else {
+                            tr("💡 Un autre indice", "💡 Another hint", "💡 Otra pista")
+                        };
+                        if ui
+                            .button(RichText::new(label).size(12.0))
+                            .on_hover_text(if last {
+                                tr(
+                                    "Le dernier indice dit quoi écrire. À n'ouvrir qu'après avoir cherché.",
+                                    "The last hint says what to write. Open it only after trying.",
+                                    "La última pista dice qué escribir. Ábrala solo tras intentarlo.",
+                                )
+                            } else {
+                                tr(
+                                    "Un indice de plus, un peu plus précis que le précédent.",
+                                    "One more hint, a little more precise than the last.",
+                                    "Una pista más, algo más precisa que la anterior.",
+                                )
+                            })
+                            .clicked()
+                        {
+                            reveal = true;
+                        }
+                    }
+                }
+
+                // Ce qui reste quand le programme est refermé. Les étapes se
+                // lisent dans le mouvement du pas à pas ; ceci se relit avant de
+                // passer à la suite, et c'est la seule partie de la leçon qui
+                // tienne sans l'IDE sous les yeux.
+                if !lesson.takeaway.is_empty() {
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(tr("À retenir", "Takeaway", "Para recordar"))
+                            .small()
+                            .strong()
+                            .color(hdr),
+                    );
+                    ui.add_space(2.0);
+                    card(ui, |ui| {
+                        for point in &lesson.takeaway {
+                            ui.horizontal_top(|ui| {
+                                ui.label(RichText::new("•").strong().color(accent()));
+                                ui.add(
+                                    egui::Label::new(RichText::new(point.get(lang)).size(12.5))
+                                        .wrap(),
+                                );
+                            });
+                            ui.add_space(3.0);
+                        }
+                    });
                 }
 
                 // Les exercices d'application de la leçon. C'est ce qui manquait
@@ -532,8 +706,8 @@ impl App {
 
             // Valider n'est pas cocher une case : tant que le programme de la
             // leçon ne satisfait pas ses attentes, le bouton reste inerte et dit
-            // pourquoi. Ce qui ne bloque personne — « Suivante → » reste ouvert
-            // à qui veut passer et revenir plus tard.
+            // pourquoi. C'est aussi lui qui ouvre la suite — « Suivante → » ne
+            // mène nulle part tant que celle-ci n'est pas validée.
             let label = if done {
                 tr("✔ Terminée — annuler", "✔ Done — undo", "✔ Terminada — deshacer")
             } else {
@@ -572,19 +746,32 @@ impl App {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // La suite s'ouvre en validant celle-ci, pas en la contournant :
+                // les leçons se tiennent l'une l'autre, et sauter la
+                // comparaison pour lire le saut conditionnel ne fait pas gagner
+                // de temps, il fait lire une leçon qui ne veut plus rien dire.
+                let next_open = next
+                    .as_ref()
+                    .is_some_and(|n| self.tutorial_progress.is_unlocked(n.id, self.pe_enabled));
                 if ui
                     .add_enabled(
-                        next.is_some(),
+                        next_open,
                         egui::Button::new(
                             RichText::new(tr("Suivante →", "Next →", "Siguiente →")).small(),
                         ),
                     )
                     .on_hover_text(match &next {
-                        Some(n) => format!(
+                        Some(n) if next_open => format!(
                             "{} « {} »",
                             tr("Leçon suivante :", "Next lesson:", "Lección siguiente:"),
                             n.title.get(lang)
                         ),
+                        Some(_) => tr(
+                            "Validez cette leçon pour ouvrir la suivante.",
+                            "Validate this lesson to open the next one.",
+                            "Valide esta lección para abrir la siguiente.",
+                        )
+                        .to_string(),
                         None => tr(
                             "C'est la dernière leçon du parcours.",
                             "This is the last lesson of the path.",
@@ -600,6 +787,9 @@ impl App {
         });
         ui.add_space(2.0);
 
+        if reveal {
+            self.reveal_hint(lesson.id);
+        }
         if let Some(file) = open_exercise {
             self.open_exercise_file(&file);
         }
@@ -904,6 +1094,19 @@ mod tests {
 
         // (leçon, texte du TODO à remplacer, correction attendue)
         let fixes: &[(&str, &str, &str)] = &[
+            // --- Débutant ---
+            // Le niveau d'entrée mérite la même garantie que les autres : c'est
+            // celui où un exercice qui se valide tout seul décourage le plus,
+            // faute d'assez d'assembleur pour comprendre qu'il n'a rien fait.
+            ("premier_programme", "xor rdi, rdi", "mov rdi, 7"),
+            ("registres", "; TODO : atteindre 100 dans RBX", "add rbx, 50"),
+            ("tailles", "; TODO : écrire 0xFF dans l'octet bas", "mov al, 0xFF"),
+            ("memoire", "mov rbx, valeur     ; TODO", "mov rbx, [valeur]"),
+            ("flags", "; TODO : « sete bl »", "sete bl"),
+            ("pile", "; TODO : deux « pop » bien ordonnés", "pop rbx\n    pop rcx"),
+            ("pile", ";        Dernier entré", ""),
+            ("sauts", "; TODO : sauter à .rsi_gagne", "jg .rsi_gagne"),
+            ("boucles", "; TODO : ajouter RCX à RBX", "add rbx, rcx"),
             // --- Intermédiaire ---
             ("mul_div", "; TODO : multiplier RAX par R8", "imul rax, r8"),
             ("fonctions", "; TODO : multiplier RAX par RDI", "imul rax, rdi"),
@@ -936,12 +1139,18 @@ mod tests {
             ("performance", "add rax, 0", "shl rax, 3"),
         ];
 
-        let written = tutorial::lessons_of(tutorial::Level::Intermediate)
+        let written = tutorial::lessons_of(tutorial::Level::Beginner)
             .into_iter()
+            .chain(tutorial::lessons_of(tutorial::Level::Intermediate))
             .chain(tutorial::lessons_of(tutorial::Level::Advanced))
             .chain(tutorial::lessons_of(tutorial::Level::Expert));
 
         for lesson in written {
+            // « installation » n'a pas de programme : c'est le premier contact,
+            // avant tout code, et il n'y a rien à faire échouer.
+            if !lesson.has_starter() {
+                continue;
+            }
             let mut app = App::new();
             app.load_lesson(&lesson);
             let dir = PathBuf::from(format!("build/tuto-inter/{}", lesson.id));
