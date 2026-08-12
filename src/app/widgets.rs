@@ -26,12 +26,14 @@ pub(super) const HEADER_H: f32 = 24.0;
 /// panneaux passent par ici → leurs séparateurs sont alignés.
 pub(super) fn panel_header(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(2.0);
-    // Bandeau de titre teinté (style dashboard) : remplace l'ancien séparateur ;
-    // hauteur constante ⇒ tous les bandeaux restent alignés d'un panneau à l'autre.
+    // Bandeau de titre à la fois léger et bien délimité : l'œil repère les
+    // groupes sans confondre cet en-tête avec une carte de contenu. La bordure
+    // est volontairement plus douce que celle d'un champ éditable.
     egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::symmetric(6, 2))
-        .corner_radius(egui::CornerRadius::same(5))
+        .stroke(egui::Stroke::new(1.0_f32, crate::theme::current().ui.border.gamma_multiply(0.72)))
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .corner_radius(egui::CornerRadius::same(7))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.allocate_ui_with_layout(
@@ -48,9 +50,10 @@ pub(super) fn panel_header(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui
 /// (utile pour une app pédagogique).
 pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(ui.visuals().faint_bg_color)
+        .fill(ui.visuals().extreme_bg_color.linear_multiply(0.96))
+        .stroke(egui::Stroke::new(1.0_f32, crate::theme::current().ui.border.gamma_multiply(0.58)))
         .inner_margin(egui::Margin::symmetric(10, 8))
-        .corner_radius(egui::CornerRadius::same(6))
+        .corner_radius(egui::CornerRadius::same(8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             content(ui);
@@ -370,4 +373,3 @@ pub(super) fn hex_dump_rows(ui: &mut egui::Ui, addr_c: Color32, bytes_c: Color32
         });
     }
 }
-

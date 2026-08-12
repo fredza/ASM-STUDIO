@@ -491,10 +491,12 @@ impl App {
         // n'a pas à décrire (ombres, épaisseurs, expansions) ; ce qui suit
         // remplace ceux qui font l'identité visuelle.
         let mut v = if theme.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
-        // Angles plus ronds et sélection plus douce : l'interface respire, la
-        // couleur d'accent ne claque plus autant sous le texte sélectionné.
-        v.window_corner_radius = CornerRadius::same(10);
-        v.menu_corner_radius = CornerRadius::same(8);
+        // Des surfaces plus nettes, mais pas « molles » : l'IDE distingue
+        // clairement ses niveaux (chrome, zones de travail, cartes) sans
+        // transformer chaque contrôle en pastille. Les grands angles restent
+        // réservés aux fenêtres et aux groupes de la barre de travail.
+        v.window_corner_radius = CornerRadius::same(12);
+        v.menu_corner_radius = CornerRadius::same(9);
         v.selection.bg_fill = p.accent.linear_multiply(0.38);
         v.selection.stroke.color = p.text_strong;
         v.hyperlink_color = p.accent;
@@ -524,8 +526,12 @@ impl App {
             w.fg_stroke.color = fg;
         }
         style.visuals = v;
-        style.spacing.item_spacing = vec2(8.0, 6.0);
-        style.spacing.button_padding = vec2(9.0, 4.0);
+        // Un rythme vertical un peu plus généreux rend les panneaux denses
+        // (registres, pile, mémoire) nettement plus scannables, sans réduire
+        // l'espace consacré au code.
+        style.spacing.item_spacing = vec2(8.0, 7.0);
+        style.spacing.button_padding = vec2(10.0, 5.0);
+        style.spacing.indent = 18.0;
         // Barres de défilement « solides » (réservent leur largeur) plutôt que
         // flottantes : elles ne se dessinent plus par-dessus le contenu.
         style.spacing.scroll = egui::style::ScrollStyle::solid();
@@ -547,8 +553,21 @@ impl App {
         // Outils / Aide. « Build » et « Debug » n'étaient qu'un seul sujet —
         // faire tourner le programme — et se recoupaient (Lancer figurait dans
         // les deux). Les réglages quittent « Aide », où personne ne les cherche.
-        egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
+        egui::TopBottomPanel::top("menubar")
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::current().ui.window)
+                    .stroke(egui::Stroke::new(1.0_f32, crate::theme::current().ui.border.gamma_multiply(0.7)))
+                    .inner_margin(egui::Margin::symmetric(10, 3)),
+            )
+            .show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
+                // Une signature compacte : elle ancre la navigation et rend
+                // immédiatement identifiable la barre qui ne contient que les
+                // menus, sans gaspiller la place nécessaire aux libellés.
+                ui.label(RichText::new("ASM").strong().color(accent()));
+                ui.label(RichText::new("STUDIO").small().strong().color(self.c_header()));
+                ui.separator();
                 // Entrée de menu : libellé à gauche, raccourci aligné à droite.
                 fn item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
                     let clicked = ui
@@ -878,8 +897,19 @@ impl App {
     }
 
     pub(super) fn toolbar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.add_space(3.0);
+        egui::TopBottomPanel::top("toolbar")
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::current().ui.bg)
+                    .inner_margin(egui::Margin::symmetric(10, 6)),
+            )
+            .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .stroke(egui::Stroke::new(1.0_f32, crate::theme::current().ui.border.gamma_multiply(0.75)))
+                .corner_radius(egui::CornerRadius::same(9))
+                .inner_margin(egui::Margin::symmetric(7, 5))
+                .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let lang = self.lang;
                 let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
@@ -961,8 +991,51 @@ impl App {
                 // permanence — des affordances mortes, déroutantes pour un
                 // débutant. Retirées : la barre ne montre que ce qui agit.
                 // (Réglages : accessible via le menu Aide — pas de doublon ici.)
+
+                // À droite, trois repères que l'on devait auparavant chercher
+                // dans les menus : état du programme, niveau de l'interface et
+                // format qui sera produit. Ce sont des badges de contexte, pas
+                // des boutons — leur discrétion évite de concurrencer « Lancer ».
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let target = match self.target {
+                        crate::assemble::Target::Linux => "ELF64 · Linux",
+                        crate::assemble::Target::Windows => "PE64 · Windows",
+                        crate::assemble::Target::WindowsGui => "PE64 GUI · Windows",
+                    };
+                    let target_color = if self.target.is_runnable() { flag_on() } else { warn_col() };
+                    egui::Frame::new()
+                        .fill(target_color.linear_multiply(0.12))
+                        .stroke(egui::Stroke::new(1.0_f32, target_color.gamma_multiply(0.6)))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(egui::Margin::symmetric(7, 3))
+                        .show(ui, |ui| ui.label(RichText::new(target).small().strong().color(target_color)));
+                    ui.add_space(4.0);
+
+                    egui::Frame::new()
+                        .fill(accent().linear_multiply(0.10))
+                        .stroke(egui::Stroke::new(1.0_f32, accent().gamma_multiply(0.55)))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(egui::Margin::symmetric(7, 3))
+                        .show(ui, |ui| {
+                            ui.label(RichText::new(self.mode.label(lang)).small().strong().color(accent()));
+                        });
+                    ui.add_space(4.0);
+
+                    let (state, state_color) = if running {
+                        (tr("EN COURS", "RUNNING", "EN CURSO"), flag_on())
+                    } else {
+                        (tr("PRÊT", "READY", "LISTO"), flag_off())
+                    };
+                    egui::Frame::new()
+                        .fill(state_color.linear_multiply(0.12))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(egui::Margin::symmetric(7, 3))
+                        .show(ui, |ui| {
+                            ui.label(RichText::new(format!("● {state}")).small().strong().color(state_color));
+                        });
+                });
             });
-            ui.add_space(3.0);
+            });
         });
     }
 
@@ -984,7 +1057,8 @@ impl App {
             .frame(
                 egui::Frame::new()
                     .fill(accent().linear_multiply(0.12))
-                    .inner_margin(egui::Margin::symmetric(10, 7)),
+                    .stroke(egui::Stroke::new(1.0_f32, accent().gamma_multiply(0.48)))
+                    .inner_margin(egui::Margin::symmetric(14, 9)),
             )
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -1038,7 +1112,14 @@ impl App {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mut kill_requested = false;
-        egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("statusbar")
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::current().ui.window)
+                    .stroke(egui::Stroke::new(1.0_f32, crate::theme::current().ui.border.gamma_multiply(0.68)))
+                    .inner_margin(egui::Margin::symmetric(10, 4)),
+            )
+            .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 match &self.dbg {
                     Some(d) if d.is_alive() => {

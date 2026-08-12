@@ -212,7 +212,27 @@ impl TabViewer for Viewer<'_> {
     type Tab = Panel;
 
     fn title(&mut self, tab: &mut Panel) -> WidgetText {
-        tab.title(self.app.lang).into()
+        // Un pictogramme discret accélère le balayage visuel des nombreuses
+        // zones, surtout dans les bandes où les onglets sont empilés. Il reste
+        // du texte (donc lisible, localisable et accessible) : l'icône ne sert
+        // jamais seule de nom de panneau.
+        let icon = match tab {
+            Panel::Editor => "✎",
+            Panel::Disasm => "≡",
+            Panel::MemMap | Panel::Memory => "▦",
+            Panel::Explorer => "▤",
+            Panel::Instruction => "›",
+            Panel::Flags => "⚑",
+            Panel::Registers => "⊞",
+            Panel::Stack | Panel::CallStack => "↥",
+            Panel::Timeline => "◷",
+            Panel::Console => ">_",
+            Panel::Syscalls => "⚙",
+            Panel::Simd => "≈",
+            Panel::Format => "◫",
+            Panel::Exercise => "✦",
+        };
+        format!("{icon}  {}", tab.title(self.app.lang)).into()
     }
 
     /// Id stable et indépendant de la langue : changer de langue ne doit pas
@@ -428,8 +448,44 @@ impl App {
     pub(super) fn dock_ui(&mut self, ctx: &egui::Context) {
         let Some(mut dock) = self.dock.take() else { return };
         let mut style = egui_dock::Style::from_egui(&ctx.style());
+        let p = &crate::theme::current().ui;
+        // Les onglets deviennent des repères de navigation : barre calme,
+        // onglet actif contrasté, séparateurs déplaçables visibles mais jamais
+        // agressifs. Les couleurs viennent du thème actif, donc la hiérarchie
+        // fonctionne aussi bien en clair qu'avec les variantes Catppuccin.
+        style.dock_area_padding = Some(egui::Margin::same(4));
+        style.main_surface_border_stroke = egui::Stroke::new(1.0_f32, p.border.gamma_multiply(0.70));
+        style.main_surface_border_rounding = egui::CornerRadius::same(8);
         style.tab_bar.fill_tab_bar = true;
-        style.tab.tab_body.stroke.width = 0.0;
+        style.tab_bar.bg_fill = p.faint;
+        style.tab_bar.height = 30.0;
+        style.tab_bar.inner_margin = egui::Margin::symmetric(3, 3);
+        style.tab_bar.corner_radius = egui::CornerRadius::same(8);
+        style.tab_bar.hline_color = p.border.gamma_multiply(0.75);
+        style.tab_bar.show_scroll_bar_on_overflow = false;
+        style.tab.active.bg_fill = p.extreme;
+        style.tab.active.text_color = p.text_strong;
+        style.tab.active.outline_color = p.accent.gamma_multiply(0.8);
+        style.tab.hovered.bg_fill = p.surface_hover;
+        style.tab.hovered.text_color = p.text_strong;
+        style.tab.hovered.outline_color = p.border;
+        style.tab.inactive.bg_fill = p.surface;
+        style.tab.inactive.text_color = p.text;
+        style.tab.inactive.outline_color = p.border.gamma_multiply(0.55);
+        style.tab.focused = style.tab.active.clone();
+        style.tab.active_with_kb_focus = style.tab.active.clone();
+        style.tab.inactive_with_kb_focus = style.tab.inactive.clone();
+        style.tab.focused_with_kb_focus = style.tab.active.clone();
+        style.tab.hline_below_active_tab_name = true;
+        style.tab.spacing = 2.0;
+        style.tab.tab_body.bg_fill = p.bg;
+        style.tab.tab_body.stroke = egui::Stroke::new(1.0_f32, p.border.gamma_multiply(0.5));
+        style.tab.tab_body.corner_radius = egui::CornerRadius::same(7);
+        style.tab.tab_body.inner_margin = egui::Margin::same(7);
+        style.separator.width = 2.0;
+        style.separator.color_idle = p.border.gamma_multiply(0.65);
+        style.separator.color_hovered = p.accent.gamma_multiply(0.65);
+        style.separator.color_dragged = p.accent;
         // Croix de fermeture rouge : l'action est destructrice, elle doit se
         // distinguer du reste de la barre d'onglets. Plus sombre au repos,
         // pleinement rouge au survol — pour ne pas crier en permanence. Sans
