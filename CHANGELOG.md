@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identity and the action bar keeps the program state, learning mode and output
   target visible at a glance. Docked-panel tabs gained clear visual markers,
   while cards and section headers now have a more deliberate hierarchy.
+- **Signed updater binary**: Releases now carry a raw Linux x86-64 executable
+  and its Ed25519 signature for the in-app updater, separately from the manual
+  installation archive. The updater explicitly selects that executable, never
+  the `.tar.gz` archive.
 
 ### Changed
 - **The About dialog now states the exact beta**: Version information is again

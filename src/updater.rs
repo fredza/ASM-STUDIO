@@ -196,14 +196,11 @@ fn check_latest() -> UpdateState {
         return UpdateState::UpToDate;
     }
 
-    // Cherche le binaire Linux x86-64 dans les assets.
-    let asset = body.assets.iter().find(|a| {
-        let n = a.name.to_lowercase();
-        n.contains("linux")
-            && n.contains("x86_64")
-            && !n.ends_with(".sha256")
-            && !n.ends_with(".sig")
-    });
+    // L'asset de mise à jour est le binaire brut, dont le nom se termine par
+    // `-linux-x86_64`. L'archive de distribution porte le même préfixe mais se
+    // termine en `.tar.gz` : la télécharger puis la renommer à la place de
+    // l'exécutable rendrait l'installation inutilisable.
+    let asset = linux_update_asset(&body.assets);
 
     match asset {
         Some(a) => {
@@ -230,6 +227,19 @@ fn check_latest() -> UpdateState {
             body.tag_name
         )),
     }
+}
+
+/// Binaire Linux x86-64 directement remplaçable par l'updater.
+///
+/// Le suffixe sans extension est volontaire : l'archive destinée aux
+/// installations manuelles est `…-linux-x86_64.tar.gz`, donc ne peut jamais
+/// être prise pour un exécutable, quel que soit l'ordre des assets GitHub.
+fn linux_update_asset(assets: &[GhAsset]) -> Option<&GhAsset> {
+    assets.iter().find(|a| {
+        a.name
+            .to_ascii_lowercase()
+            .ends_with("-linux-x86_64")
+    })
 }
 
 /// Télécharge le binaire, remplace l'exécutable courant, envoie la progression.
@@ -415,6 +425,23 @@ mod tests {
         assert!(!is_newer("0.2.9", "0.3.0"));
         // Une bêta n'est pas une mise à jour de sa propre finale.
         assert!(!is_newer("0.4.7-beta.1", "0.4.7"));
+    }
+
+    #[test]
+    fn raw_linux_binary_is_preferred_to_distribution_archive() {
+        let asset = |name: &str| GhAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.invalid/{name}"),
+        };
+        let assets = vec![
+            asset("asm-studio-0.4.8-beta.8-linux-x86_64.tar.gz"),
+            asset("asm-studio-0.4.8-beta.8-linux-x86_64"),
+            asset("asm-studio-0.4.8-beta.8-linux-x86_64.sig"),
+        ];
+        assert_eq!(
+            linux_update_asset(&assets).map(|a| a.name.as_str()),
+            Some("asm-studio-0.4.8-beta.8-linux-x86_64")
+        );
     }
 
     #[test]
