@@ -13,6 +13,29 @@ use crate::i18n;
 use crate::tutorial::{self, Level, Lesson};
 
 impl App {
+    /// Le parcours guidé est-il offert ?
+    ///
+    /// Ce n'est pas un réglage à part : le mode Apprentissage EST le parcours.
+    /// Les deux ont longtemps été deux booléens sans lien, et l'interface
+    /// pouvait alors annoncer « Apprentissage » dans la barre d'état pendant
+    /// que le panneau ✦ ne montrait plus que les attentes du fichier courant.
+    pub(super) fn tutorial_enabled(&self) -> bool {
+        self.mode == super::UiMode::Learning
+    }
+
+    /// Entre dans le contexte d'apprentissage SANS toucher à la disposition.
+    ///
+    /// À distinguer de [`App::set_ui_mode`], qui répond au choix explicite d'une
+    /// disposition dans le menu Affichage et remet donc les panneaux en place.
+    /// Ici, l'élève a demandé le tutoriel, pas un changement de mise en page :
+    /// lui défaire ses panneaux au passage serait un effet de bord — celui qui
+    /// frappait « Revoir l'écran d'accueil ». On garantit seulement que le
+    /// panneau qui héberge le parcours est visible.
+    pub(super) fn enter_learning(&mut self) {
+        self.mode = super::UiMode::Learning;
+        self.show_panel(super::dock::Panel::Exercise);
+    }
+
     /// Remet le parcours à zéro, comme au tout premier lancement : oublie les
     /// leçons terminées, rouvre le sommaire, rallume le panneau Tutoriel et fait
     /// réapparaître le bandeau d'accueil. Le tout est aussitôt persisté.
@@ -21,7 +44,7 @@ impl App {
         self.tutorial_current = None;
         // Repartir de zéro, c'est retrouver l'expérience du nouveau venu.
         self.welcome_dismissed = false;
-        self.tutorial_enabled = true;
+        self.enter_learning();
         self.focus_panel(super::dock::Panel::Exercise);
         self.status = i18n::tr3(
             self.lang,
@@ -37,12 +60,12 @@ impl App {
     /// et revient au sommaire si aucune leçon n'est en cours.
     ///
     /// C'est le seul chemin d'accès, appelé par le bandeau d'accueil, le menu
-    /// Aide et la palette. Il en manquait un : une fois le bandeau écarté, plus
-    /// rien dans l'interface ne menait au parcours — le panneau qui l'héberge
-    /// s'appelait « Exercices », et le mot « tutoriel » n'apparaissait nulle part.
+    /// Apprendre et la palette. Il en manquait un : une fois le bandeau écarté,
+    /// plus rien dans l'interface ne menait au parcours — le panneau qui
+    /// l'héberge s'appelait « Exercices », et le mot « tutoriel »
+    /// n'apparaissait nulle part.
     pub(super) fn open_tutorial(&mut self) {
-        self.tutorial_enabled = true;
-        self.show_panel(super::dock::Panel::Exercise);
+        self.enter_learning();
         self.focus_panel(super::dock::Panel::Exercise);
         self.status = i18n::tr3(
             self.lang,
@@ -60,12 +83,58 @@ impl App {
         self.open_tutorial();
     }
 
+    /// Rouvre la leçon en cours, ou à défaut la première non terminée.
+    ///
+    /// C'est le geste d'ouverture de session — « où j'en étais ? ». Il n'avait
+    /// aucun chemin direct : il fallait ouvrir le sommaire, puis y retrouver sa
+    /// ligne. Sans leçon en cours ni leçon à faire (parcours terminé), on se
+    /// rabat sur le sommaire, qui montre alors le parcours complété.
+    pub(super) fn resume_lesson(&mut self) {
+        let lesson = self
+            .tutorial_current
+            .clone()
+            .and_then(|id| tutorial::find(&id))
+            .or_else(|| self.tutorial_progress.next_lesson());
+        match lesson {
+            Some(l) => {
+                self.open_tutorial();
+                self.tutorial_current = Some(l.id.to_string());
+                // Le programme de départ n'est rechargé que si la leçon en
+                // porte un — et `load_lesson` passe par la garde du travail non
+                // enregistré : reprendre ne doit pas jeter ce qu'on écrivait.
+                if l.has_starter() {
+                    self.load_lesson(&l);
+                }
+            }
+            None => self.show_tutorial_toc(),
+        }
+    }
+
+    /// Y a-t-il une leçon à reprendre ? Sert à griser l'entrée de menu plutôt
+    /// qu'à la laisser proposer une action sans effet.
+    pub(super) fn has_lesson_to_resume(&self) -> bool {
+        self.tutorial_current.is_some() || self.tutorial_progress.next_lesson().is_some()
+    }
+
+    /// Titre de la leçon que « Reprendre » ouvrirait, dans la langue courante.
+    pub(super) fn lesson_to_resume_title(&self) -> Option<&'static str> {
+        let lesson = self
+            .tutorial_current
+            .clone()
+            .and_then(|id| tutorial::find(&id))
+            .or_else(|| self.tutorial_progress.next_lesson())?;
+        Some(lesson.title.get(self.lang))
+    }
+
     /// Fait réapparaître le bandeau d'accueil, écarté d'un clic un peu vite.
     pub(super) fn show_welcome_again(&mut self) {
         self.welcome_dismissed = false;
         // Le bandeau ne se montre qu'en mode Apprentissage : le redemander
-        // depuis le mode complet ne doit pas rester sans effet visible.
-        self.set_ui_mode(super::UiMode::Learning);
+        // depuis le mode complet ne doit pas rester sans effet visible. Mais on
+        // passe par `enter_learning`, qui laisse la disposition en place :
+        // `set_ui_mode` la réinitialisait, et l'on perdait ses panneaux pour
+        // avoir voulu relire trois lignes d'accueil.
+        self.enter_learning();
         self.save_settings();
     }
 
@@ -188,11 +257,20 @@ impl App {
         );
         ui.add_space(6.0);
 
+        // Le niveau où l'on en est : le seul déplié d'entrée. Les vingt-neuf
+        // leçons des quatre niveaux déroulées d'un bloc dans une zone haute de
+        // 260 px donnaient un mur de titres où l'on ne trouvait pas sa place —
+        // et surtout, elles montraient d'emblée quatre niveaux de difficulté à
+        // qui n'a pas encore écrit une ligne.
+        let here = self
+            .tutorial_current
+            .clone()
+            .and_then(|id| tutorial::find(&id))
+            .or_else(|| self.tutorial_progress.next_lesson())
+            .map(|l| l.level);
+
         egui::ScrollArea::vertical()
             .id_salt("tutorial_toc")
-            // Le sommaire partage le panneau avec les attentes : il ne doit pas
-            // occuper toute la hauteur.
-            .max_height(260.0)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for level in Level::ALL {
@@ -204,22 +282,20 @@ impl App {
                     }
                     let (done, total) = self.tutorial_progress.tally(level);
                     let complete = total > 0 && done == total;
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(level.title(lang))
-                                .strong()
-                                .color(if complete { flag_on() } else { accent() }),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            super::badge(
-                                ui,
-                                &format!("{done}/{total}"),
-                                if complete { flag_on() } else { hdr },
-                            );
-                        });
-                    });
-                    ui.add_space(2.0);
-
+                    let header = egui::CollapsingHeader::new(
+                        RichText::new(format!("{}   {done}/{total}", level.title(lang)))
+                            .strong()
+                            .color(if complete {
+                                flag_on()
+                            } else if here == Some(level) {
+                                accent()
+                            } else {
+                                hdr
+                            }),
+                    )
+                    .id_salt(("tutorial_level", level.title(i18n::Lang::En)))
+                    .default_open(here == Some(level));
+                    header.show(ui, |ui| {
                     for lesson in tutorial::lessons_of(level) {
                         let done = self.tutorial_progress.is_done(lesson.id);
                         // Une leçon sans étape n'est pas encore écrite : on la
@@ -230,6 +306,11 @@ impl App {
                         // partie de ce qui donne envie de le prendre.
                         let locked = !self.tutorial_progress.is_unlocked(lesson.id, self.pe_enabled);
                         ui.horizontal(|ui| {
+                            // Le cadenas vient de la police d'emoji, dont les
+                            // métriques ne sont pas celles du texte : à taille
+                            // égale il se dessine moitié moins haut que « ○ »
+                            // et « ✔ », et la colonne de pastilles sautille.
+                            // On le remonte pour qu'ils pèsent pareil.
                             ui.label(
                                 RichText::new(if done {
                                     "✔"
@@ -238,6 +319,7 @@ impl App {
                                 } else {
                                     "○"
                                 })
+                                .size(if locked { 15.0 } else { 14.0 })
                                 .color(if done { flag_on() } else { self.c_bytes() }),
                             );
                             let mut txt = RichText::new(lesson.title.get(lang)).size(12.5);
@@ -266,23 +348,34 @@ impl App {
                             }
                             // Les exercices d'application se comptent dès le
                             // sommaire : le parcours annonce ce qu'il y a à
-                            // faire, pas seulement ce qu'il y a à lire.
+                            // faire, pas seulement ce qu'il y a à lire. Le
+                            // compte est cliquable — il annonçait des exercices
+                            // sans y mener, et l'élève devait deviner qu'ils
+                            // l'attendaient au bas de la leçon.
                             let n = tutorial::practice_for(lesson.id).len();
-                            if n > 0 {
-                                ui.label(
-                                    RichText::new(format!("· {n} ✎"))
-                                        .small()
-                                        .weak(),
-                                )
-                                .on_hover_text(tr(
-                                    "Exercices auto-corrigés sur cette notion, dans la leçon.",
-                                    "Self-checked exercises on this topic, inside the lesson.",
-                                    "Ejercicios autocorregidos sobre este tema, dentro de la lección.",
-                                ));
+                            if n > 0 && !locked {
+                                let badge = ui.add(
+                                    egui::Label::new(RichText::new(format!("· {n} ✎")).small().weak())
+                                        .sense(egui::Sense::click()),
+                                );
+                                if badge.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                if badge
+                                    .on_hover_text(tr(
+                                        "Exercices auto-corrigés sur cette notion. Cliquer pour ouvrir la leçon qui les porte.",
+                                        "Self-checked exercises on this topic. Click to open the lesson that carries them.",
+                                        "Ejercicios autocorregidos sobre este tema. Clic para abrir la lección que los contiene.",
+                                    ))
+                                    .clicked()
+                                {
+                                    to_load = Some(lesson.clone());
+                                }
                             }
                         });
                     }
-                    ui.add_space(8.0);
+                    });
+                    ui.add_space(4.0);
                 }
             });
 
@@ -860,7 +953,7 @@ mod tests {
         app.tutorial_progress.mark_done("boucles");
         app.tutorial_current = Some("boucles".to_string());
         app.welcome_dismissed = true;
-        app.tutorial_enabled = false;
+        app.set_ui_mode(crate::app::UiMode::Full);
 
         app.reset_tutorial();
 
@@ -872,8 +965,65 @@ mod tests {
         );
         assert!(app.tutorial_current.is_none(), "retour au sommaire");
         assert!(!app.welcome_dismissed, "le bandeau d'accueil réapparaît");
-        assert!(app.tutorial_enabled, "le tutoriel est rallumé");
+        assert!(app.tutorial_enabled(), "le tutoriel est rallumé");
         assert!(app.panel_is_open(Panel::Exercise), "et le panneau Exercices est ouvert");
+    }
+
+    /// L'invariant qui manquait : le parcours et le mode ne font qu'un.
+    ///
+    /// Deux booléens sans lien les portaient, et l'on pouvait être en mode
+    /// « Apprentissage » — étiquette affichée dans la barre d'état — avec le
+    /// parcours coupé, ou l'inverse. Aucun test ne l'interdisait, parce qu'il
+    /// n'y avait rien à tester : les deux états étaient légalement disjoints.
+    #[test]
+    fn the_learning_mode_is_the_guided_path() {
+        let mut app = App::new();
+        assert!(app.tutorial_enabled(), "le mode par défaut offre le parcours");
+
+        app.set_ui_mode(crate::app::UiMode::Full);
+        assert!(!app.tutorial_enabled(), "le mode complet ne l'offre pas");
+
+        // Et toute porte d'entrée du parcours ramène dans le mode qui le porte.
+        app.open_tutorial();
+        assert!(app.tutorial_enabled());
+        assert_eq!(app.mode, crate::app::UiMode::Learning);
+    }
+
+    /// Revoir l'accueil ne doit pas coûter sa disposition.
+    ///
+    /// Le raccourci passait par `set_ui_mode`, qui REMPLACE l'arbre de
+    /// panneaux : demander trois lignes de bienvenue rangeait l'écran de force.
+    #[test]
+    fn asking_for_the_welcome_banner_again_keeps_the_layout() {
+        let mut app = App::new();
+        app.set_ui_mode(crate::app::UiMode::Full);
+        // Une disposition personnalisée : un panneau fermé à la main.
+        app.hide_panel(Panel::Console);
+        app.welcome_dismissed = true;
+
+        app.show_welcome_again();
+
+        assert!(!app.welcome_dismissed, "le bandeau revient");
+        assert_eq!(app.mode, crate::app::UiMode::Learning, "dans le mode qui le montre");
+        assert!(!app.panel_is_open(Panel::Console), "et la disposition tient");
+        assert!(app.panel_is_open(Panel::Exercise), "le panneau du parcours est là");
+    }
+
+    /// « Reprendre » rouvre la leçon en cours, sinon la première à faire.
+    #[test]
+    fn resuming_reopens_the_current_lesson_then_the_next_one() {
+        let mut app = App::new();
+        app.tutorial_current = Some("boucles".to_string());
+        assert_eq!(app.lesson_to_resume_title(), tutorial::find("boucles").map(|l| l.title.get(app.lang)));
+        app.resume_lesson();
+        assert_eq!(app.tutorial_current.as_deref(), Some("boucles"));
+
+        // Sans leçon en cours, c'est la première non terminée qui vient.
+        app.tutorial_current = None;
+        let next = app.tutorial_progress.next_lesson().expect("parcours non terminé");
+        app.resume_lesson();
+        assert_eq!(app.tutorial_current.as_deref(), Some(next.id));
+        assert!(app.has_lesson_to_resume());
     }
 
     /// Toutes les clés de panneau du catalogue doivent exister : une faute de
@@ -1011,7 +1161,7 @@ mod tests {
     #[test]
     fn tutorial_panel_renders_in_both_states() {
         let mut app = App::new();
-        app.tutorial_enabled = true;
+        app.enter_learning();
         let ctx = egui::Context::default();
 
         app.tutorial_current = None;
@@ -1043,7 +1193,7 @@ mod tests {
     fn a_lesson_can_be_solved_and_is_validated() {
         use std::path::PathBuf;
         let mut app = App::new();
-        app.tutorial_enabled = true;
+        app.enter_learning();
         assert!(app.panel_is_open(Panel::Exercise));
 
         let lesson = tutorial::find("premier_programme").expect("leçon présente");
@@ -1300,14 +1450,14 @@ mod tests {
         use crate::app::palette::Command;
 
         let mut app = App::new();
-        // L'élève écarte le bandeau et éteint le tutoriel : le pire des cas.
+        // L'élève écarte le bandeau et passe en mode complet : le pire des cas.
         app.welcome_dismissed = true;
-        app.tutorial_enabled = false;
+        app.set_ui_mode(crate::app::UiMode::Full);
         app.tutorial_current = Some("boucles".to_string());
         app.hide_panel(Panel::Exercise);
 
         app.run_command(Command::OpenTutorial);
-        assert!(app.tutorial_enabled, "le tutoriel se rallume tout seul");
+        assert!(app.tutorial_enabled(), "le tutoriel se rallume tout seul");
         assert!(app.panel_is_open(Panel::Exercise), "son panneau s'ouvre");
         assert_eq!(app.tutorial_current, None, "et on revient au sommaire");
 

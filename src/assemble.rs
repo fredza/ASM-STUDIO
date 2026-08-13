@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::i18n::{self, Lang};
+use crate::project::Project;
 
 /// Système visé par l'assemblage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -167,6 +168,88 @@ pub fn assemble_for(
     }
 }
 
+/// Assemble toutes les sources d'un projet puis les lie ensemble.
+///
+/// Un projet Linux produit un objet par fichier, ce qui permet de séparer les
+/// routines (`math.asm`, `io.asm`…) du point d'entrée. Le lieur PE intégré ne
+/// sait pour l'instant lire qu'un seul objet COFF : refuser franchement deux
+/// sources vaut mieux que de jeter silencieusement les suivantes.
+pub fn assemble_project(
+    project: &Project,
+    out_dir: &Path,
+    target: Target,
+    lang: Lang,
+) -> Result<BuildOutput, String> {
+    if target.is_windows() {
+        if project.sources.len() != 1 {
+            return Err(i18n::tr3(
+                lang,
+                "Le lieur PE64 intégré ne lie pas encore plusieurs fichiers. Gardez une seule source dans sources, ou construisez ce projet pour Linux.",
+                "The built-in PE64 linker cannot link several files yet. Keep one source in sources, or build this project for Linux.",
+                "El enlazador PE64 integrado aún no enlaza varios archivos. Mantenga una sola fuente en sources o compile este proyecto para Linux.",
+            )
+            .to_string());
+        }
+        return assemble_for(&project.entry, out_dir, &project.include_dirs(), target, lang);
+    }
+
+    std::fs::create_dir_all(out_dir).map_err(|e| {
+        let what = i18n::tr3(lang, "création de", "creating", "creación de");
+        format!("{what} {}: {e}", out_dir.display())
+    })?;
+    let objects_dir = out_dir.join("objects");
+    std::fs::create_dir_all(&objects_dir).map_err(|e| {
+        let what = i18n::tr3(lang, "création de", "creating", "creación de");
+        format!("{what} {}: {e}", objects_dir.display())
+    })?;
+
+    let mut log = String::new();
+    let mut objects = Vec::new();
+    let mut entry_listing = None;
+    for (index, source) in project.sources.iter().enumerate() {
+        let stem = source.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
+            i18n::tr3(lang, "nom de source invalide", "invalid source name", "nombre de fuente no válido").to_string()
+        })?;
+        // L'index évite une collision entre `src/util.asm` et `tests/util.asm`.
+        let object = objects_dir.join(format!("{index:03}-{stem}.o"));
+        let listing = objects_dir.join(format!("{index:03}-{stem}.lst"));
+        log.push_str(&nasm_to(source, &object, &listing, &project.include_dirs(), target, lang)?);
+        if source == &project.entry {
+            entry_listing = Some(listing);
+        }
+        objects.push(object);
+    }
+    let listing = entry_listing.ok_or_else(|| {
+        i18n::tr3(lang, "l'entrée du projet n'est pas dans sources", "the project entry is not in sources", "la entrada del proyecto no está en sources").to_string()
+    })?;
+    let name = project
+        .root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("programme");
+    let binary = out_dir.join(name);
+    log.push_str(&format!("$ ld -o {} {}\n", binary.display(), objects.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" ")));
+    let ld = Command::new("ld")
+        .arg("-o")
+        .arg(&binary)
+        .args(&objects)
+        .output()
+        .map_err(|e| {
+            let what = i18n::tr3(lang, "impossible de lancer", "could not run", "no se pudo ejecutar");
+            format!("{what} ld: {e}")
+        })?;
+    log.push_str(&String::from_utf8_lossy(&ld.stderr));
+    if !ld.status.success() {
+        return Err(format!(
+            "{}:\n{log}",
+            i18n::tr3(lang, "Échec de ld", "ld failed", "Error de ld")
+        ));
+    }
+    log.push_str("Build OK\n");
+    Ok(BuildOutput { binary, listing, log })
+}
+
 /// Assemble et lie un objet COFF en exécutable PE64, sans outil externe autre
 /// que `nasm` : le lien est fait par [`crate::pe_link`].
 fn assemble_pe(
@@ -246,6 +329,23 @@ fn nasm(
     ));
     let listing = out_dir.join(format!("{stem}.lst"));
 
+    let log = nasm_to(src, &obj, &listing, includes, target, lang)?;
+    Ok((stem, listing, log))
+}
+
+/// Lance NASM vers des chemins d'objet et de listing explicites. La forme est
+/// utilisée par un fichier seul comme par chacune des sources d'un projet.
+fn nasm_to(
+    src: &Path,
+    obj: &Path,
+    listing: &Path,
+    includes: &[PathBuf],
+    target: Target,
+    lang: Lang,
+) -> Result<String, String> {
+    if let Some(parent) = obj.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("création de {}: {e}", parent.display()))?;
+    }
     // nasm attend le chemin collé à l'option et terminé par un séparateur.
     let inc_args: Vec<String> = includes
         .iter()
@@ -279,7 +379,7 @@ fn nasm(
             i18n::tr3(lang, "Échec de nasm", "nasm failed", "Error de nasm")
         ));
     }
-    Ok((stem, listing, log))
+    Ok(log)
 }
 
 fn assemble_elf(
@@ -563,5 +663,40 @@ mod asmstd_tests {
         for (i, (g, e)) in got.iter().zip(&expected).enumerate() {
             assert_eq!(g, e, "résultat {i} : obtenu {g}, attendu {e}\n{stdout}");
         }
+    }
+}
+#[cfg(test)]
+mod project_assembly_tests {
+    use super::*;
+
+    #[test]
+    fn a_linux_project_links_several_sources() {
+        let dir = Path::new("build/test-project-multi");
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir.join("src")).expect("dossier projet");
+        std::fs::write(
+            dir.join("src/main.asm"),
+            "section .text\nglobal _start\nextern twice\n_start:\n    mov rdi, 21\n    call twice\n    mov rdi, rax\n    mov rax, 60\n    syscall\n",
+        )
+        .expect("source principal");
+        std::fs::write(
+            dir.join("src/math.asm"),
+            "section .text\nglobal twice\ntwice:\n    lea rax, [rdi + rdi]\n    ret\n",
+        )
+        .expect("source secondaire");
+        let manifest = dir.join(crate::project::MANIFEST_NAME);
+        std::fs::write(
+            &manifest,
+            "entry = \"src/main.asm\"\nsources = [\"src/main.asm\", \"src/math.asm\"]\nincludes = []\n",
+        )
+        .expect("manifest");
+        let project = Project::load(&manifest).expect("manifest valide");
+
+        let out = assemble_project(&project, &dir.join("build"), Target::Linux, Lang::Fr)
+            .expect("projet multi-fichiers");
+        assert!(out.binary.is_file());
+        let status = Command::new(&out.binary).status().expect("exécution");
+        assert_eq!(status.code(), Some(42));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

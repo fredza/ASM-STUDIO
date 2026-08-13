@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.9-beta.1] - 2026-08-13
+
+### Added
+- **A “Learn” menu**: The guided path, its exercises and its progress used to be
+  scattered across three unrelated menus — the tutorial under *Help*, the
+  exercises under *File*, the progress under *Preferences*. Nobody looks for an
+  exercise under *File*. They now share one top-level menu, which also names the
+  lesson “Resume” would reopen and shows how far along the path you are.
+- **Multi-file projects**: An `asmstudio.toml` gathers the entry point, the NASM
+  sources and the `%include` directories; on Linux, ASM Studio assembles every
+  source and links them together. `Ctrl+Shift+N` creates one.
+
+### Changed
+- **Learning mode and the guided path are now one state**: They were two
+  independent flags with nothing keeping them in agreement, so the status bar
+  could announce “Learning” while the ✦ panel no longer offered the path at all.
+  The mode carries the path, and the mode label — shown in both modes now, not
+  only in Learning — switches it on click.
+- **The path is the tab you see in Learning mode**: It shared its band with
+  *Instruction*, placed in front of it, so the mode meant for beginners opened
+  on “Run the program, then click an instruction” — addressed to someone who has
+  no program yet.
+- **Full mode no longer carries the tutorial panel**: It belongs to Learning
+  mode. It still reopens on its own as soon as a file declares expectations.
+- **The contents fit on screen**: The four levels are collapsible, only the one
+  you are on opens, and the list is no longer squeezed into a fixed 260 px.
+  The exercise count (`· 2 ✎`) opens the lesson that carries them.
+
+### Fixed
+- **Asking for the welcome banner again no longer costs you your layout**: It
+  went through the mode switch, which replaces the whole panel tree.
+- **The `;@` directive reference stays out of a beginner's way**: It used to
+  unfold under the path — an exercise *author's* topic — for someone who had not
+  written a `mov` yet.
+
 ## [0.4.8-beta.9] - 2026-08-12
 
 ### Added

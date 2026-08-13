@@ -56,11 +56,18 @@ impl App {
     /// pour Windows.
     pub(super) fn build(&mut self) {
         self.save_source();
+        let project = self.project.clone();
         // Artefacts dans un sous-dossier `build/` À CÔTÉ du fichier source
         // (et non plus dans un `build/` global relatif au répertoire courant).
-        self.out_dir = super::abs_dir_of(&self.src_path).join("build");
-        let includes = self.include_dirs();
-        match assemble::assemble_for(&self.src_path, &self.out_dir, &includes, self.target, self.lang) {
+        self.out_dir = project
+            .as_ref()
+            .map(|p| p.root.join("build"))
+            .unwrap_or_else(|| super::abs_dir_of(&self.src_path).join("build"));
+        let result = match project.as_ref() {
+            Some(project) => assemble::assemble_project(project, &self.out_dir, self.target, self.lang),
+            None => assemble::assemble_for(&self.src_path, &self.out_dir, &self.include_dirs(), self.target, self.lang),
+        };
+        match result {
             Ok(out) => {
                 self.log(&out.log);
                 // Mapping adresse → ligne source (suivi dans l'éditeur).
@@ -114,6 +121,23 @@ impl App {
             return;
         }
         self.target = target;
+        // Dans un projet, la cible fait partie du contrat partagé avec les
+        // autres sources. La modifier depuis le menu doit donc aussi modifier
+        // le manifeste : autrement la prochaine ouverture reviendrait à une
+        // cible différente de celle que l'élève vient de choisir.
+        let project_manifest = self.project.as_mut().map(|project| {
+            project.target = target;
+            (project.manifest.clone(), project.content())
+        });
+        if let Some((manifest, content)) = project_manifest
+            && let Err(e) = std::fs::write(&manifest, content)
+        {
+            self.log(&format!(
+                "{} {}: {e}",
+                i18n::tr3(self.lang, "Impossible d'enregistrer la cible du projet dans", "Could not save the project target to", "No se pudo guardar el destino del proyecto en"),
+                manifest.display()
+            ));
+        }
         self.stop();
         self.binary = None;
         self.format_info = None;

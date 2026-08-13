@@ -13,6 +13,7 @@ mod explain;
 mod i18n;
 mod license;
 mod pe_link;
+mod project;
 mod simd;
 mod srcmap;
 mod syntax;

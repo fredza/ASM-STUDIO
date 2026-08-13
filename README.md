@@ -90,6 +90,9 @@ between.
 - **Binary format explorer** — header, sections, permissions, entry point,
   imports and global symbols, shown the same way for ELF and PE. What a
   section costs in memory versus on disk, and why `.bss` weighs nothing.
+- **Multi-file projects** — an `asmstudio.toml` gathers the entry point, NASM
+  sources and `%include` directories; on Linux, ASM Studio assembles every
+  source and links them together.
 - **Built-in calculator** — hexadecimal by default, bit-by-bit view and the
   usual arithmetic/logic operations. It also reads ASCII text as the bytes of
   a register: `Hi` is `0x4869`, up to eight characters, including `\n` and
@@ -170,7 +173,7 @@ The main ones; `F1` shows the complete list inside the application.
 | `Esc` (or `Shift+F5`) | Stop the program |
 | `←` / `→` | Timeline: previous / next step |
 | `Home` / `End` | Timeline: start / end |
-| `Ctrl+N` / `Ctrl+O` / `Ctrl+S` | New / Open / Save |
+| `Ctrl+N` / `Ctrl+Shift+N` / `Ctrl+O` / `Ctrl+S` | New file / project / Open / Save |
 | `Ctrl+F` / `Ctrl+H` | Find / find and replace |
 | `Ctrl+Shift+P` | Command palette — the whole app from the keyboard |
 | `Ctrl+1` … `Ctrl+5` | Show / hide a panel |

@@ -1177,10 +1177,14 @@ impl App {
             "Sin marcar, la aplicación solo ofrece Linux: un principiante no tiene por qué elegir un destino.",
         );
         let t_tuto_h = self.tr3("Parcours guidé", "Guided path", "Recorrido guiado");
-        let t_tuto = self.tr3(
-            "Activer le tutoriel (panneau Tutoriel)",
-            "Enable the tutorial (Tutorial panel)",
-            "Activar el tutorial (panel Tutorial)",
+        // La case « activer le tutoriel » a disparu : elle doublait le mode
+        // d'affichage sans lui être liée, et l'on pouvait la décocher tout en
+        // restant en mode Apprentissage. Le parcours s'ouvre et se referme
+        // maintenant avec le mode, depuis le menu Apprendre ou la barre d'état.
+        let t_tuto_where = self.tr3(
+            "Le parcours s'offre en mode Apprentissage. Menu Apprendre, ou l'étiquette du mode en bas à droite.",
+            "The path is offered in Learning mode. Learn menu, or the mode label at the bottom right.",
+            "El recorrido se ofrece en modo Aprendizaje. Menú Aprender, o la etiqueta del modo abajo a la derecha.",
         );
         let t_tuto_desc = self.tr3(
             "Un parcours en quatre niveaux, du premier programme à l'analyse de binaires. \
@@ -1301,10 +1305,10 @@ impl App {
                         ui.separator();
 
                         section(ui, t_tuto_h);
-                        changed |= ui.checkbox(&mut self.tutorial_enabled, t_tuto).changed();
-                        ui.add_space(4.0);
                         super::card(ui, |ui| {
                             ui.label(RichText::new(t_tuto_desc).size(12.5));
+                            ui.add_space(5.0);
+                            ui.label(RichText::new(t_tuto_where).size(12.0).weak());
                         });
                         ui.add_space(4.0);
                         if ui.button(t_tuto_reset).on_hover_text(t_tuto_reset_tip).clicked() {
@@ -1362,6 +1366,7 @@ impl App {
                     ("Ctrl+S", tr("Enregistrer", "Save", "Guardar")),
                     ("Ctrl+O", tr("Ouvrir", "Open", "Abrir")),
                     ("Ctrl+N", tr("Nouveau", "New", "Nuevo")),
+                    ("Ctrl+Maj+N", tr("Nouveau projet", "New project", "Proyecto nuevo")),
                     ("Ctrl+F", tr("Rechercher dans l'éditeur", "Find in editor", "Buscar en el editor")),
                     ("Ctrl+H", tr("Rechercher / remplacer dans l'éditeur", "Find / replace in editor", "Buscar / reemplazar en el editor")),
                     ("F3 / Maj+F3", tr("Correspondance suivante / précédente", "Next / previous match", "Coincidencia siguiente / anterior")),

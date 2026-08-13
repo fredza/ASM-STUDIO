@@ -342,6 +342,10 @@ pub struct App {
     /// au texte enregistré efface le marqueur « ● », comme dans un vrai IDE.
     pub(super) saved_source: String,
     pub(super) binary: Option<PathBuf>,
+    /// Projet actuellement ouvert, s'il y en a un. Un fichier `.asm` seul
+    /// garde exactement l'ancien comportement ; le manifeste ne devient actif
+    /// que lorsqu'il a été ouvert explicitement.
+    pub(super) project: Option<crate::project::Project>,
 
     pub(super) dbg: Option<Debugger>,
     pub(super) disasm: Vec<Insn>,
@@ -564,8 +568,13 @@ pub struct App {
     /// doit amener l'élément retenu à l'écran. Sans cela, les flèches
     /// déplaçaient une sélection qui sortait du cadre visible.
     pub(super) scroll_to_sel: Option<dock::Panel>,
-    /// Parcours guidé : activable, avec sa progression et la leçon ouverte.
-    pub(super) tutorial_enabled: bool,
+    /// Parcours guidé : sa progression et la leçon ouverte.
+    ///
+    /// Son ACTIVATION n'est pas rangée ici : elle se lit sur [`UiMode`]. Un
+    /// booléen `tutorial_enabled` a longtemps doublé le mode, et rien ne les
+    /// tenait d'accord — on pouvait être en mode « Apprentissage », l'étiquette
+    /// affichée dans la barre d'état, alors que le panneau ✦ n'offrait plus le
+    /// parcours. Le mode le porte désormais seul (voir [`App::tutorial_enabled`]).
     pub(super) tutorial_progress: crate::tutorial::Progress,
     pub(super) tutorial_current: Option<String>,
     /// Indices déjà demandés, et pour quelle leçon. L'identifiant est gardé avec
@@ -575,7 +584,8 @@ pub struct App {
     /// Volontairement non persisté : les indices se redemandent d'une session à
     /// l'autre, ce qui coûte un clic et laisse une chance de trouver seul.
     pub(super) tutorial_hints: Option<(String, usize)>,
-    /// Mode d'affichage : apprentissage (épuré) ou complet.
+    /// Mode d'affichage ET contexte d'apprentissage : apprentissage (épuré,
+    /// parcours guidé offert) ou complet.
     pub(super) mode: UiMode,
     /// Bandeau d'accueil (mode apprentissage) écarté une fois pour toutes.
     pub(super) welcome_dismissed: bool,
@@ -653,6 +663,11 @@ pub struct App {
     /// l'élève découvrir l'erreur au moment d'assembler. `false` : rien en
     /// suspens. La question ne se pose que si l'assemblage Windows est activé.
     pub(super) new_file_prompt: bool,
+    /// Création d'un projet : le nom et la cible sont demandés avant d'écrire
+    /// `asmstudio.toml`, `src/main.asm` et `include/`.
+    pub(super) new_project_prompt: bool,
+    pub(super) new_project_name: String,
+    pub(super) new_project_target: crate::assemble::Target,
     /// L'abandon des modifications a été confirmé pour la fermeture en cours :
     /// le `Close` qu'on réémet soi-même ne doit pas rouvrir la question.
     pub(super) discard_confirmed: bool,
@@ -710,7 +725,9 @@ const SETTINGS: &[Setting] = &[
     Setting { key: "pedagogy_anim", read: |a| a.pedagogy_anim.to_string(), write: |a, v| a.pedagogy_anim = v == "true" },
     Setting { key: "pedagogy_memview", read: |a| a.pedagogy_memview.to_string(), write: |a, v| a.pedagogy_memview = v == "true" },
     Setting { key: "pedagogy_predict", read: |a| a.pedagogy_predict.to_string(), write: |a, v| a.pedagogy_predict = v == "true" },
-    Setting { key: "tutorial", read: |a| a.tutorial_enabled.to_string(), write: |a, v| a.tutorial_enabled = v == "true" },
+    // La clé « tutorial » a disparu : le parcours suit le mode. Un fichier de
+    // réglages qui la porte encore n'en souffre pas — `apply_settings` ignore
+    // les clés qu'il ne connaît pas.
     Setting {
         key: "tutorial_done",
         read: |a| a.tutorial_progress.to_string(),
@@ -742,6 +759,7 @@ impl App {
             saved_source: source.clone(),
             source,
             binary: None,
+            project: None,
             dbg: None,
             disasm: Vec::new(),
             src_map: HashMap::new(),
@@ -838,11 +856,6 @@ impl App {
             // registre, une adresse ou un masque.
             calc_base: 16,
             icons: None,
-            // Activé par défaut : un nouveau venu démarre en mode apprentissage
-            // et voit d'emblée le parcours guidé, au lieu d'un écran de
-            // débogueur nu. Les utilisateurs déjà installés gardent leur choix,
-            // que le fichier de réglages restitue par-dessus ce défaut.
-            tutorial_enabled: true,
             welcome_dismissed: false,
             tutorial_progress: crate::tutorial::Progress::default(),
             tutorial_current: None,
@@ -877,6 +890,9 @@ impl App {
             quit_confirmed: false,
             unsaved_prompt: None,
             new_file_prompt: false,
+            new_project_prompt: false,
+            new_project_name: "mon-projet".to_string(),
+            new_project_target: crate::assemble::Target::Linux,
             discard_confirmed: false,
             quit_requested: false,
             nag_next_at: None,
@@ -1149,6 +1165,7 @@ impl App {
             self.palette_open,
             self.unsaved_prompt.is_some(),
             self.new_file_prompt,
+            self.new_project_prompt,
             self.bp_cond_line.is_some(),
             self.pedagogy_predict,
             self.microscope.is_some(),
@@ -1237,6 +1254,7 @@ impl eframe::App for App {
         // Après elle : la question du format ne se pose qu'une fois le sort du
         // travail en cours réglé, sinon deux boîtes se superposeraient.
         self.new_file_format_window(ctx);
+        self.new_project_window(ctx);
         // La boîte « non enregistré » décide de quitter, mais c'est ici qu'on
         // tient le viewport : la fermeture est réémise au frame suivant, une
         // fois `discard_confirmed` posé pour ne pas reposer la question.

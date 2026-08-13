@@ -24,6 +24,7 @@ use super::{App, dialog_window, false_col};
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum PendingAction {
     NewFile,
+    NewProject,
     OpenFile(PathBuf),
     /// Leçon du parcours guidé, retenue par son identifiant : le catalogue la
     /// rendra à l'identique, et on n'a pas à en garder une copie ici.
@@ -56,6 +57,7 @@ impl App {
     fn perform_pending(&mut self, action: PendingAction) {
         match action {
             PendingAction::NewFile => self.new_file_now(),
+            PendingAction::NewProject => self.begin_new_project(),
             PendingAction::OpenFile(path) => self.open_file_now(path),
             // Une leçon retirée du catalogue entre-temps (mise à jour) ne doit
             // pas faire paniquer l'application : on ne charge rien.
@@ -81,6 +83,10 @@ impl App {
         match action {
             PendingAction::NewFile => {
                 tr("Créer un nouveau fichier", "Create a new file", "Crear un archivo nuevo")
+                    .to_string()
+            }
+            PendingAction::NewProject => {
+                tr("Créer un nouveau projet", "Create a new project", "Crear un proyecto nuevo")
                     .to_string()
             }
             PendingAction::OpenFile(path) => format!(

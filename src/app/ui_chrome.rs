@@ -231,7 +231,7 @@ impl App {
             return;
         }
         // Ignore les raccourcis d'action quand l'éditeur a le focus (sauf Ctrl+*).
-        let (step, run, stop, build, save, open, new, first, prev, next, last) = ctx.input(|i| {
+        let (step, run, stop, build, save, open, new, new_project, first, prev, next, last) = ctx.input(|i| {
             let c = i.modifiers.ctrl;
             (
                 // Sans modificateur : Maj+F10 est le pas par-dessus et Ctrl+F8
@@ -243,7 +243,8 @@ impl App {
                 c && i.key_pressed(Key::B),
                 c && i.key_pressed(Key::S),
                 c && i.key_pressed(Key::O),
-                c && i.key_pressed(Key::N),
+                c && !i.modifiers.shift && i.key_pressed(Key::N),
+                c && i.modifiers.shift && i.key_pressed(Key::N),
                 i.key_pressed(Key::Home),
                 i.key_pressed(Key::ArrowLeft),
                 i.key_pressed(Key::ArrowRight),
@@ -258,6 +259,9 @@ impl App {
         }
         if new {
             self.new_file();
+        }
+        if new_project {
+            self.new_project();
         }
         if build {
             self.build();
@@ -628,21 +632,16 @@ impl App {
                     if item(ui, tr("Nouveau", "New", "Nuevo"), "Ctrl+N") {
                         self.new_file();
                     }
+                    if item(ui, tr("Nouveau projet…", "New project…", "Proyecto nuevo…"), "Ctrl+Maj+N") {
+                        self.new_project();
+                    }
                     if item(ui, tr("Ouvrir…", "Open…", "Abrir…"), "Ctrl+O") {
                         self.open_browser();
                     }
                     self.recent_menu(ui);
-                    if item(
-                        ui,
-                        tr(
-                            "Exemples et exercices",
-                            "Examples and exercises",
-                            "Ejemplos y ejercicios",
-                        ),
-                        "",
-                    ) {
-                        self.open_examples_dir();
-                    }
+                    // « Exemples et exercices » a quitté ce menu pour
+                    // « Apprendre » : personne ne cherche un exercice sous
+                    // Fichier, et le parcours était éparpillé sur quatre menus.
                     ui.separator();
                     if item(ui, tr("Enregistrer", "Save", "Guardar"), "Ctrl+S") {
                         self.save_source();
@@ -744,6 +743,62 @@ impl App {
                     });
                 });
 
+                // Le parcours guidé, ses exercices et sa progression tenaient
+                // dans trois menus sans rapport — le tutoriel sous « Aide », les
+                // exercices sous « Fichier », la progression sous
+                // « Préférences ». Un menu de premier niveau les réunit : c'est
+                // le sujet principal du logiciel pour qui débute, il mérite son
+                // entrée plutôt que d'être un recoin de l'aide.
+                ui.menu_button(tr("Apprendre", "Learn", "Aprender"), |ui| {
+                    if item(ui, tr("Parcours guidé", "Guided path", "Recorrido guiado"), "") {
+                        self.show_tutorial_toc();
+                    }
+                    ui.add_enabled_ui(self.has_lesson_to_resume(), |ui| {
+                        // Le titre de la leçon dans le libellé : « Reprendre »
+                        // seul ne dit pas où l'on retombe, et c'est justement la
+                        // question de celui qui rouvre l'application.
+                        let label = match self.lesson_to_resume_title() {
+                            Some(t) => format!("{} — « {t} »", tr("Reprendre", "Resume", "Continuar")),
+                            None => tr("Reprendre la leçon", "Resume the lesson", "Continuar la lección").to_string(),
+                        };
+                        if item(ui, &label, "") {
+                            self.resume_lesson();
+                        }
+                    });
+                    ui.separator();
+                    if item(
+                        ui,
+                        tr("Exemples et exercices…", "Examples and exercises…", "Ejemplos y ejercicios…"),
+                        "",
+                    ) {
+                        self.open_examples_dir();
+                    }
+                    ui.separator();
+                    // La progression n'était lisible que dans le panneau ✦ :
+                    // l'annoncer ici donne au menu la même information que la
+                    // barre de progression, sans avoir à ouvrir le panneau.
+                    let (done, total) = self.tutorial_progress.overall(self.pe_enabled);
+                    ui.label(
+                        RichText::new(match lang {
+                            i18n::Lang::Fr => format!("Progression : {done} / {total} leçons"),
+                            i18n::Lang::En => format!("Progress: {done} / {total} lessons"),
+                            i18n::Lang::Es => format!("Progreso: {done} / {total} lecciones"),
+                        })
+                        .small()
+                        .weak(),
+                    );
+                    if item(ui, tr("Revoir l'écran d'accueil", "Show the welcome screen again", "Volver a ver la pantalla de bienvenida"), "") {
+                        self.show_welcome_again();
+                    }
+                    if item(
+                        ui,
+                        tr("Réinitialiser la progression…", "Reset progress…", "Reiniciar el progreso…"),
+                        "",
+                    ) {
+                        self.reset_tutorial();
+                    }
+                });
+
                 ui.menu_button(tr("Affichage", "View", "Vista"), |ui| self.view_menu(ui));
 
                 ui.menu_button(tr("Outils", "Tools", "Herramientas"), |ui| {
@@ -764,16 +819,9 @@ impl App {
                 });
 
                 ui.menu_button(tr("Aide", "Help", "Ayuda"), |ui| {
-                    // En tête du menu : c'est par là qu'on entre dans le
-                    // logiciel, et c'était introuvable une fois le bandeau
-                    // d'accueil écarté.
-                    if item(ui, tr("Tutoriel guidé", "Guided tutorial", "Tutorial guiado"), "") {
-                        self.show_tutorial_toc();
-                    }
-                    if item(ui, tr("Revoir l'écran d'accueil", "Show the welcome screen again", "Volver a ver la pantalla de bienvenida"), "") {
-                        self.show_welcome_again();
-                    }
-                    ui.separator();
+                    // Le tutoriel et l'écran d'accueil ont leur menu à eux :
+                    // « Apprendre ». Ce menu-ci retrouve son sujet — l'aide sur
+                    // le logiciel, pas l'enseignement de l'assembleur.
                     if item(ui, tr("Raccourcis clavier…", "Keyboard shortcuts…", "Atajos de teclado…"), "F1") {
                         self.show_shortcuts = true;
                     }
@@ -1137,6 +1185,7 @@ impl App {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mut kill_requested = false;
+        let mut switch_mode: Option<super::UiMode> = None;
         egui::TopBottomPanel::bottom("statusbar")
             .frame(
                 egui::Frame::new()
@@ -1273,16 +1322,31 @@ impl App {
                     // il ne fait que s'assembler : la couleur porte la nuance.
                     let col = if self.target.is_runnable() { flag_on() } else { warn_col() };
                     ui.label(RichText::new(fmt).color(col).strong()).on_hover_text(tip);
-                    // Le mode apprentissage est un contexte, pas une commande :
-                    // il est annoncé une seule fois dans la barre d'état et
-                    // disparaît en mode complet. Il rappelle que la disposition
-                    // montre les panneaux essentiels et le parcours guidé.
-                    if self.mode == super::UiMode::Learning {
-                        ui.separator();
-                        ui.label(
-                            RichText::new(self.mode.label(lang)).color(accent()).strong(),
-                        )
-                        .on_hover_text(self.mode.description(lang));
+                    // Le mode courant, toujours affiché et toujours cliquable.
+                    //
+                    // Il ne se montrait qu'en Apprentissage : l'absence
+                    // d'étiquette était censée dire « mode complet », ce que
+                    // personne ne lit. Et l'étiquette était morte — elle
+                    // annonçait un contexte qu'il fallait aller changer dans le
+                    // menu Affichage. Un clic bascule désormais, ce qui en fait
+                    // le repère ET l'interrupteur du même état.
+                    ui.separator();
+                    let other = match self.mode {
+                        super::UiMode::Learning => super::UiMode::Full,
+                        super::UiMode::Full => super::UiMode::Learning,
+                    };
+                    let col = if self.mode == super::UiMode::Learning { accent() } else { self.c_header() };
+                    if ui
+                        .add(egui::Button::new(RichText::new(self.mode.label(lang)).color(col).strong()).frame(false))
+                        .on_hover_text(format!(
+                            "{}\n\n{} « {} »",
+                            self.mode.description(lang),
+                            tr("Cliquer pour passer en", "Click to switch to", "Clic para pasar a"),
+                            other.label(lang),
+                        ))
+                        .clicked()
+                    {
+                        switch_mode = Some(other);
                     }
                     ui.separator();
                     match &self.focused_panel_name {
@@ -1319,6 +1383,11 @@ impl App {
         });
         if kill_requested {
             self.stop();
+        }
+        // Hors de la fermeture de dessin : `set_ui_mode` remplace la
+        // disposition, donc le dock que la frame courante est en train de lire.
+        if let Some(m) = switch_mode {
+            self.set_ui_mode(m);
         }
     }
 }
@@ -1871,6 +1940,36 @@ mod welcome_tests {
 }
 
 #[cfg(test)]
+mod menu_tests {
+    use super::*;
+
+    /// L'apprentissage a son menu, et un seul.
+    ///
+    /// Ses entrées étaient réparties sur trois menus sans rapport — le tutoriel
+    /// sous « Aide », les exercices sous « Fichier », la progression sous
+    /// « Préférences ». Personne ne cherche un exercice sous Fichier.
+    #[test]
+    fn the_learning_path_has_its_own_top_level_menu() {
+        let ctx = egui::Context::default();
+        let mut app = App::new();
+        let out = ctx.run(Default::default(), |ctx| app.menu_bar(ctx));
+        let texts = super::status_bar_tests::collect_text(&out.shapes);
+
+        assert!(
+            texts.iter().any(|t| t == "Apprendre"),
+            "le menu Apprendre manque, vu : {texts:?}"
+        );
+        // L'ordre compte : Apprendre se lit après Exécution et avant Affichage,
+        // là où l'on progresse du « faire tourner » vers le « regarder ».
+        let rank = |name: &str| texts.iter().position(|t| t == name);
+        assert!(
+            rank("Exécution") < rank("Apprendre") && rank("Apprendre") < rank("Affichage"),
+            "ordre des menus inattendu : {texts:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod status_bar_tests {
     use super::*;
 
@@ -1900,26 +1999,83 @@ mod status_bar_tests {
         }
     }
 
+    /// La barre d'état nomme TOUJOURS le mode courant, et le nomme JUSTE.
+    ///
+    /// Elle ne l'affichait qu'en Apprentissage : l'absence d'étiquette était
+    /// censée signifier « mode complet », ce que personne ne déduit. Et rien ne
+    /// garantissait que l'étiquette dise l'état du parcours — c'est ce qui la
+    /// rendait désynchronisée quand le tutoriel avait son propre interrupteur.
     #[test]
-    fn learning_indicator_lives_only_in_the_status_bar_while_that_mode_is_active() {
+    fn the_status_bar_always_names_the_current_mode() {
         let ctx = egui::Context::default();
         let mut app = App::new();
         let learning = ctx.run(Default::default(), |ctx| app.status_bar(ctx));
         assert!(
             collect_text(&learning.shapes).iter().any(|text| text == "Apprentissage"),
-            "le repère doit être présent dans son propre mode"
+            "le mode Apprentissage se nomme"
         );
+        assert!(app.tutorial_enabled(), "et l'étiquette dit vrai : le parcours est offert");
 
         app.set_ui_mode(crate::app::UiMode::Full);
         let full = ctx.run(Default::default(), |ctx| app.status_bar(ctx));
+        let texts = collect_text(&full.shapes);
         assert!(
-            !collect_text(&full.shapes).iter().any(|text| text == "Apprentissage"),
-            "le repère ne doit pas occuper la barre en mode complet"
+            !texts.iter().any(|text| text == "Apprentissage"),
+            "le mode complet ne se fait pas passer pour l'apprentissage"
         );
+        assert!(texts.iter().any(|text| text == "Complet"), "il se nomme, lui aussi");
+        assert!(!app.tutorial_enabled(), "et l'étiquette dit vrai là encore");
+    }
+
+    /// L'étiquette de mode est l'interrupteur du mode : un clic bascule.
+    #[test]
+    fn clicking_the_mode_label_switches_the_mode() {
+        let mut app = App::new();
+        assert_eq!(app.mode, crate::app::UiMode::Learning);
+        let ctx = egui::Context::default();
+        // Le clic est simulé là où l'étiquette a été peinte : on la retrouve en
+        // parcourant la frame précédente plutôt qu'en codant une coordonnée.
+        let mut input = egui::RawInput::default();
+        let target = mode_label_pos(&ctx, &mut app).expect("étiquette de mode dessinée");
+        input.events.push(egui::Event::PointerMoved(target));
+        input.events.push(egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
+        input.events.push(egui::Event::PointerButton {
+            pos: target,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        let _ = ctx.run(input, |ctx| app.status_bar(ctx));
+        assert_eq!(app.mode, crate::app::UiMode::Full, "un clic passe en mode complet");
+    }
+
+    /// Centre de l'étiquette de mode, telle qu'elle vient d'être peinte.
+    fn mode_label_pos(ctx: &egui::Context, app: &mut App) -> Option<egui::Pos2> {
+        let label = app.mode.label(app.lang);
+        let out = ctx.run(Default::default(), |ctx| app.status_bar(ctx));
+        fn walk(shape: &egui::Shape, want: &str, out: &mut Option<egui::Pos2>) {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == want => {
+                    *out = Some(t.pos + t.galley.size() / 2.0);
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, want, out)),
+                _ => {}
+            }
+        }
+        let mut pos = None;
+        for c in &out.shapes {
+            walk(&c.shape, label, &mut pos);
+        }
+        pos
     }
 
     /// Tout le texte peint pendant une frame, à plat.
-    fn collect_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+    pub(super) fn collect_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
         fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
             match shape {
                 egui::Shape::Text(t) => out.push(t.galley.text().to_string()),

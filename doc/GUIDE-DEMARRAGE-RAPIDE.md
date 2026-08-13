@@ -67,7 +67,7 @@ par les menus.
 
 De haut en bas :
 
-- **Barre de menus** — Fichier · Exécution · Affichage · Outils · Aide.
+- **Barre de menus** — Fichier · Exécution · Apprendre · Affichage · Outils · Aide.
 - **Barre d'outils** — les actions les plus fréquentes, sous forme de boutons :
   **Lancer** · **Suivant** · **Arrêter** · **Relancer** · | · **Assembler**.
   Le bouton s'illumine (accent) quand l'action est disponible, se grise sinon.
@@ -199,8 +199,8 @@ panneaux « Avancé » sont regroupés à part.
 
 ## 8. Le parcours guidé (tutoriel)
 
-Panneau **Tutoriel** (ou bouton *Commencer le tutoriel* du bandeau). Un parcours
-**en 4 niveaux, 29 leçons** :
+Menu **Apprendre → Parcours guidé** (ou bouton *Commencer le tutoriel* du
+bandeau d'accueil). Un parcours **en 4 niveaux, 29 leçons** :
 
 | Niveau         | Leçons | Exemples de thèmes                                             |
 |----------------|:-----:|----------------------------------------------------------------|
@@ -215,9 +215,15 @@ Chaque leçon :
 - **ouvre les panneaux** qu'elle explique ;
 - **embarque ses attentes** — le panneau *Exercice* vous dit si c'est juste.
 
-La **progression est conservée** d'une session à l'autre. Pour repartir de zéro :
-**Réglages → Parcours guidé → Réinitialiser la progression** (remet tout à l'état
-du premier lancement : bandeau d'accueil et panneau Tutoriel réouverts).
+La **progression est conservée** d'une session à l'autre. Le menu **Apprendre**
+l'affiche (« Progression : 7 / 29 leçons ») et **Apprendre → Reprendre** rouvre
+la leçon où vous en étiez, en la nommant. Pour repartir de zéro : **Apprendre →
+Réinitialiser la progression** (remet tout à l'état du premier lancement :
+bandeau d'accueil et panneau Tutoriel réouverts).
+
+> Le parcours va avec le **mode Apprentissage** : c'est un seul et même état. Le
+> nom du mode s'affiche en bas à droite de la barre d'état, et **un clic dessus**
+> bascule entre *Apprentissage* et *Complet*.
 
 ---
 
@@ -225,8 +231,11 @@ du premier lancement : bandeau d'accueil et panneau Tutoriel réouverts).
 
 Une dizaine d'exercices `ex_*.asm` sont fournis (factorielle, fibonacci, longueur
 de chaîne, manipulation de bits, moyenne d'un tableau…). Ouvrez-en un via
-**Fichier → Exemples et exercices**, complétez le `; TODO`, lancez (`F5`), et le
-panneau **Exercice** coche les attentes une à une.
+**Apprendre → Exemples et exercices…**, complétez le `; TODO`, lancez (`F5`), et
+le panneau **Exercice** coche les attentes une à une.
+
+Les exercices rattachés à une leçon sont aussi annoncés dans le sommaire du
+parcours (`· 2 ✎`) : cliquer sur ce compte ouvre la leçon qui les porte.
 
 ### Écrire vos propres exercices : les directives `;@`
 
@@ -385,6 +394,7 @@ vient la valeur qui a tout fait dérailler.
 | Raccourci        | Action                             |
 |------------------|------------------------------------|
 | `Ctrl+N`         | Nouveau                            |
+| `Ctrl+Maj+N`     | Nouveau projet                     |
 | `Ctrl+O`         | Ouvrir                             |
 | `Ctrl+S`         | Enregistrer                        |
 | `Ctrl+B`         | Assembler + Lier                   |
@@ -428,7 +438,7 @@ personnel :
 | Exemples & exercices, `asmstd.inc`        | `~/.local/share/asm_studio/examples/`    |
 | Artefacts d'assemblage (`.o`, binaires)   | `~/.local/share/asm_studio/…`            |
 
-Le raccourci **Fichier → Exemples et exercices** pointe l'explorateur interne
+Le raccourci **Apprendre → Exemples et exercices…** pointe l'explorateur interne
 directement sur ce dossier — c'est là que vous retrouvez les `ex_*.asm` et que
 vous enregistrez votre travail.
 
@@ -439,14 +449,15 @@ vous enregistrez votre travail.
 
 ## 15. Réglages
 
-**Fichier → Préférences…** (ou menu Aide). Vous y trouvez :
+**Fichier → Préférences…**. Vous y trouvez :
 
 - **Langue** — Français / English / Español.
 - **Thème** — Système / Sombre / Clair. *(La coloration du code est optimisée
   pour le thème sombre.)*
 - **Interface** — infobulles de raccourcis, animations « CPU vivant ».
 - **Bibliothèque asmstd** — active `%include "asmstd.inc"` partout ([§10](#10-la-bibliothèque-asmstd)).
-- **Parcours guidé** — activer le tutoriel, **réinitialiser la progression**.
+- **Parcours guidé** — ce qu'il contient et où le trouver. Il s'ouvre depuis le
+  menu **Apprendre**, pas ici : le parcours suit le mode Apprentissage.
 - **Mode pédagogique** — animations enrichies (flèches ↑↓), vue mémoire unifiée.
 
 ---

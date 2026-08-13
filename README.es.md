@@ -93,6 +93,9 @@ simulador de CPU de por medio.
   entrada, importaciones y símbolos globales, presentados igual para ELF y para
   PE. Lo que cuesta una sección en memoria y en disco, y por qué `.bss` no pesa
   nada.
+- **Proyectos de varios archivos** — un `asmstudio.toml` reúne el punto de
+  entrada, las fuentes NASM y los directorios `%include`; en Linux, ASM Studio
+  ensambla cada fuente y las enlaza juntas.
 - **Calculadora integrada** — hexadecimal por defecto, vista bit a bit y las
   operaciones aritméticas/lógicas habituales. También lee texto ASCII como
   los bytes de un registro: `Hi` vale `0x4869`, hasta ocho caracteres, con los
@@ -175,7 +178,7 @@ Los principales; `F1` muestra la lista completa dentro de la aplicación.
 | `Esc` (o `Mayús+F5`) | Detener el programa |
 | `←` / `→` | Línea de tiempo: paso anterior / siguiente |
 | `Inicio` / `Fin` | Línea de tiempo: inicio / fin |
-| `Ctrl+N` / `Ctrl+O` / `Ctrl+S` | Nuevo / Abrir / Guardar |
+| `Ctrl+N` / `Ctrl+Mayús+N` / `Ctrl+O` / `Ctrl+S` | Nuevo archivo / proyecto / Abrir / Guardar |
 | `Ctrl+F` / `Ctrl+H` | Buscar / buscar y reemplazar |
 | `Ctrl+Mayús+P` | Paleta de comandos — toda la aplicación desde el teclado |
 | `Ctrl+1` … `Ctrl+5` | Mostrar / ocultar un panel |

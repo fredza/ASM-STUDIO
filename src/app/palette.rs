@@ -30,6 +30,7 @@ use crate::i18n::{self, Lang};
 pub(crate) enum Command {
     // Fichier
     New,
+    NewProject,
     Open,
     OpenExamples,
     Save,
@@ -85,9 +86,11 @@ pub(crate) enum Command {
     ShowAllPanels,
     // Fenêtres
     TogglebPrediction,
-    ToggleTutorial,
     /// Ouvre le parcours guidé à son sommaire.
     OpenTutorial,
+    /// Rouvre la leçon en cours — ou la première non faite. Le geste le plus
+    /// fréquent d'une session à l'autre, qui n'avait pas de commande.
+    ResumeLesson,
     /// Refait apparaître le bandeau d'accueil.
     ShowWelcome,
     ResetTutorial,
@@ -125,6 +128,7 @@ impl Command {
         let t = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         match self {
             Command::New => t("Fichier : Nouveau", "File: New", "Archivo: Nuevo").into(),
+            Command::NewProject => t("Fichier : Nouveau projet…", "File: New project…", "Archivo: Proyecto nuevo…").into(),
             Command::Open => t("Fichier : Ouvrir…", "File: Open…", "Archivo: Abrir…").into(),
             Command::OpenExamples => t(
                 "Fichier : Exemples et exercices",
@@ -258,8 +262,13 @@ impl Command {
             Command::ResetLayout => t("Réinitialiser la disposition", "Reset layout", "Restablecer disposición").into(),
             Command::ShowAllPanels => t("Afficher tous les panneaux", "Show all panels", "Mostrar todos los paneles").into(),
             Command::TogglebPrediction => t("Fenêtre Prédiction", "Prediction window", "Ventana Predicción").into(),
-            Command::ToggleTutorial => t("Activer/désactiver le tutoriel", "Enable/disable the tutorial", "Activar/desactivar el tutorial").into(),
-            Command::OpenTutorial => t("Ouvrir le tutoriel guidé", "Open the guided tutorial", "Abrir el tutorial guiado").into(),
+            Command::OpenTutorial => t("Apprendre : parcours guidé", "Learn: guided path", "Aprender: recorrido guiado").into(),
+            Command::ResumeLesson => t(
+                "Apprendre : reprendre la leçon en cours",
+                "Learn: resume the current lesson",
+                "Aprender: continuar la lección actual",
+            )
+            .into(),
             Command::ShowWelcome => t("Revoir l'écran d'accueil", "Show the welcome screen again", "Volver a ver la pantalla de bienvenida").into(),
             Command::ResetTutorial => t(
                 "Réinitialiser la progression du tutoriel",
@@ -364,6 +373,7 @@ impl Command {
     pub(crate) fn shortcut(self) -> Option<&'static str> {
         Some(match self {
             Command::New => "Ctrl+N",
+            Command::NewProject => "Ctrl+Maj+N",
             Command::Open => "Ctrl+O",
             Command::Save => "Ctrl+S",
             Command::ExplorerRename => "F2",
@@ -420,6 +430,7 @@ impl Command {
             Command::BreakpointCondition,
             Command::ClearBreakpoints,
             Command::New,
+            Command::NewProject,
             Command::Open,
             Command::OpenExamples,
             Command::Save,
@@ -472,8 +483,8 @@ impl Command {
             Command::ShowAllPanels,
             Command::ResetLayout,
             Command::TogglebPrediction,
-            Command::ToggleTutorial,
             Command::OpenTutorial,
+            Command::ResumeLesson,
             Command::ShowWelcome,
             Command::ResetTutorial,
             Command::ProgramOutput,
@@ -592,6 +603,7 @@ impl App {
     pub(super) fn run_command(&mut self, cmd: Command) {
         match cmd {
             Command::New => self.new_file(),
+            Command::NewProject => self.new_project(),
             Command::Open => self.open_browser(),
             Command::OpenExamples => self.open_examples_dir(),
             Command::Save => {
@@ -717,11 +729,8 @@ impl App {
                 self.pedagogy_predict = !self.pedagogy_predict;
                 self.save_settings();
             }
-            Command::ToggleTutorial => {
-                self.tutorial_enabled = !self.tutorial_enabled;
-                self.save_settings();
-            }
             Command::OpenTutorial => self.show_tutorial_toc(),
+            Command::ResumeLesson => self.resume_lesson(),
             Command::ShowWelcome => self.show_welcome_again(),
             // `reset_tutorial` enregistre déjà, et remet l'élève devant l'accueil.
             Command::ResetTutorial => self.reset_tutorial(),

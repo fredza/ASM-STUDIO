@@ -116,13 +116,19 @@ impl Panel {
 /// ```text
 ///   ┌──────────┬──────────────────────────┬─────────────┐
 ///   │ EXPLORER │  Éditeur / Désasm /      │ Instruction │
-///   │          │  Vue mémoire             │ / Exercice  │
+///   │          │  Vue mémoire             │             │
 ///   │          ├──────────────────────────┤             │
 ///   │          │ Registres│Flags│Pile│…   │             │
 ///   │          ├──────────────────────────┤             │
 ///   │          │ Mémoire │Timeline│Console│             │
 ///   └──────────┴──────────────────────────┴─────────────┘
 /// ```
+///
+/// Le panneau du parcours n'y figure PAS : le mode complet est celui de qui
+/// n'apprend plus, et y laisser l'onglet « Tutoriel / Exercices » contredisait
+/// le mode qu'on venait de choisir. Il n'est pas pour autant injoignable —
+/// ouvrir un fichier qui déclare des attentes le rouvre tout seul (voir
+/// [`App::reload_exercise`]), et le menu Affichage ▸ Panneaux le propose.
 pub(crate) fn default_layout() -> DockState<Panel> {
     // Surface principale : le centre, avec ses trois onglets empilés.
     let mut state = DockState::new(vec![Panel::Editor, Panel::Disasm, Panel::MemMap]);
@@ -130,10 +136,8 @@ pub(crate) fn default_layout() -> DockState<Panel> {
 
     // Explorateur à gauche du centre.
     let [center, _explorer] = surface.split_left(NodeIndex::root(), 0.16, vec![Panel::Explorer]);
-    // Instruction et Exercice à droite, sur toute la hauteur : le panneau a
-    // retrouvé la place que lui prenait le doublon de FLAGS.
-    let [center, _right] =
-        surface.split_right(center, 0.78, vec![Panel::Instruction, Panel::Exercise]);
+    // Instruction à droite, sur toute la hauteur.
+    let [center, _right] = surface.split_right(center, 0.78, vec![Panel::Instruction]);
     // Bande CPU sous le centre. FLAGS y rejoint les registres : les drapeaux
     // sont de l'état processeur, ils se lisent avec eux — et non dans un coin.
     let [center, cpu] = surface.split_below(
@@ -171,8 +175,8 @@ pub(crate) const ADVANCED: [Panel; 7] = [
 ///
 /// ```text
 ///   ┌──────────┬────────────────────────┬─────────────┐
-///   │ EXPLORER │  Éditeur               │ Instruction │
-///   │          │                        │ / Exercice  │
+///   │ EXPLORER │  Éditeur               │ Tutoriel /  │
+///   │          │                        │ Instruction │
 ///   │          ├────────────────────────┤             │
 ///   │          │ Registres │Flags│ Pile │             │
 ///   │          ├────────────────────────┤             │
@@ -183,8 +187,15 @@ pub(crate) fn learning_layout() -> DockState<Panel> {
     let mut state = DockState::new(vec![Panel::Editor]);
     let surface = state.main_surface_mut();
     let [center, _explorer] = surface.split_left(NodeIndex::root(), 0.17, vec![Panel::Explorer]);
+    // Le parcours est le PREMIER onglet de sa bande, donc celui qui s'affiche.
+    // « Instruction » l'était, et le tutoriel se cachait derrière un onglet que
+    // rien n'invitait à cliquer : le mode Apprentissage ouvrait sur un panneau
+    // qui dit « Lancez le programme, puis cliquez une instruction » à qui n'a
+    // pas encore de programme. Le parcours passe devant ; l'instruction reste
+    // à un clic, et les leçons qui en parlent l'amènent d'elles-mêmes au
+    // premier plan (voir `Lesson::panels`).
     let [center, _right] =
-        surface.split_right(center, 0.72, vec![Panel::Instruction, Panel::Exercise]);
+        surface.split_right(center, 0.72, vec![Panel::Exercise, Panel::Instruction]);
     let [center, cpu] = surface.split_below(
         center,
         0.55,
@@ -309,7 +320,15 @@ impl App {
     /// `None` si aucun voisin n'est ouvert (l'élève a tout fermé autour) :
     /// l'appelant retombe alors sur la zone active.
     fn home_leaf_for(&self, panel: Panel) -> Option<(SurfaceIndex, NodeIndex)> {
-        let reference = layout_for(self.mode);
+        let mut reference = layout_for(self.mode);
+        // Un panneau absent de la disposition du mode courant n'a pas de place
+        // à y lire : c'est le cas du parcours en mode complet, qui s'y rouvre
+        // quand même dès qu'on ouvre un exercice. On lit alors sa place dans
+        // l'autre disposition, plutôt que de le lâcher dans la zone active —
+        // c'est-à-dire, le plus souvent, par-dessus l'éditeur.
+        if reference.find_tab(&panel).is_none() {
+            reference = learning_layout();
+        }
         let (surface, node, _) = reference.find_tab(&panel)?;
         let neighbours: Vec<Panel> = reference[surface][node]
             .iter_tabs()
@@ -653,19 +672,47 @@ mod tests {
         }
     }
 
-    /// La disposition par défaut doit contenir TOUS les panneaux : sinon un
-    /// panneau serait injoignable au premier lancement.
+    /// La disposition par défaut contient tous les panneaux SAUF le parcours :
+    /// il appartient au mode Apprentissage, et le laisser en mode complet
+    /// contredisait le mode qu'on venait de choisir. Aucun autre ne peut
+    /// manquer, sous peine d'être injoignable au premier lancement.
     #[test]
-    fn default_layout_contains_every_panel() {
+    fn default_layout_contains_every_panel_but_the_path() {
         let state = default_layout();
         let present: Vec<Panel> = state.iter_all_tabs().map(|(_, t)| *t).collect();
         for p in Panel::ALL {
+            if p == Panel::Exercise {
+                assert!(!present.contains(&p), "le parcours n'a rien à faire en mode complet");
+                continue;
+            }
             assert!(present.contains(&p), "{p:?} absent de la disposition par défaut");
         }
         assert_eq!(
             present.len(),
-            Panel::ALL.len(),
+            Panel::ALL.len() - 1,
             "panneau dupliqué ou manquant : {present:?}"
+        );
+        // Et il reste joignable : la disposition d'apprentissage lui garde sa
+        // place, que `home_leaf_for` relit pour le rouvrir là quand un fichier
+        // déclare des attentes en mode complet.
+        assert!(learning_layout().find_tab(&Panel::Exercise).is_some());
+    }
+
+    /// En mode Apprentissage, le parcours est l'onglet qu'on VOIT.
+    ///
+    /// Il partageait sa bande avec « Instruction », placé devant lui : le mode
+    /// destiné au débutant s'ouvrait donc sur « Lancez le programme, puis
+    /// cliquez une instruction », adressé à qui n'a pas encore de programme,
+    /// pendant que le tutoriel attendait derrière un onglet muet.
+    #[test]
+    fn the_learning_layout_shows_the_path_first() {
+        let state = learning_layout();
+        let (surface, node, index) = state.find_tab(&Panel::Exercise).expect("le parcours est là");
+        assert_eq!(index.0, 0, "le parcours est le premier onglet de sa bande, donc l'actif");
+        let siblings: Vec<Panel> = state[surface][node].iter_tabs().copied().collect();
+        assert!(
+            siblings.contains(&Panel::Instruction),
+            "il garde « Instruction » à un clic : {siblings:?}"
         );
     }
 
@@ -686,7 +733,11 @@ mod tests {
         let mut app = App::new();
         app.set_ui_mode(super::super::UiMode::Full);
         for p in Panel::ALL {
-            assert!(app.panel_is_open(p), "{p:?} devrait être ouvert au départ");
+            // Le parcours n'est pas de ce mode-là : il part fermé, et le
+            // contrat qui compte pour lui est de savoir s'ouvrir quand même.
+            if p != Panel::Exercise {
+                assert!(app.panel_is_open(p), "{p:?} devrait être ouvert au départ");
+            }
             app.hide_panel(p);
             assert!(!app.panel_is_open(p), "{p:?} devrait être fermé");
             app.show_panel(p);
@@ -834,9 +885,16 @@ mod tests {
         }
         assert!(!app.panel_is_open(Panel::Editor));
         app.reset_dock_layout();
-        for p in Panel::ALL {
+        for p in panels_of(super::super::UiMode::Full) {
             assert!(app.panel_is_open(p), "{p:?} manquant après réinitialisation");
         }
+    }
+
+    /// Les panneaux que la disposition d'un mode contient — la référence des
+    /// tests qui parcouraient `Panel::ALL` du temps où les deux dispositions
+    /// portaient les mêmes panneaux.
+    fn panels_of(mode: super::super::UiMode) -> Vec<Panel> {
+        layout_for(mode).iter_all_tabs().map(|(_, t)| *t).collect()
     }
 
     /// La chaîne écrite dans les réglages doit être exactement celle que le
@@ -883,8 +941,9 @@ mod tests {
     fn f6_reaches_every_panel_in_one_cycle() {
         let mut app = App::new();
         app.set_ui_mode(super::super::UiMode::Full);
+        let expected = panels_of(super::super::UiMode::Full);
         let total = app.focus_order().len();
-        assert_eq!(total, Panel::ALL.len(), "l'ordre doit couvrir tous les panneaux");
+        assert_eq!(total, expected.len(), "l'ordre doit couvrir tous les panneaux");
 
         let mut seen = Vec::new();
         for _ in 0..total {
@@ -893,7 +952,7 @@ mod tests {
                 seen.push(p);
             }
         }
-        for p in Panel::ALL {
+        for p in expected {
             assert!(seen.contains(&p), "{p:?} jamais atteint par F6");
         }
     }
@@ -920,7 +979,7 @@ mod tests {
         let order = app.focus_order();
         assert!(!order.contains(&Panel::Console), "console fermée mais parcourue");
         assert!(!order.contains(&Panel::Flags), "flags fermé mais parcouru");
-        assert_eq!(order.len(), Panel::ALL.len() - 2);
+        assert_eq!(order.len(), panels_of(super::super::UiMode::Full).len() - 2);
     }
 
     /// Sans aucun panneau, la navigation ne doit pas paniquer ni boucler.

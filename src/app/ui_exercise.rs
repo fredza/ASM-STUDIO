@@ -25,7 +25,7 @@ impl App {
     /// places dans la disposition.
     pub(super) fn exercise_ui(&mut self, ui: &mut egui::Ui) {
         // Leçon ouverte : elle affiche son contenu ET ses attentes en bas.
-        if self.tutorial_enabled {
+        if self.tutorial_enabled() {
             let current = self
                 .tutorial_current
                 .clone()
@@ -35,9 +35,18 @@ impl App {
                 return;
             }
             self.tutorial_toc_ui(ui);
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
+            // Sous le sommaire, on n'ajoute la vérification que s'il y a
+            // quelque chose à vérifier. Sinon `checks_ui` déroulait son mode
+            // d'emploi des directives « ;@attendu » — un sujet d'AUTEUR
+            // d'exercice — juste sous le parcours d'un débutant, qui y lisait la
+            // grammaire d'un langage d'énoncés avant d'avoir écrit un `mov`.
+            if self.has_exercise() {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+                self.checks_ui(ui);
+            }
+            return;
         }
         self.checks_ui(ui);
     }
@@ -268,7 +277,7 @@ impl App {
             });
 
         if let Some(lesson) = open_lesson {
-            self.tutorial_enabled = true;
+            self.enter_learning();
             self.tutorial_current = Some(lesson.id.to_string());
             self.save_settings();
         }
@@ -385,7 +394,7 @@ _start:
         let ctx = egui::Context::default();
 
         // Tutoriel actif, aucune leçon ouverte : sommaire + attentes.
-        app.tutorial_enabled = true;
+        app.enter_learning();
         app.tutorial_current = None;
         let _ = ctx.run(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
@@ -399,19 +408,25 @@ _start:
             egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
         });
 
-        // Tutoriel coupé : le panneau reste, réduit à la vérification.
-        app.tutorial_enabled = false;
+        // Mode complet : le parcours quitte l'écran avec le mode auquel il
+        // appartient — mais le panneau sait revenir, réduit à la vérification,
+        // dès qu'un fichier déclare des attentes.
+        app.set_ui_mode(crate::app::UiMode::Full);
+        assert!(!app.panel_is_open(Panel::Exercise), "le parcours suit son mode");
+
+        app.reload_exercise();
+        assert!(
+            app.panel_is_open(Panel::Exercise),
+            "un exercice ouvert en mode complet rouvre son panneau"
+        );
         let _ = ctx.run(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
         });
-        assert!(
-            app.panel_is_open(Panel::Exercise),
-            "couper le tutoriel ne ferme pas le panneau : il sert aussi aux fichiers ordinaires"
-        );
     }
 
-    /// Le panneau fusionné figure dans les dispositions par défaut, comme
-    /// n'importe quel autre — l'exception SETTING_DRIVEN a disparu avec lui.
+    /// Le panneau fusionné est un onglet ordinaire — l'exception SETTING_DRIVEN
+    /// a disparu avec lui. Il est là au premier lancement, qui se fait en mode
+    /// Apprentissage ; c'est le mode complet, et lui seul, qui s'en passe.
     #[test]
     fn the_merged_panel_is_an_ordinary_one() {
         use crate::app::dock::Panel;

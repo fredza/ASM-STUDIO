@@ -1,8 +1,10 @@
 use std::path::{Path, PathBuf};
 
+use eframe::egui::{self, RichText};
+
 use crate::i18n;
 
-use super::{abs_dir_of, asmstd_dir, data_dir, App};
+use super::{abs_dir_of, asmstd_dir, data_dir, dialog_window, App};
 
 /// Ajoute du texte à un tampon d'affichage en le gardant borné, et ne conserve
 /// que la fin — c'est là qu'est le plus récent, donc le plus utile.
@@ -307,6 +309,7 @@ impl App {
                     .set_title("Ouvrir un fichier")
                     .set_directory(&dir)
                     .add_filter("Assembleur (.asm, .s)", &["asm", "s"])
+                    .add_filter("Projet ASM Studio (asmstudio.toml)", &["toml"])
                     .add_filter("Tous les fichiers", &["*"])
                     .pick_file(),
             )
@@ -373,6 +376,10 @@ impl App {
     }
 
     pub(super) fn open_file_now(&mut self, path: PathBuf) {
+        if crate::project::Project::is_manifest(&path) {
+            self.open_project_now(path);
+            return;
+        }
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 // Un fichier ouvert n'annonce pas son format : il se lit dans
@@ -381,6 +388,12 @@ impl App {
                 // par une erreur de nasm sur `extern ExitProcess` — un message
                 // qui ne parle pas du vrai problème.
                 self.adopt_detected_target(&content);
+                // Ouvrir un fichier extérieur au projet remet le mode
+                // historique : Build ne doit jamais lier par surprise les
+                // sources d'un ancien dossier.
+                if self.project.as_ref().is_some_and(|p| !p.sources.contains(&path)) {
+                    self.project = None;
+                }
                 self.source = content;
                 // L'explorateur reflète le dossier du fichier ouvert.
                 self.explorer_dir = abs_dir_of(&path);
@@ -400,10 +413,165 @@ impl App {
         }
     }
 
+    /// Ouvre un manifeste `asmstudio.toml`, puis son point d'entrée. Le projet
+    /// ne remplace pas le mode fichier seul : il ne fait qu'apporter à Build la
+    /// liste complète des objets à lier.
+    fn open_project_now(&mut self, manifest: PathBuf) {
+        let project = match crate::project::Project::load(&manifest) {
+            Ok(project) => project,
+            Err(e) => {
+                self.log(&format!(
+                    "{} {}: {e}",
+                    i18n::tr3(self.lang, "Projet invalide", "Invalid project", "Proyecto no válido"),
+                    manifest.display()
+                ));
+                return;
+            }
+        };
+        let source = match std::fs::read_to_string(&project.entry) {
+            Ok(source) => source,
+            Err(e) => {
+                self.log(&format!(
+                    "{} {}: {e}",
+                    i18n::tr3(self.lang, "Impossible d'ouvrir l'entrée", "Cannot open the entry", "No se puede abrir la entrada"),
+                    project.entry.display()
+                ));
+                return;
+            }
+        };
+        if project.target.is_windows() {
+            self.pe_enabled = true;
+        }
+        self.set_target(project.target);
+        self.explorer_dir = project.root.clone();
+        self.src_path = project.entry.clone();
+        self.source = source;
+        self.mark_saved();
+        self.project = Some(project);
+        self.dbg = None;
+        self.disasm.clear();
+        self.binary = None;
+        self.show_panel(super::dock::Panel::Editor);
+        self.reload_exercise();
+        self.push_recent(&manifest);
+        self.save_settings();
+        self.status = format!(
+            "{} {}",
+            i18n::tr3(self.lang, "Projet ouvert :", "Project opened:", "Proyecto abierto:"),
+            manifest.display()
+        );
+    }
+
     /// Repart d'un squelette vierge, après s'être assuré que le travail en
     /// cours ne part pas avec (voir [`super::unsaved`]).
     pub(super) fn new_file(&mut self) {
         self.guarded(super::unsaved::PendingAction::NewFile);
+    }
+
+    /// Demande le nom et la cible d'un projet sans court-circuiter la garde du
+    /// travail non enregistré : créer un projet ouvre son `main.asm`, donc
+    /// remplace bien l'éditeur actuel.
+    pub(super) fn new_project(&mut self) {
+        self.guarded(super::unsaved::PendingAction::NewProject);
+    }
+
+    pub(super) fn begin_new_project(&mut self) {
+        self.new_project_name = "mon-projet".to_string();
+        self.new_project_target = if self.pe_enabled { self.target } else { crate::assemble::Target::Linux };
+        self.new_project_prompt = true;
+    }
+
+    /// Boîte de création d'un projet. Elle reste dans `file_ops` car elle
+    /// choisit exactement les fichiers que cette unité écrit ; la peinture ne
+    /// transporte aucune logique de construction.
+    pub(super) fn new_project_window(&mut self, ctx: &egui::Context) {
+        if !self.new_project_prompt {
+            return;
+        }
+        use crate::assemble::Target;
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let root = self.explorer_dir.join(&self.new_project_name);
+        let valid = Self::valid_explorer_name(&self.new_project_name) && !root.exists();
+        let mut create = false;
+        let mut cancel = false;
+        let mut open = true;
+        dialog_window(ctx, tr("Nouveau projet", "New project", "Proyecto nuevo"))
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_width(440.0);
+                ui.label(tr(
+                    "Un dossier, un manifeste asmstudio.toml, src/main.asm et include/ seront créés.",
+                    "A folder, an asmstudio.toml manifest, src/main.asm and include/ will be created.",
+                    "Se crearán una carpeta, un manifiesto asmstudio.toml, src/main.asm e include/.",
+                ));
+                ui.add_space(10.0);
+                ui.label(RichText::new(tr("Nom du projet", "Project name", "Nombre del proyecto")).strong());
+                ui.text_edit_singleline(&mut self.new_project_name);
+                if !self.new_project_name.is_empty() && !valid {
+                    ui.label(RichText::new(tr(
+                        "Choisis un nom simple qui n'existe pas encore dans ce dossier.",
+                        "Choose a simple name that does not already exist in this folder.",
+                        "Elija un nombre simple que todavía no exista en esta carpeta.",
+                    )).small().color(super::false_col()));
+                }
+                ui.add_space(8.0);
+                ui.label(RichText::new(tr("Cible initiale", "Initial target", "Destino inicial")).strong());
+                ui.radio_value(&mut self.new_project_target, Target::Linux, "ELF64 — Linux");
+                if self.pe_enabled {
+                    ui.radio_value(&mut self.new_project_target, Target::Windows, "PE64 — Windows console");
+                    ui.radio_value(&mut self.new_project_target, Target::WindowsGui, "PE64 — Windows GUI");
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(valid, egui::Button::new(RichText::new(tr("Créer", "Create", "Crear")).strong()).fill(super::action())).clicked() {
+                        create = true;
+                    }
+                    if ui.button(tr("Annuler", "Cancel", "Cancelar")).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if create {
+            self.create_project_now();
+        } else if cancel || !open {
+            self.new_project_prompt = false;
+        }
+    }
+
+    fn create_project_now(&mut self) {
+        use crate::assemble::Target;
+        let target = self.new_project_target;
+        let source = match target {
+            Target::Linux => super::SKELETON_ELF,
+            Target::Windows => super::SKELETON_PE_CONSOLE,
+            Target::WindowsGui => super::SKELETON_PE_GUI,
+        };
+        let project = match crate::project::Project::create(&self.explorer_dir, &self.new_project_name, target, source) {
+            Ok(project) => project,
+            Err(e) => {
+                self.log(&format!("{}: {e}", i18n::tr3(self.lang, "Création du projet impossible", "Could not create project", "No se pudo crear el proyecto")));
+                return;
+            }
+        };
+        if target.is_windows() {
+            self.pe_enabled = true;
+        }
+        self.set_target(target);
+        self.src_path = project.entry.clone();
+        self.source = source.to_string();
+        self.mark_saved();
+        self.explorer_dir = project.root.clone();
+        self.project = Some(project.clone());
+        self.new_project_prompt = false;
+        self.dbg = None;
+        self.disasm.clear();
+        self.binary = None;
+        self.show_panel(super::dock::Panel::Editor);
+        self.push_recent(&project.manifest);
+        self.save_settings();
+        self.status = format!("{} {}", i18n::tr3(self.lang, "Projet créé :", "Project created:", "Proyecto creado:"), project.root.display());
     }
 
     /// Le squelette de départ ne dépend pas de l'humeur : il dépend du format
@@ -427,6 +595,7 @@ impl App {
         use crate::assemble::Target;
         self.new_file_prompt = false;
         self.set_target(target);
+        self.project = None;
         self.source = match target {
             Target::Linux => super::SKELETON_ELF,
             Target::Windows => super::SKELETON_PE_CONSOLE,
@@ -605,6 +774,67 @@ mod recent_tests {
     fn a_fresh_install_has_an_empty_list() {
         let app = App::new();
         assert!(app.recent_files.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::super::App;
+    use crate::assemble::Target;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_TEST_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_dir() -> std::path::PathBuf {
+        let id = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("asm-studio-project-{}-{id}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dossier temporaire");
+        dir
+    }
+
+    #[test]
+    fn creating_a_project_keeps_a_runnable_single_file_workflow() {
+        let dir = test_dir();
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.new_project_name = "demo".to_string();
+        app.new_project_target = Target::Linux;
+        app.create_project_now();
+
+        let project = app.project.as_ref().expect("projet actif");
+        assert!(project.manifest.is_file());
+        assert!(project.entry.is_file());
+        assert_eq!(app.src_path, project.entry);
+        assert!(app.source.contains("global _start"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn opening_a_manifest_activates_its_sources_and_target() {
+        let dir = test_dir();
+        let project = crate::project::Project::create(&dir, "demo", Target::Linux, "section .text\nglobal _start\n_start:\n    nop\n")
+            .expect("projet témoin");
+        let mut app = App::new();
+        app.open_file_now(project.manifest.clone());
+
+        assert_eq!(app.project.as_ref().map(|p| &p.manifest), Some(&project.manifest));
+        assert_eq!(app.src_path, project.entry);
+        assert!(app.source.contains("global _start"));
+        app.pe_enabled = true;
+        app.set_target(Target::Windows);
+        let manifest = std::fs::read_to_string(&project.manifest).expect("manifeste mis à jour");
+        assert!(manifest.contains("target = \"windows\""));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn project_creation_window_renders_without_creating_anything() {
+        let mut app = App::new();
+        app.new_project_prompt = true;
+        let ctx = eframe::egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.new_project_window(ctx));
+        assert!(app.new_project_prompt);
     }
 }
 
