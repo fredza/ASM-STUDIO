@@ -118,7 +118,7 @@ pub(crate) enum Command {
     SetTheme(crate::theme::Choice),
     SetMode(crate::app::UiMode),
     /// Cible d'assemblage : Linux (ELF, exécutable et débogable) ou Windows
-    /// (PE, assemblé et lisible seulement).
+    /// (PE, exécutable sous Wine mais sans pas-à-pas).
     SetTarget(crate::assemble::Target),
 }
 
@@ -496,6 +496,7 @@ impl Command {
             Command::License,
             Command::ActivateLicense,
             Command::SetMode(crate::app::UiMode::Learning),
+            Command::SetMode(crate::app::UiMode::Editor),
             Command::SetMode(crate::app::UiMode::Full),
             Command::SetTarget(crate::assemble::Target::Linux),
             Command::SetTarget(crate::assemble::Target::Windows),
@@ -585,10 +586,11 @@ fn fold(s: &str) -> String {
 /// `pe` dit si l'assemblage Windows est proposé : quand il ne l'est pas, les
 /// cibles Windows sortent de la liste. Proposer une commande sans effet serait
 /// pire que de ne pas la proposer — l'utilisateur la choisit, et rien ne bouge.
-pub(crate) fn filter(query: &str, lang: Lang, pe: bool) -> Vec<Command> {
+pub(crate) fn filter(query: &str, lang: Lang, pe: bool, debuggable: bool) -> Vec<Command> {
     let mut scored: Vec<(u32, usize, Command)> = Command::all()
         .into_iter()
         .filter(|c| pe || !matches!(c, Command::SetTarget(t) if t.is_windows()))
+        .filter(|c| debuggable || !requires_debug_target(*c))
         .enumerate()
         .filter_map(|(i, c)| match_score(query, &c.label(lang)).map(|s| (s, i, c)))
         .collect();
@@ -596,6 +598,26 @@ pub(crate) fn filter(query: &str, lang: Lang, pe: bool) -> Vec<Command> {
     // d'une frappe à l'autre.
     scored.sort_by_key(|(s, i, _)| (*s, *i));
     scored.into_iter().map(|(_, _, c)| c).collect()
+}
+
+/// Commandes qui supposent un processus ELF sous ptrace. Elles restent dans le
+/// catalogue global (et reviennent dès qu'on choisit ELF64), mais ne sont pas
+/// proposées pour un source PE64 où elles ne peuvent rien faire.
+fn requires_debug_target(command: Command) -> bool {
+    matches!(
+        command,
+        Command::Step
+            | Command::StepOver
+            | Command::Continue
+            | Command::ResumeHere
+            | Command::ToggleBreakpoint
+            | Command::BreakpointCondition
+            | Command::ClearBreakpoints
+            | Command::TimelineStart
+            | Command::TimelineEnd
+            | Command::TimelinePrev
+            | Command::TimelineNext
+    )
 }
 
 impl App {
@@ -807,7 +829,12 @@ impl App {
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let hdr = self.c_header();
 
-        let matches = filter(&self.palette_query, lang, self.pe_enabled);
+        let matches = filter(
+            &self.palette_query,
+            lang,
+            self.pe_enabled,
+            self.target.is_runnable(),
+        );
         // La sélection reste dans les bornes quand la liste se réduit.
         if self.palette_sel >= matches.len() {
             self.palette_sel = matches.len().saturating_sub(1);
@@ -1025,7 +1052,7 @@ mod tests {
         assert_eq!(app.target, Target::Linux, "la commande reste sans effet");
 
         // La palette ne propose plus ce qu'elle ne peut pas faire…
-        let hidden = filter("cible", Lang::Fr, false);
+        let hidden = filter("cible", Lang::Fr, false, true);
         assert!(
             !hidden.iter().any(|c| matches!(c, Command::SetTarget(t) if t.is_windows())),
             "les cibles Windows doivent sortir de la liste"
@@ -1035,8 +1062,24 @@ mod tests {
             "celle de Linux reste, elle"
         );
         // … et les repropose dès qu'on rallume l'option.
-        let shown = filter("cible", Lang::Fr, true);
+        let shown = filter("cible", Lang::Fr, true, true);
         assert!(shown.iter().any(|c| matches!(c, Command::SetTarget(t) if t.is_windows())));
+    }
+
+    #[test]
+    fn pe_target_hides_commands_that_require_single_stepping() {
+        let commands = filter("", Lang::Fr, true, false);
+        for command in [
+            Command::Step,
+            Command::StepOver,
+            Command::Continue,
+            Command::ResumeHere,
+            Command::TimelinePrev,
+        ] {
+            assert!(!commands.contains(&command), "{command:?} ne fonctionne pas pour PE64");
+        }
+        assert!(commands.contains(&Command::Build));
+        assert!(commands.contains(&Command::Run));
     }
 
     /// Un thème ajouté au catalogue doit apparaître dans la palette sans qu'on
@@ -1112,7 +1155,7 @@ mod tests {
 
     #[test]
     fn empty_query_returns_everything() {
-        let all = filter("", Lang::Fr, true);
+        let all = filter("", Lang::Fr, true, true);
         assert_eq!(all.len(), Command::all().len());
     }
 
@@ -1142,25 +1185,25 @@ mod tests {
 
     #[test]
     fn filtering_finds_expected_commands() {
-        let r = filter("lancer", Lang::Fr, true);
+        let r = filter("lancer", Lang::Fr, true, true);
         assert!(!r.is_empty());
         assert_eq!(r[0], Command::Run, "« lancer » doit remonter Run en tête");
 
-        let r = filter("console", Lang::Fr, true);
+        let r = filter("console", Lang::Fr, true, true);
         assert!(
             r.iter().any(|c| matches!(c, Command::FocusPanel(Panel::Console))),
             "« console » doit proposer d'y aller"
         );
 
-        assert!(filter("xyzzy-introuvable", Lang::Fr, true).is_empty());
+        assert!(filter("xyzzy-introuvable", Lang::Fr, true, true).is_empty());
     }
 
     /// L'ordre ne doit pas sautiller entre deux frappes équivalentes : à score
     /// égal, l'ordre de déclaration tranche.
     #[test]
     fn ordering_is_stable() {
-        let a = filter("panneau", Lang::Fr, true);
-        let b = filter("panneau", Lang::Fr, true);
+        let a = filter("panneau", Lang::Fr, true, true);
+        let b = filter("panneau", Lang::Fr, true, true);
         assert_eq!(a, b);
     }
 
@@ -1289,7 +1332,7 @@ mod tests {
             ("onglet suivant", Command::NextTab),
         ];
         for (query, expected) in cases {
-            let r = filter(query, Lang::Fr, true);
+            let r = filter(query, Lang::Fr, true, true);
             assert_eq!(r.first(), Some(&expected), "« {query} » devrait remonter {expected:?}");
         }
     }
@@ -1312,7 +1355,7 @@ mod tests {
 
         // Exécuter une commande referme la palette.
         app.palette_query = "reglages".into();
-        let m = filter(&app.palette_query, app.lang, true);
+        let m = filter(&app.palette_query, app.lang, true, true);
         assert!(!m.is_empty());
         app.palette_open = false;
         app.run_command(m[0]);
@@ -1331,7 +1374,7 @@ mod tests {
         app.palette_query = "reglages".into(); // ne laisse qu'une poignée d'entrées
         let _ = ctx.run(Default::default(), |ctx| app.palette_window(ctx));
 
-        let n = filter(&app.palette_query, app.lang, true).len();
+        let n = filter(&app.palette_query, app.lang, true, true).len();
         assert!(app.palette_sel < n.max(1), "sélection {} hors de {n}", app.palette_sel);
     }
 }

@@ -736,27 +736,28 @@ impl App {
 
     // ---------- Explorateur de fichiers (panneau de gauche) ----------
 
-    /// Déplace la sélection clavier de l'explorateur d'un fichier.
+    /// Déplace la sélection clavier de l'explorateur sur une entrée racine.
     ///
-    /// Ne parcourt que les fichiers du dossier racine : les sous-dossiers se
-    /// déplient à la souris, et un parcours récursif au clavier serait plus
-    /// déroutant qu'utile.
+    /// Ne parcourt que le dossier racine : Entrée ouvre ensuite le dossier
+    /// choisi. Les catégories `elf` et `windows` doivent rester accessibles
+    /// sans souris, sans pour autant rendre la navigation récursive implicite.
     pub(super) fn move_explorer_selection(&mut self, down: bool) {
-        let (_, files) = super::list_entries(&self.explorer_dir);
-        if files.is_empty() {
+        let (dirs, files) = super::list_entries(&self.explorer_dir);
+        let entries: Vec<_> = dirs.into_iter().chain(files).collect();
+        if entries.is_empty() {
             return;
         }
         let cur = self
             .explorer_selected
             .as_ref()
             .or(Some(&self.src_path))
-            .and_then(|p| files.iter().position(|f| f == p));
+            .and_then(|p| entries.iter().position(|entry| entry == p));
         let next = match (cur, down) {
             (None, _) => 0,
-            (Some(i), true) => (i + 1).min(files.len() - 1),
+            (Some(i), true) => (i + 1).min(entries.len() - 1),
             (Some(i), false) => i.saturating_sub(1),
         };
-        self.explorer_selected = Some(files[next].clone());
+        self.explorer_selected = Some(entries[next].clone());
         self.scroll_to_sel = Some(super::dock::Panel::Explorer);
     }
 
@@ -1660,10 +1661,11 @@ niveau2:
     #[test]
     fn explorer_selection_moves_and_clamps() {
         let mut app = App::new();
-        // Dossier d'exemples réel : il contient plusieurs .asm.
+        // Dossier d'exemples réel : il contient plusieurs entrées.
         app.explorer_dir = super::super::abs_dir_of(std::path::Path::new("examples/test.asm"));
-        let (_, files) = super::super::list_entries(&app.explorer_dir);
-        assert!(files.len() >= 2, "il faut au moins deux fichiers pour tester");
+        let (dirs, files) = super::super::list_entries(&app.explorer_dir);
+        let entries: Vec<_> = dirs.into_iter().chain(files).collect();
+        assert!(entries.len() >= 2, "il faut au moins deux entrées pour tester");
 
         app.explorer_selected = None;
         app.move_explorer_selection(true);
@@ -1671,23 +1673,23 @@ niveau2:
         assert!(first.is_some(), "une première sélection doit apparaître");
 
         // On descend jusqu'au bout, puis une fois de trop.
-        for _ in 0..files.len() + 3 {
+        for _ in 0..entries.len() + 3 {
             app.move_explorer_selection(true);
         }
         assert_eq!(
             app.explorer_selected.as_ref(),
-            files.last(),
-            "la descente doit s'arrêter au dernier fichier"
+            entries.last(),
+            "la descente doit s'arrêter à la dernière entrée"
         );
 
         // Et on remonte jusqu'au premier, puis une fois de trop.
-        for _ in 0..files.len() + 3 {
+        for _ in 0..entries.len() + 3 {
             app.move_explorer_selection(false);
         }
         assert_eq!(
             app.explorer_selected.as_ref(),
-            files.first(),
-            "la remontée doit s'arrêter au premier fichier"
+            entries.first(),
+            "la remontée doit s'arrêter à la première entrée"
         );
     }
 

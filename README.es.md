@@ -59,10 +59,10 @@ simulador de CPU de por medio.
 - **Consola de verdad** — lo que el programa escribe en su salida estándar
   llega al IDE, y usted puede enviarle entrada: un programa detenido en un
   `read` le espera en lugar de congelar la interfaz.
-- **Dos modos de visualización** — *Aprendizaje* (lo esencial: código,
-  instrucción explicada, registros generales, pila, consola) y *Completo*
-  (todo: desensamblado, vista de memoria, volcado hexadecimal, pila de
-  llamadas, llamadas al sistema).
+- **Tres modos de visualización** — *Aprendizaje* (el recorrido y lo esencial),
+  *Solo editor* (explorador + editor, sin distracciones) y *Completo*
+  (desensamblado, vista de memoria, volcado hexadecimal, pila de llamadas,
+  llamadas al sistema).
 - **Disposición acoplable** — cada panel se arrastra, se apila o se desprende
   en una ventana flotante (`egui_dock`), como en un IDE clásico.
 - **Recorrido guiado** — un tutorial de cinco niveles (Principiante,
@@ -140,9 +140,11 @@ que `nasm` y `ld` estén presentes.
 
 ## Primeros pasos
 
-En el primer arranque, ASM Studio crea sus carpetas de trabajo, las siembra
-con ejemplos y ejercicios comentados, y abre en **modo Aprendizaje** con un
-cartel que propone empezar el tutorial guiado.
+En el primer arranque, ASM Studio crea sus carpetas de trabajo, separa los
+ejemplos y ejercicios comentados en `examples/elf` y `examples/windows`, y abre
+en **modo Aprendizaje** con un cartel que propone empezar el tutorial guiado.
+Fuera de Aprendizaje, el explorador se inicia un nivel por encima de `examples`,
+con esa carpeta pedagógica cerrada.
 
 Un primer programa mínimo (`Archivo → Nuevo`, `Ctrl+N`):
 

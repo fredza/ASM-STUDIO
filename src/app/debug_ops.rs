@@ -281,6 +281,9 @@ impl App {
     }
 
     pub(super) fn step(&mut self) {
+        if !self.ensure_debuggable_target() {
+            return;
+        }
         if !self.can_step() {
             return;
         }
@@ -650,12 +653,18 @@ impl App {
 
     /// Exécute jusqu'au prochain point d'arrêt (ou la fin du programme).
     pub(super) fn cont(&mut self) {
+        if !self.ensure_debuggable_target() {
+            return;
+        }
         self.run_until(None);
     }
 
     /// Exécute l'instruction courante ; si c'est un `call`, exécute la
     /// fonction appelée d'un bloc et s'arrête à l'instruction suivante.
     pub(super) fn step_over(&mut self) {
+        if !self.ensure_debuggable_target() {
+            return;
+        }
         let is_call = self
             .view_rip()
             .and_then(|rip| self.insn_at(rip))
@@ -664,6 +673,24 @@ impl App {
             (true, Some(ret)) => self.run_until(Some(ret)),
             _ => self.step(),
         }
+    }
+
+    /// Le débogueur ptrace ne sait piloter que l'ELF lancé directement. Un PE
+    /// passe par Wine : les commandes de débogage doivent donc expliquer leur
+    /// indisponibilité au lieu de sembler ne rien faire.
+    fn ensure_debuggable_target(&mut self) -> bool {
+        if self.target.is_runnable() {
+            return true;
+        }
+        let message = i18n::tr3(
+            self.lang,
+            "Pas à pas indisponible pour PE64 : Wine peut exécuter le programme Windows, mais ASM Studio ne peut pas le dérouler instruction par instruction. Choisissez la cible Linux ELF64 pour déboguer.",
+            "Single-stepping is unavailable for PE64: Wine can run the Windows program, but ASM Studio cannot walk through it instruction by instruction. Choose the Linux ELF64 target to debug.",
+            "El paso a paso no está disponible para PE64: Wine puede ejecutar el programa de Windows, pero ASM Studio no puede recorrerlo instrucción por instrucción. Elija el destino Linux ELF64 para depurar.",
+        );
+        self.status = message.to_string();
+        self.log(message);
+        false
     }
 
     /// Pose ou retire un point d'arrêt sur une ligne source (1-based). Le
@@ -902,6 +929,18 @@ mod tests {
         app.adopt_detected_target("global _start\n_start:\n    syscall\n");
 
         assert_eq!(app.target, Target::Linux);
+    }
+
+    #[test]
+    fn stepping_a_pe_explains_why_it_is_unavailable() {
+        let mut app = App::new();
+        app.set_target(Target::Windows);
+
+        app.step();
+
+        assert!(app.dbg.is_none());
+        assert!(app.status.contains("PE64"), "message vu : {}", app.status);
+        assert!(app.status.contains("indisponible"), "message vu : {}", app.status);
     }
 
     /// Neuf lignes, dont six instructions : les numéros comptent, les tests

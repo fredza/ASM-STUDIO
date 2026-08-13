@@ -58,8 +58,23 @@ pub(super) fn data_dir() -> PathBuf {
         .join("asm_studio")
 }
 
-/// Peuple `~/.local/share/asm_studio/examples/` avec les programmes de
-/// démonstration et les exercices auto-corrigés.
+/// Racine du catalogue livré à l'utilisateur.
+pub(super) fn examples_dir() -> PathBuf {
+    data_dir().join("examples")
+}
+
+/// Dossier des sources Linux ELF64 livrées.
+pub(super) fn elf_examples_dir() -> PathBuf {
+    examples_dir().join("elf")
+}
+
+/// Dossier des sources Windows PE64 livrées.
+pub(super) fn windows_examples_dir() -> PathBuf {
+    examples_dir().join("windows")
+}
+
+/// Peuple `~/.local/share/asm_studio/examples/{elf,windows}/` avec les
+/// programmes de démonstration et les exercices auto-corrigés.
 ///
 /// Chaque fichier ABSENT est écrit — et non plus « tout ou rien au premier
 /// lancement ». Ainsi un exemple ou un exercice ajouté dans une nouvelle
@@ -77,9 +92,16 @@ pub(super) fn setup_examples() {
     // Incrémenté quand on ajoute un exemple sans forcément livrer une nouvelle
     // version semver. Les installations déjà semées reçoivent ainsi les
     // nouveaux fichiers, sans jamais réécrire le travail existant.
-    const CATALOGUE_REVISION: &str = "2";
-    let dir = data_dir().join("examples");
+    const CATALOGUE_REVISION: &str = "3";
+    let dir = examples_dir();
     if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let elf_dir = elf_examples_dir();
+    let windows_dir = windows_examples_dir();
+    if std::fs::create_dir_all(&elf_dir).is_err()
+        || std::fs::create_dir_all(&windows_dir).is_err()
+    {
         return;
     }
     let stamp = dir.join(".semis");
@@ -100,8 +122,9 @@ pub(super) fn setup_examples() {
         ("longueur_chaine.asm", include_str!("../../examples_seed/longueur_chaine.asm")),
         ("pile_demo.asm",       include_str!("../../examples_seed/pile_demo.asm")),
         ("lire_ecrire.asm",     include_str!("../../examples_seed/lire_ecrire.asm")),
-        // Les quatre fondamentaux Windows gardent leurs jumeaux ELF ci-dessus :
-        // ouvrir l'un d'eux active automatiquement la cible PE64.
+        // Les quatre fondamentaux Windows gardent leurs jumeaux ELF ci-dessus.
+        // Le préfixe ne sert qu'à migrer l'ancien catalogue à plat ; dans le
+        // dossier `windows/`, ils retrouvent le même nom que leur jumeau ELF.
         ("win_hello_world.asm", include_str!("../../examples_seed/win_hello_world.asm")),
         ("win_arithmetic.asm",  include_str!("../../examples_seed/win_arithmetic.asm")),
         ("win_boucle.asm",      include_str!("../../examples_seed/win_boucle.asm")),
@@ -149,16 +172,51 @@ pub(super) fn setup_examples() {
         ("ex_c11_4_palindrome.asm",      include_str!("../../examples_seed/ex_c11_4_palindrome.asm")),
         ("ex_c11_5_premiers.asm",        include_str!("../../examples_seed/ex_c11_5_premiers.asm")),
     ];
-    for (name, content) in files {
-        let path = dir.join(name);
-        if !path.exists() {
-            let _ = std::fs::write(path, content);
-        }
+    for (legacy_name, content) in files {
+        let (group, name) = if *legacy_name == "asmstd.inc" {
+            (&dir, *legacy_name)
+        } else if let Some(name) = legacy_name.strip_prefix("win_") {
+            (&windows_dir, name)
+        } else {
+            (&elf_dir, *legacy_name)
+        };
+        seed_grouped_example(&dir, group, legacy_name, name, content);
     }
     // Témoin écrit en dernier : si l'écriture des fichiers a échoué en cours de
     // route (disque plein, dossier en lecture seule), le prochain lancement
     // retentera plutôt que de considérer le semis fait.
     let _ = std::fs::write(&stamp, catalogue_stamp);
+}
+
+/// Déplace une ancienne copie à plat vers son dossier de format, sans jamais
+/// écraser un fichier déjà présent. Le déplacement conserve aussi les
+/// modifications personnelles faites dans l'exemple avant la mise à jour.
+fn seed_grouped_example(root: &Path, group: &Path, legacy_name: &str, name: &str, content: &str) {
+    let path = group.join(name);
+    let legacy = root.join(legacy_name);
+    if path != legacy && !path.exists() && legacy.exists() {
+        let _ = std::fs::rename(&legacy, &path);
+    }
+    if !path.exists() {
+        let _ = std::fs::write(path, content);
+    }
+}
+
+/// Réécrit à la lecture un ancien chemin récent qui visait le catalogue à plat.
+/// Les réglages de l'utilisateur restent ainsi utilisables après la migration.
+pub(super) fn grouped_recent_path(path: PathBuf) -> PathBuf {
+    let root = examples_dir();
+    if path.parent() != Some(root.as_path()) {
+        return path;
+    }
+    let Some(legacy_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return path;
+    };
+    let grouped = match legacy_name.strip_prefix("win_") {
+        Some(name) => windows_examples_dir().join(name),
+        None => elf_examples_dir().join(legacy_name),
+    };
+    grouped.is_file().then_some(grouped).unwrap_or(path)
 }
 
 /// Le catalogue d'exemples doit-il être parcouru ?
@@ -236,7 +294,7 @@ pub(crate) fn trial_marker_paths() -> [PathBuf; 3] {
 
 /// Répertoire contenant `asmstd.inc` dans les données utilisateur.
 pub(super) fn asmstd_dir() -> Option<PathBuf> {
-    let dir = data_dir().join("examples");
+    let dir = examples_dir();
     dir.join("asmstd.inc").exists().then_some(dir)
 }
 
@@ -285,6 +343,31 @@ mod tests {
             needs_seeding(Some("0.4.7:1"), "0.4.7:2"),
             "une révision de catalogue doit déposer les nouveaux exemples"
         );
+    }
+
+    #[test]
+    fn grouping_migrates_a_modified_example_without_overwriting_it() {
+        let unique = format!(
+            "asm-studio-example-migration-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("horloge")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let elf = root.join("elf");
+        std::fs::create_dir_all(&elf).expect("dossier temporaire");
+        std::fs::write(root.join("hello.asm"), "contenu personnel").expect("ancien exemple");
+
+        seed_grouped_example(&root, &elf, "hello.asm", "hello.asm", "contenu livré");
+
+        assert!(!root.join("hello.asm").exists());
+        assert_eq!(
+            std::fs::read_to_string(elf.join("hello.asm")).expect("exemple migré"),
+            "contenu personnel"
+        );
+        std::fs::remove_dir_all(root).expect("nettoyage temporaire");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use eframe::egui::{self, RichText};
 
 use crate::i18n;
 
-use super::{abs_dir_of, asmstd_dir, data_dir, dialog_window, App};
+use super::{abs_dir_of, asmstd_dir, dialog_window, App};
 
 /// Ajoute du texte à un tampon d'affichage en le gardant borné, et ne conserve
 /// que la fin — c'est là qu'est le plus récent, donc le plus utile.
@@ -226,7 +226,10 @@ impl App {
     /// et enregistre son travail ; l'y emmener d'un clic évite de le lui faire
     /// chercher, sans quitter l'IDE.
     pub(super) fn open_examples_dir(&mut self) {
-        let dir = data_dir().join("examples");
+        // Les exemples sont du contenu pédagogique : les ouvrir fait entrer
+        // dans le seul mode où leur dossier peut être la racine de travail.
+        self.enter_learning();
+        let dir = super::examples_dir();
         // Créé au premier lancement, mais on s'en assure : un dossier absent
         // laisserait l'explorateur vide sans explication.
         let _ = std::fs::create_dir_all(&dir);
@@ -239,6 +242,7 @@ impl App {
             i18n::tr(self.lang, "Explorateur :", "Explorer:"),
             dir.display()
         ));
+        self.save_settings();
     }
 
     pub(super) fn save_source(&mut self) -> bool {
@@ -382,6 +386,10 @@ impl App {
         }
         match std::fs::read_to_string(&path) {
             Ok(content) => {
+                let seeded_example = path.starts_with(super::examples_dir());
+                if seeded_example {
+                    self.enter_learning();
+                }
                 // Un fichier ouvert n'annonce pas son format : il se lit dans
                 // le code. Sans cela, ouvrir un source Windows depuis
                 // l'explorateur laissait la cible sur Linux, et Build répondait
@@ -395,8 +403,14 @@ impl App {
                     self.project = None;
                 }
                 self.source = content;
-                // L'explorateur reflète le dossier du fichier ouvert.
-                self.explorer_dir = abs_dir_of(&path);
+                // Un exemple garde les catégories ELF/Windows visibles ; un
+                // fichier ordinaire prend naturellement son dossier pour
+                // racine de travail.
+                self.explorer_dir = if seeded_example {
+                    super::examples_dir()
+                } else {
+                    abs_dir_of(&path)
+                };
                 self.src_path = path;
                 self.mark_saved();
                 self.dbg = None;

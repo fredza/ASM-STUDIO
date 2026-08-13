@@ -17,7 +17,7 @@ du processus, pas une approximation.
 3. [L'écran en un coup d'œil](#3-lécran-en-un-coup-dœil)
 4. [Votre premier programme en 3 minutes](#4-votre-premier-programme-en-3-minutes)
 5. [Le cycle de travail : Assembler → Lancer → Pas à pas → Timeline](#5-le-cycle-de-travail)
-6. [Les deux modes d'affichage](#6-les-deux-modes-daffichage)
+6. [Les trois modes d'affichage](#6-les-trois-modes-daffichage)
 7. [Les panneaux, un par un](#7-les-panneaux-un-par-un)
 8. [Le parcours guidé (tutoriel)](#8-le-parcours-guidé-tutoriel)
 9. [Les exercices auto-corrigés](#9-les-exercices-auto-corrigés)
@@ -153,14 +153,16 @@ reculez pas à pas jusqu'à voir **d'où** elle vient.
 
 ---
 
-## 6. Les deux modes d'affichage
+## 6. Les trois modes d'affichage
 
 Menu **Affichage → Mode d'affichage** :
 
 - **Apprentissage** — *l'essentiel* : code, instruction expliquée, registres
   généraux, pile, console. Idéal pour débuter.
+- **Éditeur seul** — uniquement l'explorateur et l'éditeur, pour écrire sans
+  distraction. Le dossier pédagogique `examples` reste fermé dans ce mode.
 - **Complet** — *tout* : désassemblage, vue mémoire, vidage hexadécimal, pile
-  d'appels, appels système.
+  d'appels, appels système. `examples` reste également fermé par défaut.
 
 Changer de mode réorganise les panneaux vers la disposition de ce mode. Vous
 pouvez toujours **Réinitialiser la disposition** (menu Affichage) si tout est
@@ -223,7 +225,7 @@ bandeau d'accueil et panneau Tutoriel réouverts).
 
 > Le parcours va avec le **mode Apprentissage** : c'est un seul et même état. Le
 > nom du mode s'affiche en bas à droite de la barre d'état, et **un clic dessus**
-> bascule entre *Apprentissage* et *Complet*.
+> fait défiler *Apprentissage → Éditeur seul → Complet*.
 
 ---
 

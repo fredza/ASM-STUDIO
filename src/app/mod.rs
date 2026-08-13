@@ -218,6 +218,8 @@ pub(crate) enum UiMode {
     /// Panneaux essentiels, registres généraux seulement.
     #[default]
     Learning,
+    /// Espace d'écriture sans outils d'exécution : explorateur et éditeur.
+    Editor,
     /// Tous les panneaux et tous les registres.
     Full,
 }
@@ -226,11 +228,13 @@ impl UiMode {
     pub(crate) fn key(self) -> &'static str {
         match self {
             UiMode::Learning => "learning",
+            UiMode::Editor => "editor",
             UiMode::Full => "full",
         }
     }
     pub(crate) fn from_key(k: &str) -> UiMode {
         match k {
+            "editor" => UiMode::Editor,
             "full" => UiMode::Full,
             _ => UiMode::Learning,
         }
@@ -238,6 +242,7 @@ impl UiMode {
     pub(crate) fn label(self, lang: Lang) -> &'static str {
         match self {
             UiMode::Learning => i18n::tr3(lang, "Apprentissage", "Learning", "Aprendizaje"),
+            UiMode::Editor => i18n::tr3(lang, "Éditeur seul", "Editor only", "Solo editor"),
             UiMode::Full => i18n::tr3(lang, "Complet", "Full", "Completo"),
         }
     }
@@ -248,6 +253,12 @@ impl UiMode {
                 "L'essentiel : code, instruction expliquée, registres généraux, pile, console.",
                 "The essentials: code, explained instruction, general registers, stack, console.",
                 "Lo esencial: código, instrucción explicada, registros generales, pila, consola.",
+            ),
+            UiMode::Editor => i18n::tr3(
+                lang,
+                "Écriture sans distraction : uniquement l'explorateur et l'éditeur.",
+                "Distraction-free writing: only the explorer and editor.",
+                "Escritura sin distracciones: solo el explorador y el editor.",
             ),
             UiMode::Full => i18n::tr3(
                 lang,
@@ -746,12 +757,13 @@ const SETTINGS: &[Setting] = &[
 impl App {
     pub fn new() -> Self {
         setup_examples();
-        let src_path = data_dir().join("examples").join("hello_world.asm");
+        let src_path = elf_examples_dir().join("hello_world.asm");
         let source = std::fs::read_to_string(&src_path).unwrap_or_else(|_| {
             "section .text\n    global _start\n_start:\n    mov rax, 60\n    xor rdi, rdi\n    syscall\n"
                 .to_string()
         });
-        let explorer_dir = abs_dir_of(&src_path);
+        // Le catalogue s'ouvre sur ses deux catégories : ELF et Windows.
+        let explorer_dir = examples_dir();
         let out_dir = data_dir().join("build");
         let mut app = App {
             src_path,
@@ -944,7 +956,7 @@ impl App {
                 // dans un chemin qui en contiendrait un.
                 "recent" => {
                     if !v.is_empty() {
-                        self.recent_files.push(PathBuf::from(v));
+                        self.recent_files.push(grouped_recent_path(PathBuf::from(v)));
                     }
                 }
                 "dock" => saved_dock = Some(v.to_string()),
@@ -957,12 +969,13 @@ impl App {
                 }
             }
         }
-        match saved_dock {
+        match saved_dock.filter(|layout| !layout.trim().is_empty()) {
             Some(layout) => self.apply_dock_layout(&layout),
             // Pas de disposition enregistrée : celle du mode relu, sinon un
             // réglage `mode=full` afficherait la disposition d'apprentissage.
             None => self.dock = Some(dock::layout_for(self.mode)),
         }
+        self.keep_examples_closed_outside_learning();
     }
 
     pub(super) fn save_settings(&self) {
@@ -1047,7 +1060,9 @@ impl App {
     /// un processus suspendu dans un appel système est bien vivant, mais ptrace
     /// n'a pas la main dessus, et tout ce qui est proposé ici y échouerait.
     pub(super) fn can_step(&self) -> bool {
-        self.dbg.as_ref().is_some_and(|d| d.is_ready()) && self.is_head_view()
+        self.target.is_runnable()
+            && self.dbg.as_ref().is_some_and(|d| d.is_ready())
+            && self.is_head_view()
     }
     pub(super) fn can_read_memory(&self) -> bool {
         self.is_head_view() && self.dbg.as_ref().is_some_and(|d| d.is_alive())

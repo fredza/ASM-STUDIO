@@ -59,9 +59,9 @@ simulateur de processeur entre les deux.
 - **Vraie console** — ce que le programme écrit sur sa sortie standard arrive
   dans l'IDE, et l'on peut lui envoyer de l'entrée : un programme suspendu sur
   un `read` vous attend au lieu de figer l'interface.
-- **Deux modes d'affichage** — *Apprentissage* (l'essentiel : code, instruction
-  expliquée, registres généraux, pile, console) et *Complet* (tout : désassemblage,
-  vue mémoire, vidage hexa, pile d'appels, appels système).
+- **Trois modes d'affichage** — *Apprentissage* (le parcours et l'essentiel),
+  *Éditeur seul* (explorateur + éditeur, sans distraction) et *Complet*
+  (désassemblage, vue mémoire, vidage hexa, pile d'appels, appels système).
 - **Disposition ancrable** — chaque panneau se glisse, s'empile ou se détache en
   fenêtre flottante (`egui_dock`), à la manière d'un IDE classique.
 - **Parcours guidé** — un tutoriel en cinq niveaux (Débutant, Intermédiaire,
@@ -138,9 +138,11 @@ présence de `nasm` et `ld`.
 
 ## Démarrage rapide
 
-Au premier lancement, ASM Studio crée vos dossiers de travail, y sème des
-exemples et exercices commentés, et ouvre en **mode Apprentissage** avec un
-bandeau proposant de démarrer le tutoriel guidé.
+Au premier lancement, ASM Studio crée vos dossiers de travail, sépare les
+exemples et exercices commentés dans `examples/elf` et `examples/windows`, et
+ouvre en **mode Apprentissage** avec un bandeau proposant de démarrer le
+tutoriel guidé. Hors Apprentissage, l'explorateur démarre un niveau au-dessus
+de `examples`, avec ce dossier pédagogique fermé.
 
 Un premier programme minimal (`Fichier → Nouveau`, `Ctrl+N`) :
 

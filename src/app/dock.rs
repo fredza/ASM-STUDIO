@@ -206,10 +206,23 @@ pub(crate) fn learning_layout() -> DockState<Panel> {
     state
 }
 
+/// Disposition de travail minimale : les fichiers à gauche, tout l'espace
+/// restant pour le source. Les outils d'assemblage restent accessibles dans
+/// les menus et la barre d'outils, mais aucun panneau de débogage ne prend de
+/// place tant que l'utilisateur ne le demande pas explicitement.
+pub(crate) fn editor_layout() -> DockState<Panel> {
+    let mut state = DockState::new(vec![Panel::Editor]);
+    state
+        .main_surface_mut()
+        .split_left(NodeIndex::root(), 0.18, vec![Panel::Explorer]);
+    state
+}
+
 /// Disposition correspondant au mode demandé.
 pub(crate) fn layout_for(mode: super::UiMode) -> DockState<Panel> {
     match mode {
         super::UiMode::Learning => learning_layout(),
+        super::UiMode::Editor => editor_layout(),
         super::UiMode::Full => default_layout(),
     }
 }
@@ -641,7 +654,22 @@ impl App {
         }
         self.mode = mode;
         self.dock = Some(layout_for(mode));
+        self.keep_examples_closed_outside_learning();
         self.save_settings();
+    }
+
+    /// En dehors de l'apprentissage, le catalogue pédagogique ne devient pas
+    /// le dossier de travail par défaut. Sa racine reste visible dans le
+    /// dossier de données, mais fermée.
+    pub(super) fn keep_examples_closed_outside_learning(&mut self) {
+        if self.mode == super::UiMode::Learning {
+            return;
+        }
+        let examples = super::examples_dir();
+        if self.explorer_dir.starts_with(&examples) {
+            self.explorer_dir = super::data_dir();
+            self.explorer_selected = None;
+        }
     }
 }
 
@@ -1043,6 +1071,14 @@ mod tests {
         assert_eq!(u.len(), learning.len(), "panneau dupliqué : {learning:?}");
     }
 
+    #[test]
+    fn editor_mode_contains_only_explorer_and_editor() {
+        let panels: Vec<Panel> = editor_layout().iter_all_tabs().map(|(_, tab)| *tab).collect();
+        assert_eq!(panels.len(), 2);
+        assert!(panels.contains(&Panel::Explorer));
+        assert!(panels.contains(&Panel::Editor));
+    }
+
     /// Changer de mode remplace la disposition ; rester dans le même mode ne
     /// doit RIEN toucher, sinon on détruirait l'agencement composé par l'élève.
     #[test]
@@ -1051,6 +1087,11 @@ mod tests {
         let mut app = App::new();
         assert_eq!(app.mode, UiMode::Learning, "apprentissage par défaut");
         assert!(!app.panel_is_open(Panel::Disasm), "pas de désassemblage au départ");
+
+        app.set_ui_mode(UiMode::Editor);
+        assert!(app.panel_is_open(Panel::Explorer));
+        assert!(app.panel_is_open(Panel::Editor));
+        assert!(!app.panel_is_open(Panel::Console), "aucun outil dans le mode éditeur seul");
 
         app.set_ui_mode(UiMode::Full);
         assert!(app.panel_is_open(Panel::Disasm), "le mode complet l'ouvre");
@@ -1071,7 +1112,7 @@ mod tests {
     #[test]
     fn mode_key_round_trips() {
         use super::super::UiMode;
-        for m in [UiMode::Learning, UiMode::Full] {
+        for m in [UiMode::Learning, UiMode::Editor, UiMode::Full] {
             assert_eq!(UiMode::from_key(m.key()), m);
             for lang in [Lang::Fr, Lang::En, Lang::Es] {
                 assert!(!m.label(lang).is_empty());
@@ -1079,6 +1120,18 @@ mod tests {
             }
         }
         assert_eq!(UiMode::from_key("n_importe_quoi"), UiMode::Learning);
+    }
+
+    #[test]
+    fn an_empty_saved_layout_uses_the_selected_mode_layout() {
+        let mut app = App::new();
+        app.apply_settings("mode=editor\ndock=\n");
+
+        assert_eq!(app.mode, super::super::UiMode::Editor);
+        assert!(app.panel_is_open(Panel::Explorer));
+        assert!(app.panel_is_open(Panel::Editor));
+        assert!(!app.panel_is_open(Panel::Registers));
+        assert!(!app.panel_is_open(Panel::Exercise));
     }
 
 
@@ -1089,13 +1142,28 @@ mod tests {
     #[test]
     fn opening_examples_points_the_internal_explorer_there() {
         let mut app = App::new();
+        app.set_ui_mode(super::super::UiMode::Full);
         app.open_examples_dir();
+        assert_eq!(app.mode, super::super::UiMode::Learning);
         assert!(
             app.explorer_dir.ends_with("examples"),
             "l'explorateur doit pointer sur examples, vu {:?}",
             app.explorer_dir
         );
         assert!(app.panel_is_open(Panel::Explorer), "l'explorateur doit être visible");
+    }
+
+    #[test]
+    fn examples_are_not_the_explorer_root_outside_learning() {
+        use super::super::UiMode;
+
+        for mode in [UiMode::Editor, UiMode::Full] {
+            let mut app = App::new();
+            assert!(app.explorer_dir.ends_with("examples"));
+            app.set_ui_mode(mode);
+            assert_eq!(app.explorer_dir, super::super::data_dir());
+            assert!(!app.explorer_dir.ends_with("examples"));
+        }
     }
 
     /// Sans licence, Disasm/Flags/Registers/Timeline doivent afficher le

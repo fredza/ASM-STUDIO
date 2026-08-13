@@ -59,9 +59,9 @@ between.
 - **Real console** — what the program writes to stdout/stderr shows up in the
   IDE, and you can type into its standard input: a program blocked on `read`
   waits for you instead of freezing the interface.
-- **Two display modes** — *Learning* (the essentials: code, explained
-  instruction, general-purpose registers, stack, console) and *Full*
-  (everything: disassembly, memory view, hex dump, call stack, syscalls).
+- **Three display modes** — *Learning* (the guided essentials), *Editor only*
+  (explorer + editor, distraction-free) and *Full* (disassembly, memory view,
+  hex dump, call stack, syscalls).
 - **Dockable layout** — every panel can be dragged, stacked or detached into
   a floating window (`egui_dock`), like a regular IDE.
 - **Guided tutorial** — a five-level path (Beginner, Intermediate, Advanced,
@@ -136,9 +136,11 @@ The script installs the binary, icon and `.desktop` file, and checks for
 
 ## Quick start
 
-On first launch, ASM Studio creates your working folders, seeds them with
-commented examples and exercises, and opens in **Learning mode** with a
-banner offering to start the guided tutorial.
+On first launch, ASM Studio creates your working folders, seeds commented
+examples and exercises into separate `examples/elf` and `examples/windows`
+folders, and opens in **Learning mode** with a banner offering to start the
+guided tutorial. Outside Learning mode, the explorer starts one level above
+`examples`, with that teaching folder closed.
 
 A minimal first program (`File → New`, `Ctrl+N`):
 

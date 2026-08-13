@@ -716,8 +716,25 @@ impl App {
                         self.launch();
                     }
                     ui.separator();
-                    if item(ui, tr("Pas à pas", "Step", "Paso a paso"), "F10") {
-                        self.step();
+                    if self.target.is_runnable() {
+                        if item(ui, tr("Pas à pas", "Step", "Paso a paso"), "F10") {
+                            self.step();
+                        }
+                    } else {
+                        ui.add_enabled(
+                            false,
+                            egui::Button::new(tr(
+                                "Pas à pas — indisponible pour PE64",
+                                "Step — unavailable for PE64",
+                                "Paso a paso — no disponible para PE64",
+                            ))
+                            .shortcut_text("F10"),
+                        )
+                        .on_disabled_hover_text(tr(
+                            "Wine exécute le PE64, mais ne permet pas à ASM Studio de le dérouler instruction par instruction.",
+                            "Wine runs the PE64, but does not let ASM Studio walk through it instruction by instruction.",
+                            "Wine ejecuta el PE64, pero no permite que ASM Studio lo recorra instrucción por instrucción.",
+                        ));
                     }
                     if item(ui, tr("Arrêter", "Stop", "Detener"), "Échap") {
                         self.stop();
@@ -907,7 +924,7 @@ impl App {
 
         ui.label(RichText::new(tr("Mode d'affichage", "Display mode", "Modo de visualización")).small().weak());
         let mut wanted = self.mode;
-        for m in [UiMode::Learning, UiMode::Full] {
+        for m in [UiMode::Learning, UiMode::Editor, UiMode::Full] {
             ui.radio_value(&mut wanted, m, m.label(lang))
                 .on_hover_text(m.description(lang));
         }
@@ -1031,6 +1048,15 @@ impl App {
                 let running = self.dbg.as_ref().is_some_and(|d| d.is_alive())
                     || self.wine.as_ref().is_some_and(|w| w.is_running());
                 let can_step = self.can_step();
+                let step_tip = if self.target.is_runnable() {
+                    tr("Instruction suivante (F10)", "Next instruction (F10)", "Instrucción siguiente (F10)")
+                } else {
+                    tr(
+                        "Pas à pas indisponible pour PE64 ; choisissez Linux ELF64 pour déboguer.",
+                        "Single-stepping is unavailable for PE64; choose Linux ELF64 to debug.",
+                        "El paso a paso no está disponible para PE64; elija Linux ELF64 para depurar.",
+                    )
+                };
                 // Handles clonés (Arc bon marché) => pas d'emprunt de self dans la barre.
                 let ic = |f: fn(&super::Icons) -> &egui::TextureHandle| self.icons.as_ref().map(|i| f(i).clone());
                 let (ic_run, ic_debug, ic_build) = (ic(|i| &i.run), ic(|i| &i.debug), ic(|i| &i.assembler));
@@ -1047,7 +1073,7 @@ impl App {
                 }
                 // Next : exécute l'instruction suivante (accent quand disponible).
                 if self
-                    .tip(accent_button(ui, ic_debug.as_ref(), tr("Suivant", "Next", "Siguiente"), can_step), tr("Instruction suivante (F10)", "Next instruction (F10)", "Instrucción siguiente (F10)"))
+                    .tip(accent_button(ui, ic_debug.as_ref(), tr("Suivant", "Next", "Siguiente"), can_step), step_tip)
                     .clicked()
                 {
                     self.step();
@@ -1332,7 +1358,8 @@ impl App {
                     // le repère ET l'interrupteur du même état.
                     ui.separator();
                     let other = match self.mode {
-                        super::UiMode::Learning => super::UiMode::Full,
+                        super::UiMode::Learning => super::UiMode::Editor,
+                        super::UiMode::Editor => super::UiMode::Full,
                         super::UiMode::Full => super::UiMode::Learning,
                     };
                     let col = if self.mode == super::UiMode::Learning { accent() } else { self.c_header() };
@@ -2051,7 +2078,7 @@ mod status_bar_tests {
             modifiers: Default::default(),
         });
         let _ = ctx.run(input, |ctx| app.status_bar(ctx));
-        assert_eq!(app.mode, crate::app::UiMode::Full, "un clic passe en mode complet");
+        assert_eq!(app.mode, crate::app::UiMode::Editor, "un clic passe en mode éditeur seul");
     }
 
     /// Centre de l'étiquette de mode, telle qu'elle vient d'être peinte.

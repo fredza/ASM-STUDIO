@@ -144,14 +144,14 @@ impl App {
     /// installé plutôt que la copie embarquée : c'est celui qu'on va ouvrir, et
     /// l'élève a pu le renommer dans son propre énoncé.
     pub(super) fn exercise_title(file_name: &str) -> Option<String> {
-        let path = super::data_dir().join("examples").join(file_name);
+        let path = super::elf_examples_dir().join(file_name);
         let src = std::fs::read_to_string(path).ok()?;
         crate::exercise::parse(&src).title
     }
 
     /// Ouvre un exercice du dossier des exemples, par son nom de fichier.
     pub(super) fn open_exercise_file(&mut self, file_name: &str) {
-        let path = super::data_dir().join("examples").join(file_name);
+        let path = super::elf_examples_dir().join(file_name);
         if !path.exists() {
             self.log(&format!(
                 "{} {}",
