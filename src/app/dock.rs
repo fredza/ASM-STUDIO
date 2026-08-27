@@ -76,9 +76,7 @@ impl Panel {
             Panel::Syscalls => t("Appels système", "Syscalls", "Llamadas al sistema"),
             Panel::Simd => "SSE / FPU",
             Panel::Format => t("Format", "Format", "Formato"),
-            // « Exercices » seul ne disait pas où était le tutoriel — et un
-            // élève qui avait écarté le bandeau d'accueil ne le retrouvait plus.
-            Panel::Exercise => t("Tutoriel / Exercices", "Tutorial / Exercises", "Tutorial / Ejercicios"),
+            Panel::Exercise => t("Exercices", "Exercises", "Ejercicios"),
         }
         .to_string()
     }
@@ -124,11 +122,9 @@ impl Panel {
 ///   └──────────┴──────────────────────────┴─────────────┘
 /// ```
 ///
-/// Le panneau du parcours n'y figure PAS : le mode complet est celui de qui
-/// n'apprend plus, et y laisser l'onglet « Tutoriel / Exercices » contredisait
-/// le mode qu'on venait de choisir. Il n'est pas pour autant injoignable —
-/// ouvrir un fichier qui déclare des attentes le rouvre tout seul (voir
-/// [`App::reload_exercise`]), et le menu Affichage ▸ Panneaux le propose.
+/// Le module Exercices n'y figure pas : il est appelé lorsqu'un exercice est
+/// ouvert, puis s'ancre près de l'éditeur. Le parcours est sa grande boîte
+/// propre, disponible en mode Apprentissage.
 pub(crate) fn default_layout() -> DockState<Panel> {
     // Surface principale : le centre, avec ses trois onglets empilés.
     let mut state = DockState::new(vec![Panel::Editor, Panel::Disasm, Panel::MemMap]);
@@ -171,12 +167,12 @@ pub(crate) const ADVANCED: [Panel; 7] = [
     Panel::Format,
 ];
 
-/// Disposition du mode apprentissage : neuf panneaux au lieu de quatorze.
+/// Disposition du mode apprentissage : huit panneaux au lieu de quatorze.
 ///
 /// ```text
 ///   ┌──────────┬────────────────────────┬─────────────┐
-///   │ EXPLORER │  Éditeur               │ Tutoriel /  │
-///   │          │                        │ Instruction │
+///   │ EXPLORER │  Éditeur               │ Instruction │
+///   │          │                        │             │
 ///   │          ├────────────────────────┤             │
 ///   │          │ Registres │Flags│ Pile │             │
 ///   │          ├────────────────────────┤             │
@@ -187,15 +183,10 @@ pub(crate) fn learning_layout() -> DockState<Panel> {
     let mut state = DockState::new(vec![Panel::Editor]);
     let surface = state.main_surface_mut();
     let [center, _explorer] = surface.split_left(NodeIndex::root(), 0.17, vec![Panel::Explorer]);
-    // Le parcours est le PREMIER onglet de sa bande, donc celui qui s'affiche.
-    // « Instruction » l'était, et le tutoriel se cachait derrière un onglet que
-    // rien n'invitait à cliquer : le mode Apprentissage ouvrait sur un panneau
-    // qui dit « Lancez le programme, puis cliquez une instruction » à qui n'a
-    // pas encore de programme. Le parcours passe devant ; l'instruction reste
-    // à un clic, et les leçons qui en parlent l'amènent d'elles-mêmes au
-    // premier plan (voir `Lesson::panels`).
-    let [center, _right] =
-        surface.split_right(center, 0.72, vec![Panel::Exercise, Panel::Instruction]);
+    // Le parcours est une grande boîte dédiée, ouverte depuis « Apprendre » :
+    // il ne réduit plus l'espace de code et ne partage plus son identité avec
+    // les exercices. L'instruction garde donc cette bande pour elle seule.
+    let [center, _right] = surface.split_right(center, 0.72, vec![Panel::Instruction]);
     let [center, cpu] = surface.split_below(
         center,
         0.55,
@@ -333,6 +324,12 @@ impl App {
     /// `None` si aucun voisin n'est ouvert (l'élève a tout fermé autour) :
     /// l'appelant retombe alors sur la zone active.
     fn home_leaf_for(&self, panel: Panel) -> Option<(SurfaceIndex, NodeIndex)> {
+        // Le module Exercices n'appartient à aucune disposition par défaut : il
+        // est appelé à la demande. Quand il s'ouvre, le joindre à l'éditeur le
+        // garde près du code à modifier, sans réintroduire une colonne fixe.
+        if panel == Panel::Exercise {
+            return self.dock.as_ref()?.find_tab(&Panel::Editor).map(|(surface, node, _)| (surface, node));
+        }
         let mut reference = layout_for(self.mode);
         // Un panneau absent de la disposition du mode courant n'a pas de place
         // à y lire : c'est le cas du parcours en mode complet, qui s'y rouvre
@@ -653,6 +650,9 @@ impl App {
             return;
         }
         self.mode = mode;
+        if mode != super::UiMode::Learning {
+            self.show_tutorial_dialog = false;
+        }
         self.dock = Some(layout_for(mode));
         self.keep_examples_closed_outside_learning();
         self.save_settings();
@@ -700,17 +700,15 @@ mod tests {
         }
     }
 
-    /// La disposition par défaut contient tous les panneaux SAUF le parcours :
-    /// il appartient au mode Apprentissage, et le laisser en mode complet
-    /// contredisait le mode qu'on venait de choisir. Aucun autre ne peut
-    /// manquer, sous peine d'être injoignable au premier lancement.
+    /// La disposition par défaut contient tous les panneaux sauf le module
+    /// Exercices, qui s'ouvre seulement avec un exercice concret.
     #[test]
     fn default_layout_contains_every_panel_but_the_path() {
         let state = default_layout();
         let present: Vec<Panel> = state.iter_all_tabs().map(|(_, t)| *t).collect();
         for p in Panel::ALL {
             if p == Panel::Exercise {
-                assert!(!present.contains(&p), "le parcours n'a rien à faire en mode complet");
+                assert!(!present.contains(&p), "les exercices ne s'ouvrent qu'à la demande");
                 continue;
             }
             assert!(present.contains(&p), "{p:?} absent de la disposition par défaut");
@@ -720,28 +718,16 @@ mod tests {
             Panel::ALL.len() - 1,
             "panneau dupliqué ou manquant : {present:?}"
         );
-        // Et il reste joignable : la disposition d'apprentissage lui garde sa
-        // place, que `home_leaf_for` relit pour le rouvrir là quand un fichier
-        // déclare des attentes en mode complet.
-        assert!(learning_layout().find_tab(&Panel::Exercise).is_some());
+        assert!(learning_layout().find_tab(&Panel::Exercise).is_none());
     }
 
-    /// En mode Apprentissage, le parcours est l'onglet qu'on VOIT.
-    ///
-    /// Il partageait sa bande avec « Instruction », placé devant lui : le mode
-    /// destiné au débutant s'ouvrait donc sur « Lancez le programme, puis
-    /// cliquez une instruction », adressé à qui n'a pas encore de programme,
-    /// pendant que le tutoriel attendait derrière un onglet muet.
+    /// Le mode Apprentissage garde l'espace de code libre : le parcours est
+    /// une grande boîte, et les exercices sont appelés à la demande.
     #[test]
-    fn the_learning_layout_shows_the_path_first() {
+    fn learning_layout_keeps_tutorial_and_exercises_out_of_the_dock() {
         let state = learning_layout();
-        let (surface, node, index) = state.find_tab(&Panel::Exercise).expect("le parcours est là");
-        assert_eq!(index.0, 0, "le parcours est le premier onglet de sa bande, donc l'actif");
-        let siblings: Vec<Panel> = state[surface][node].iter_tabs().copied().collect();
-        assert!(
-            siblings.contains(&Panel::Instruction),
-            "il garde « Instruction » à un clic : {siblings:?}"
-        );
+        assert!(state.find_tab(&Panel::Exercise).is_none(), "le module Exercices n'est pas imposé");
+        assert!(state.find_tab(&Panel::Instruction).is_some());
     }
 
     /// Le centre doit rester la zone principale, avec l'éditeur au premier plan.

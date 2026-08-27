@@ -1179,8 +1179,8 @@ impl App {
         let t_tuto_h = self.tr3("Parcours guidé", "Guided path", "Recorrido guiado");
         // La case « activer le tutoriel » a disparu : elle doublait le mode
         // d'affichage sans lui être liée, et l'on pouvait la décocher tout en
-        // restant en mode Apprentissage. Le parcours s'ouvre et se referme
-        // maintenant avec le mode, depuis le menu Apprendre ou la barre d'état.
+        // restant en mode Apprentissage. Le parcours s'ouvre désormais dans sa
+        // grande boîte depuis le menu Apprendre, sans encombrer les panneaux.
         let t_tuto_where = self.tr3(
             "Le parcours s'offre en mode Apprentissage. Menu Apprendre, ou l'étiquette du mode en bas à droite.",
             "The path is offered in Learning mode. Learn menu, or the mode label at the bottom right.",
@@ -1189,11 +1189,11 @@ impl App {
         let t_tuto_desc = self.tr3(
             "Un parcours en quatre niveaux, du premier programme à l'analyse de binaires. \
              Chaque leçon charge son propre programme dans l'éditeur, ouvre les panneaux \
-             qu'elle explique, et embarque ses attentes : le panneau Exercice dit si c'est \
+             qu'elle explique, et embarque ses attentes : la boîte du parcours dit si c'est \
              juste. La progression est conservée d'une session à l'autre.",
             "A four-level path, from your first program to binary analysis. Each lesson loads \
              its own program into the editor, opens the panels it explains, and carries its \
-             expectations: the Exercise panel tells you if it is right. Progress is kept \
+             expectations: the learning dialog tells you if it is right. Progress is kept \
              between sessions.",
             "Un recorrido de cuatro niveles, del primer programa al análisis de binarios. Cada \
              lección carga su programa, abre los paneles que explica y lleva sus expectativas. \

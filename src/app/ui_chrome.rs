@@ -785,7 +785,7 @@ impl App {
                     ui.separator();
                     if item(
                         ui,
-                        tr("Exemples et exercices…", "Examples and exercises…", "Ejemplos y ejercicios…"),
+                        tr("Catalogue d'exercices…", "Exercise catalogue…", "Catálogo de ejercicios…"),
                         "",
                     ) {
                         self.open_examples_dir();

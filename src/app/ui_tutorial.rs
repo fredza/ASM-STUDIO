@@ -1,14 +1,14 @@
-//! Panneau TUTORIEL : le parcours guidé, relié aux outils de l'IDE.
+//! Grande boîte TUTORIEL : le parcours guidé, relié aux outils de l'IDE.
 //!
 //! Charger une leçon ne se contente pas d'afficher son texte : le programme de
 //! départ entre dans l'éditeur, les panneaux dont la leçon parle s'ouvrent, et
-//! ses attentes arment le panneau Exercice. L'élève lit et manipule au même
-//! endroit.
+//! ses attentes restent dans cette boîte. L'élève lit et manipule au même
+//! endroit, sans perdre l'espace du code.
 
 use eframe::egui::{self, RichText};
 
 use super::dock::Panel;
-use super::{accent, App, flag_on, card};
+use super::{accent, App, flag_on, card, dialog_window};
 use crate::i18n;
 use crate::tutorial::{self, Level, Lesson};
 
@@ -18,7 +18,7 @@ impl App {
     /// Ce n'est pas un réglage à part : le mode Apprentissage EST le parcours.
     /// Les deux ont longtemps été deux booléens sans lien, et l'interface
     /// pouvait alors annoncer « Apprentissage » dans la barre d'état pendant
-    /// que le panneau ✦ ne montrait plus que les attentes du fichier courant.
+    /// que l'IDE ne proposait plus clairement le parcours.
     pub(super) fn tutorial_enabled(&self) -> bool {
         self.mode == super::UiMode::Learning
     }
@@ -29,11 +29,9 @@ impl App {
     /// disposition dans le menu Affichage et remet donc les panneaux en place.
     /// Ici, l'élève a demandé le tutoriel, pas un changement de mise en page :
     /// lui défaire ses panneaux au passage serait un effet de bord — celui qui
-    /// frappait « Revoir l'écran d'accueil ». On garantit seulement que le
-    /// panneau qui héberge le parcours est visible.
+    /// frappait « Revoir l'écran d'accueil ».
     pub(super) fn enter_learning(&mut self) {
         self.mode = super::UiMode::Learning;
-        self.show_panel(super::dock::Panel::Exercise);
     }
 
     /// Remet le parcours à zéro, comme au tout premier lancement : oublie les
@@ -45,7 +43,7 @@ impl App {
         // Repartir de zéro, c'est retrouver l'expérience du nouveau venu.
         self.welcome_dismissed = false;
         self.enter_learning();
-        self.focus_panel(super::dock::Panel::Exercise);
+        self.show_tutorial_dialog = true;
         self.status = i18n::tr3(
             self.lang,
             "Progression du tutoriel réinitialisée.",
@@ -59,14 +57,12 @@ impl App {
     /// Ouvre le tutoriel : l'allume s'il était éteint, l'amène au premier plan,
     /// et revient au sommaire si aucune leçon n'est en cours.
     ///
-    /// C'est le seul chemin d'accès, appelé par le bandeau d'accueil, le menu
-    /// Apprendre et la palette. Il en manquait un : une fois le bandeau écarté,
-    /// plus rien dans l'interface ne menait au parcours — le panneau qui
-    /// l'héberge s'appelait « Exercices », et le mot « tutoriel »
-    /// n'apparaissait nulle part.
+    /// C'est le chemin d'accès appelé par le bandeau d'accueil, le menu
+    /// Apprendre et la palette ; il place le parcours au premier plan sans
+    /// modifier la disposition de travail.
     pub(super) fn open_tutorial(&mut self) {
         self.enter_learning();
-        self.focus_panel(super::dock::Panel::Exercise);
+        self.show_tutorial_dialog = true;
         self.status = i18n::tr3(
             self.lang,
             "Tutoriel ouvert.",
@@ -165,6 +161,9 @@ impl App {
             ));
             return;
         }
+        // Un exercice est une activité à part entière : on quitte la leçon
+        // pour rendre l'éditeur et son module de correction pleinement lisibles.
+        self.show_tutorial_dialog = false;
         self.open_file(path);
     }
 
@@ -178,6 +177,7 @@ impl App {
     /// Charge une leçon : programme de départ, panneaux, et mise au point.
     pub(super) fn load_lesson_now(&mut self, lesson: &Lesson) {
         self.tutorial_current = Some(lesson.id.to_string());
+        self.show_tutorial_dialog = true;
         // Une leçon du parcours Windows suppose la cible qui va avec : sinon
         // `nasm -f elf64` refuse son « extern ExitProcess », et l'élève lit une
         // erreur qui ne parle pas de ce qu'il est en train d'apprendre.
@@ -209,6 +209,9 @@ impl App {
         // Ouvre ce dont la leçon parle : elle met sous les yeux ce qu'elle explique.
         for key in &lesson.panels {
             if let Some(p) = Panel::from_key(key)
+                // Les attentes font partie du dialogue de la leçon ; ouvrir le
+                // module Exercices ici dupliquerait le même contenu.
+                && p != Panel::Exercise
                 && !self.panel_is_open(p) {
                     self.show_panel(p);
                 }
@@ -216,8 +219,40 @@ impl App {
         self.save_settings();
     }
 
-    /// Sommaire du parcours. L'aiguillage vers une leçon ouverte se fait dans
-    /// `exercise_ui`, qui héberge désormais les deux.
+    /// Grande boîte du parcours : sommaire ou leçon active, sans rogner
+    /// l'éditeur ni se confondre avec le module Exercices.
+    pub(super) fn tutorial_dialog_ui(&mut self, ctx: &egui::Context) {
+        if !self.show_tutorial_dialog || !self.tutorial_enabled() {
+            return;
+        }
+
+        let lang = self.lang;
+        let mut open = true;
+        dialog_window(
+            ctx,
+            i18n::tr3(lang, "✦ Parcours d'apprentissage", "✦ Learning path", "✦ Recorrido de aprendizaje"),
+        )
+        .resizable(true)
+        .default_width(780.0)
+        .default_height(700.0)
+        .min_width(620.0)
+        .min_height(460.0)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            let current = self
+                .tutorial_current
+                .clone()
+                .and_then(|id| crate::tutorial::find(&id));
+            if let Some(lesson) = current {
+                self.lesson_ui(ui, &lesson);
+            } else {
+                self.tutorial_toc_ui(ui);
+            }
+        });
+        self.show_tutorial_dialog = open;
+    }
+
+    /// Sommaire du parcours.
     pub(super) fn tutorial_toc_ui(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
@@ -599,9 +634,9 @@ impl App {
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(tr(
-                            "Le programme de la leçon est dans l'éditeur, avec ses attentes. Appuyez sur F5 : le panneau Exercice dira si c'est bon.",
-                            "The lesson's program is in the editor, with its expectations. Press F5: the Exercise panel will tell you if it is right.",
-                            "El programa de la lección está en el editor, con sus expectativas. Pulse F5: el panel Ejercicio dirá si está bien.",
+                            "Le programme de la leçon est dans l'éditeur, avec ses attentes. Appuyez sur F5 : cette boîte dira si c'est bon.",
+                            "The lesson's program is in the editor, with its expectations. Press F5: this dialog will tell you if it is right.",
+                            "El programa de la lección está en el editor, con sus expectativas. Pulse F5: este diálogo dirá si está bien.",
                         ))
                         .size(12.0)
                         .weak(),
@@ -938,9 +973,13 @@ mod tests {
         assert_eq!(app.exercise.expectations.len(), 2, "rbx == 100 et exit == 0");
         for key in &lesson.panels {
             let p = Panel::from_key(key).expect("clé de panneau valide");
+            if p == Panel::Exercise {
+                continue;
+            }
             assert!(app.panel_is_open(p), "{key} doit être ouvert par la leçon");
         }
         assert_eq!(app.tutorial_current.as_deref(), Some("registres"));
+        assert!(app.show_tutorial_dialog, "la leçon s'affiche dans sa grande boîte");
     }
 
     /// « Réinitialiser » fait repartir de zéro comme au premier lancement :
@@ -966,7 +1005,7 @@ mod tests {
         assert!(app.tutorial_current.is_none(), "retour au sommaire");
         assert!(!app.welcome_dismissed, "le bandeau d'accueil réapparaît");
         assert!(app.tutorial_enabled(), "le tutoriel est rallumé");
-        assert!(app.panel_is_open(Panel::Exercise), "et le panneau Exercices est ouvert");
+        assert!(app.show_tutorial_dialog, "et la boîte du parcours est ouverte");
     }
 
     /// L'invariant qui manquait : le parcours et le mode ne font qu'un.
@@ -1006,7 +1045,7 @@ mod tests {
         assert!(!app.welcome_dismissed, "le bandeau revient");
         assert_eq!(app.mode, crate::app::UiMode::Learning, "dans le mode qui le montre");
         assert!(!app.panel_is_open(Panel::Console), "et la disposition tient");
-        assert!(app.panel_is_open(Panel::Exercise), "le panneau du parcours est là");
+        assert!(!app.show_tutorial_dialog, "l'accueil ne force pas le parcours");
     }
 
     /// « Reprendre » rouvre la leçon en cours, sinon la première à faire.
@@ -1156,34 +1195,35 @@ mod tests {
         assert_eq!(next.id, "registres", "l'ordre du parcours est respecté");
     }
 
-    /// Le panneau Exercices se rend dans tous ses états — sommaire, leçon
+    /// La boîte Tutoriel se rend dans tous ses états — sommaire, leçon
     /// ouverte, leçon annoncée, identifiant périmé, et tutoriel désactivé.
     #[test]
-    fn tutorial_panel_renders_in_both_states() {
+    fn tutorial_dialog_renders_in_both_states() {
         let mut app = App::new();
         app.enter_learning();
+        app.show_tutorial_dialog = true;
         let ctx = egui::Context::default();
 
         app.tutorial_current = None;
         let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+            app.tutorial_dialog_ui(ctx);
         });
 
         app.tutorial_current = Some("pile".into());
         let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+            app.tutorial_dialog_ui(ctx);
         });
 
         // Une leçon annoncée mais non rédigée doit se rendre sans paniquer.
         app.tutorial_current = Some("shellcode".into());
         let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+            app.tutorial_dialog_ui(ctx);
         });
 
         // Un identifiant disparu retombe sur le sommaire au lieu de planter.
         app.tutorial_current = Some("lecon_inexistante".into());
         let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+            app.tutorial_dialog_ui(ctx);
         });
     }
 
@@ -1194,7 +1234,7 @@ mod tests {
         use std::path::PathBuf;
         let mut app = App::new();
         app.enter_learning();
-        assert!(app.panel_is_open(Panel::Exercise));
+        assert!(!app.panel_is_open(Panel::Exercise));
 
         let lesson = tutorial::find("premier_programme").expect("leçon présente");
         app.load_lesson(&lesson);
@@ -1454,11 +1494,9 @@ mod tests {
         app.welcome_dismissed = true;
         app.set_ui_mode(crate::app::UiMode::Full);
         app.tutorial_current = Some("boucles".to_string());
-        app.hide_panel(Panel::Exercise);
-
         app.run_command(Command::OpenTutorial);
         assert!(app.tutorial_enabled(), "le tutoriel se rallume tout seul");
-        assert!(app.panel_is_open(Panel::Exercise), "son panneau s'ouvre");
+        assert!(app.show_tutorial_dialog, "sa boîte s'ouvre");
         assert_eq!(app.tutorial_current, None, "et on revient au sommaire");
 
         // Le bandeau, lui aussi, doit pouvoir revenir.
@@ -1466,11 +1504,10 @@ mod tests {
         assert!(!app.welcome_dismissed, "le bandeau réapparaît");
         assert_eq!(app.mode, crate::app::UiMode::Learning, "et dans le mode où il s'affiche");
 
-        // Enfin, le panneau annonce ce qu'il contient : sans le mot, personne ne
-        // devine que le parcours est là.
+        // Le module désormais séparé annonce seulement les exercices.
         for lang in [i18n::Lang::Fr, i18n::Lang::En, i18n::Lang::Es] {
             let title = Panel::Exercise.title(lang).to_lowercase();
-            assert!(title.contains("tutorial") || title.contains("tutoriel"), "titre : {title}");
+            assert!(!title.contains("tutorial") && !title.contains("tutoriel"), "titre : {title}");
         }
     }
 

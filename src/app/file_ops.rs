@@ -229,6 +229,9 @@ impl App {
         // Les exemples sont du contenu pédagogique : les ouvrir fait entrer
         // dans le seul mode où leur dossier peut être la racine de travail.
         self.enter_learning();
+        // Le catalogue est la porte d'entrée explicite des exercices ; il ne
+        // laisse pas une leçon ouverte par-dessus le choix du fichier.
+        self.show_tutorial_dialog = false;
         let dir = super::examples_dir();
         // Créé au premier lancement, mais on s'en assure : un dossier absent
         // laisserait l'explorateur vide sans explication.

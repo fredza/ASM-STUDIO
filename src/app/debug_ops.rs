@@ -167,9 +167,10 @@ impl App {
     pub(super) fn reload_exercise(&mut self) {
         self.exercise = crate::exercise::parse(&self.source);
         self.checks.clear();
-        // Un fichier qui déclare des attentes ouvre son panneau : l'élève ne
-        // devrait pas avoir à deviner qu'il y a un énoncé à lire.
-        if self.has_exercise() {
+        // Un exercice ouvert à la demande révèle son module. Les attentes des
+        // leçons restent dans la grande boîte du parcours, pour ne pas dupliquer
+        // l'énoncé ni réduire l'espace de code.
+        if self.has_exercise() && !self.show_tutorial_dialog {
             self.show_panel(super::dock::Panel::Exercise);
         }
         for e in &self.exercise.errors.clone() {

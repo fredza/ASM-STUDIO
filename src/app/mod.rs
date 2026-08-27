@@ -588,6 +588,10 @@ pub struct App {
     /// parcours. Le mode le porte désormais seul (voir [`App::tutorial_enabled`]).
     pub(super) tutorial_progress: crate::tutorial::Progress,
     pub(super) tutorial_current: Option<String>,
+    /// Grande boîte du parcours guidé. Elle n'est pas persistée : au prochain
+    /// lancement, l'élève retrouve l'IDE et peut reprendre le parcours quand il
+    /// le souhaite, sans une fenêtre pédagogique imposée au-dessus de son code.
+    pub(super) show_tutorial_dialog: bool,
     /// Indices déjà demandés, et pour quelle leçon. L'identifiant est gardé avec
     /// le compte pour que changer de leçon reparte de zéro sans qu'aucun chemin
     /// d'ouverture n'ait à y penser — il y en a quatre, et l'oubli d'un seul
@@ -871,6 +875,7 @@ impl App {
             welcome_dismissed: false,
             tutorial_progress: crate::tutorial::Progress::default(),
             tutorial_current: None,
+            show_tutorial_dialog: false,
             tutorial_hints: None,
             scroll_to_sel: None,
             mode: UiMode::Learning,
@@ -1185,6 +1190,7 @@ impl App {
             self.pedagogy_predict,
             self.microscope.is_some(),
             self.diagnosis.is_some(),
+            self.show_tutorial_dialog,
             updater_shown,
         ]
         .into_iter()
@@ -1250,6 +1256,7 @@ impl eframe::App for App {
         // en rendu à la demande, l'ancienne image resterait affichée jusqu'au
         // prochain événement (dialogue « collé » à l'écran).
         let dialogs_before = self.open_dialog_count();
+        self.tutorial_dialog_ui(ctx);
         self.about_window(ctx);
         self.license_window(ctx);
         self.shortcuts_window(ctx);

@@ -1,8 +1,7 @@
-//! Panneau EXERCICE : énoncé et attentes vérifiées.
+//! Module EXERCICES : énoncé et attentes vérifiées.
 //!
-//! Onglet ancrable comme les autres. Il s'ouvre tout seul quand le fichier
-//! chargé déclare des attentes (`;@attendu`), et explique comment en écrire
-//! quand ce n'est pas le cas.
+//! Il est indépendant du parcours guidé. L'onglet s'ouvre seulement lorsqu'un
+//! exercice concret est chargé ; le tutoriel garde sa propre grande boîte.
 
 use eframe::egui::{self, RichText};
 
@@ -16,38 +15,8 @@ impl App {
         self.exercise.is_exercise()
     }
 
-    /// Panneau EXERCICES : le parcours guidé ET la vérification du fichier
-    /// courant, au même endroit.
-    ///
-    /// Les deux étaient séparés, alors qu'ils décrivent la même chose : une
-    /// leçon charge un programme dont les attentes sont vérifiées ici. Ouvrir
-    /// les deux panneaux affichait deux fois le même énoncé, et consommait deux
-    /// places dans la disposition.
+    /// Module EXERCICES, appelé lorsqu'un fichier auto-corrigé est ouvert.
     pub(super) fn exercise_ui(&mut self, ui: &mut egui::Ui) {
-        // Leçon ouverte : elle affiche son contenu ET ses attentes en bas.
-        if self.tutorial_enabled() {
-            let current = self
-                .tutorial_current
-                .clone()
-                .and_then(|id| crate::tutorial::find(&id));
-            if let Some(lesson) = current {
-                self.lesson_ui(ui, &lesson);
-                return;
-            }
-            self.tutorial_toc_ui(ui);
-            // Sous le sommaire, on n'ajoute la vérification que s'il y a
-            // quelque chose à vérifier. Sinon `checks_ui` déroulait son mode
-            // d'emploi des directives « ;@attendu » — un sujet d'AUTEUR
-            // d'exercice — juste sous le parcours d'un débutant, qui y lisait la
-            // grammaire d'un langage d'énoncés avant d'avoir écrit un `mov`.
-            if self.has_exercise() {
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
-                self.checks_ui(ui);
-            }
-            return;
-        }
         self.checks_ui(ui);
     }
 
@@ -385,10 +354,7 @@ _start:
         // parcours ET les attentes du fichier courant. Ne mentionner que les
         // exercices avait une conséquence concrète — un élève qui avait écarté
         // le bandeau d'accueil ne retrouvait plus le tutoriel.
-        assert_eq!(
-            Panel::Exercise.title(crate::i18n::Lang::Fr),
-            "Tutoriel / Exercices"
-        );
+        assert_eq!(Panel::Exercise.title(crate::i18n::Lang::Fr), "Exercices");
 
         let mut app = App::new();
         let ctx = egui::Context::default();
@@ -431,7 +397,7 @@ _start:
     fn the_merged_panel_is_an_ordinary_one() {
         use crate::app::dock::Panel;
         let app = App::new();
-        assert!(app.panel_is_open(Panel::Exercise), "présent dès le départ");
+        assert!(!app.panel_is_open(Panel::Exercise), "absent au démarrage");
         // Le compte est figé pour qu'un panneau ajouté sans être inscrit dans
         // `ALL` — donc absent du menu Panneaux et de la palette — se voie.
         assert_eq!(Panel::ALL.len(), 16, "seize panneaux, ni plus ni moins");
