@@ -931,6 +931,26 @@ impl App {
         app
     }
 
+    /// Comme [`Self::new`], et ouvre le fichier nommé sur la ligne de commande.
+    ///
+    /// Sans cela l'application ignorait son argument : lancée avec un chemin,
+    /// elle s'ouvrait sur son écran d'accueil comme si de rien n'était. Un
+    /// outil qui lui passe la main — Desdec, qui exporte une fonction en NASM
+    /// — n'avait alors d'autre recours que de copier le chemin et de laisser
+    /// l'utilisateur l'ouvrir lui-même.
+    ///
+    /// Un chemin qui n'existe pas ou ne se lit pas laisse l'accueil habituel :
+    /// démarrer sur une erreur pour un argument que personne n'a peut-être
+    /// tapé serait pire que de l'ignorer.
+    #[must_use]
+    pub fn new_opening(path: Option<std::path::PathBuf>) -> Self {
+        let mut app = Self::new();
+        if let Some(path) = path.filter(|path| path.is_file()) {
+            app.open_file(path);
+        }
+        app
+    }
+
     // ---------- Persistance des réglages ----------
 
     pub(super) fn load_settings(&mut self) {

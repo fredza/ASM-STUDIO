@@ -42,6 +42,12 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "ASM Studio",
         native_options,
-        Box::new(|_cc| Ok(Box::new(app::App::new()))),
+        // Le premier argument, quand il y en a un, est le fichier à ouvrir :
+        // c'est ce qu'attend un gestionnaire de fichiers (`%f` dans le
+        // `.desktop`) comme un outil qui passe la main.
+        Box::new(|_cc| {
+            let opening = std::env::args_os().nth(1).map(std::path::PathBuf::from);
+            Ok(Box::new(app::App::new_opening(opening)))
+        }),
     )
 }
