@@ -12,7 +12,28 @@ env:
 jobs:
   check:
     name: Tests, clippy et format
-    runs-on: ubuntu-latest
+    # Où tourne ce travail, et comment le déplacer sans toucher à ce fichier.
+    #
+    # `CI_RUNNER` est une variable de dépôt. Absente — et elle l'est tant que
+    # personne ne la pose — ceci lit `ubuntu-latest` et rien ne change. Posée
+    # aux étiquettes d'un runner à soi, le travail va là-bas :
+    #
+    #     gh variable set CI_RUNNER --body '["self-hosted","asm-studio"]'
+    #     gh variable delete CI_RUNNER          # et retour chez GitHub
+    #
+    # Une variable plutôt qu'une valeur écrite ici, parce qu'une machine à soi
+    # s'éteint. Un travail épinglé sur un runner qui n'écoute pas n'échoue
+    # pas : il attend vingt-quatre heures avant d'échouer, et il faudrait
+    # modifier ce fichier — puis pousser — pour s'en sortir.
+    #
+    # La variable contient du **JSON** : `runs-on` accepte une étiquette ou un
+    # tableau, et un runner à soi en porte plusieurs. `self-hosted` nu n'est
+    # pas du JSON et ne sera pas lu ; `"self-hosted"` l'est. `fromJSON` reçoit
+    # quelque chose de lisible dans les deux cas plutôt que d'être gardé par
+    # un `&&`, dont le court-circuit déciderait entre lire la variable et
+    # appeler `fromJSON('')` — une erreur qui ferait échouer le travail avant
+    # sa première ligne.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,7 +45,15 @@ jobs:
       # l'IDE pilote, et une bonne part des tests assemble puis exécute
       # réellement un binaire. Les bibliothèques X11/Wayland sont celles dont
       # glutin a besoin pour se compiler, même sans écran.
+      #
+      # Seulement sur un runner de GitHub : `apt-get` est celui de l'image
+      # Ubuntu qu'ils fournissent, et une machine à soi n'est pas forcément
+      # une Debian — celle qui fait tourner ce dépôt est une Fedora, où cette
+      # étape échouerait à sa première ligne. Sur un runner à soi, ces outils
+      # sont installés une fois avec le gestionnaire de paquets de la machine,
+      # et l'étape suivante vérifie qu'ils y sont plutôt que de le supposer.
       - name: Dépendances système
+        if: runner.environment == 'github-hosted'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -32,6 +61,46 @@ jobs:
             libxkbcommon-dev libwayland-dev \
             libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
             libgl1-mesa-dev
+
+      # Ce qu'un runner à soi doit fournir, dit au départ plutôt qu'au milieu
+      # d'une erreur de l'éditeur de liens. Une machine à qui il manque `nasm`
+      # échoue ici en une seconde, en le nommant, au lieu d'échouer vingt
+      # minutes plus tard sur un message qui parle d'autre chose.
+      #
+      # `ptrace_scope` en fait partie : les tests forkent et tracent leurs
+      # propres enfants, ce que Yama refuse au-delà de 1. C'est un réglage de
+      # la machine, pas du dépôt, et il ne se voit dans aucun message d'échec
+      # de cargo.
+      - name: Vérifier ce que la machine fournit
+        if: runner.environment == 'self-hosted'
+        run: |
+          manque=0
+          for outil in nasm ld cc; do
+            if command -v "$outil" >/dev/null; then
+              printf '  %-14s %s\n' "$outil" "$(command -v "$outil")"
+            else
+              printf '  %-14s ABSENT\n' "$outil"
+              manque=1
+            fi
+          done
+          for lib in x11 xi xcursor xrandr xkbcommon wayland-client gl; do
+            if pkg-config --exists "$lib"; then
+              printf '  %-14s %s\n' "$lib" "$(pkg-config --modversion "$lib")"
+            else
+              printf '  %-14s ABSENT\n' "$lib"
+              manque=1
+            fi
+          done
+          scope="$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)"
+          printf '  %-14s %s\n' ptrace_scope "$scope"
+          if [ "$scope" -gt 1 ]; then
+            echo "::error::ptrace_scope=$scope : les tests ne pourront pas tracer leurs enfants"
+            manque=1
+          fi
+          if [ "$manque" -ne 0 ]; then
+            echo "::error::il manque de quoi compiler ou tester sur ce runner"
+            exit 1
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
