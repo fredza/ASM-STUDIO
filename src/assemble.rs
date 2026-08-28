@@ -364,9 +364,9 @@ fn nasm_to(
         .args(&inc_args)
         .arg(src)
         .arg("-o")
-        .arg(&obj)
+        .arg(obj)
         .arg("-l")
-        .arg(&listing)
+        .arg(listing)
         .output()
         .map_err(|e| {
             let what = i18n::tr3(lang, "impossible de lancer", "could not run", "no se pudo ejecutar");

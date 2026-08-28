@@ -216,7 +216,7 @@ pub(super) fn grouped_recent_path(path: PathBuf) -> PathBuf {
         Some(name) => windows_examples_dir().join(name),
         None => elf_examples_dir().join(legacy_name),
     };
-    grouped.is_file().then_some(grouped).unwrap_or(path)
+    if grouped.is_file() { grouped } else { path }
 }
 
 /// Le catalogue d'exemples doit-il être parcouru ?

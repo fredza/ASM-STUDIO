@@ -1159,8 +1159,12 @@ fn snapshot_of(
     let mut stack = [0u64; STACK_WINDOW];
     match read_mem_at(mem, regs.rsp, STACK_WINDOW * 8) {
         Ok(bytes) => {
-            for (word, chunk) in stack.iter_mut().zip(bytes.chunks_exact(8)) {
-                *word = u64::from_le_bytes(chunk.try_into().expect("chunks_exact(8)"));
+            // `as_chunks` rend des `[u8; 8]` plutôt que des tranches dont
+            // la longueur n'est connue qu'à l'exécution : le `try_into` et
+            // son `expect` qui l'accompagnaient n'ont plus lieu d'être.
+            let (mots, _reste) = bytes.as_chunks::<8>();
+            for (word, chunk) in stack.iter_mut().zip(mots) {
+                *word = u64::from_le_bytes(*chunk);
             }
         }
         Err(_) => {
