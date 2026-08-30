@@ -444,6 +444,26 @@ impl App {
         self.guarded(super::unsaved::PendingAction::OpenFile(path));
     }
 
+    /// Développe les tabulations d'un source qu'on vient de lire, et le dit à
+    /// l'élève plutôt que de le faire en silence.
+    ///
+    /// Voir [`super::edit_ops::expand_tabs`] pour la raison : egui rend un
+    /// `\t` à avance fixe, sans taquets.
+    fn expand_tabs_on_open(&mut self, source: String) -> String {
+        match super::edit_ops::expand_tabs(&source) {
+            Some(expanded) => {
+                self.log(i18n::tr3(
+                    self.lang,
+                    "Tabulations converties en espaces à l'ouverture.",
+                    "Tabs converted to spaces on open.",
+                    "Tabulaciones convertidas en espacios al abrir.",
+                ));
+                expanded
+            }
+            None => source,
+        }
+    }
+
     pub(super) fn open_file_now(&mut self, path: PathBuf) {
         if crate::project::Project::is_manifest(&path) {
             self.open_project_now(path);
@@ -451,6 +471,7 @@ impl App {
         }
         match std::fs::read_to_string(&path) {
             Ok(content) => {
+                let content = self.expand_tabs_on_open(content);
                 let seeded_example = path.starts_with(super::examples_dir());
                 if seeded_example {
                     self.enter_learning();
@@ -518,6 +539,7 @@ impl App {
                 return;
             }
         };
+        let source = self.expand_tabs_on_open(source);
         if project.target.is_windows() {
             self.pe_enabled = true;
         }

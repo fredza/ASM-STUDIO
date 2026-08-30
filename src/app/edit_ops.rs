@@ -97,6 +97,46 @@ pub(super) fn leading_indent(line: &str) -> &str {
     &line[..end]
 }
 
+/// Développe les tabulations d'un source jusqu'au taquet suivant.
+///
+/// egui rend un `\t` avec une avance fixe de quatre espaces, sans notion de
+/// taquet : dans un fichier venu d'un autre éditeur, les colonnes tombent à
+/// côté dès qu'une ligne mélange espaces et tabulations. On développe à
+/// l'ouverture plutôt que d'afficher un alignement faux — l'IDE n'indente
+/// qu'en espaces de toute façon (voir [`INDENT`]).
+///
+/// Renvoie `None` quand il n'y avait aucune tabulation : rien à recopier, et
+/// rien à annoncer à l'élève.
+pub(super) fn expand_tabs(text: &str) -> Option<String> {
+    if !text.contains('\t') {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut col = 0usize;
+    for c in text.chars() {
+        match c {
+            // Jusqu'au taquet suivant, pas quatre espaces en aveugle : c'est
+            // ce que voyait l'auteur du fichier dans son propre éditeur.
+            '\t' => {
+                let step = INDENT_WIDTH - col % INDENT_WIDTH;
+                for _ in 0..step {
+                    out.push(' ');
+                }
+                col += step;
+            }
+            '\n' => {
+                out.push('\n');
+                col = 0;
+            }
+            _ => {
+                out.push(c);
+                col += 1;
+            }
+        }
+    }
+    Some(out)
+}
+
 /// Ajoute un cran d'indentation à chaque ligne touchée.
 ///
 /// Les lignes vides sont laissées telles quelles : les indenter ne produirait
@@ -700,6 +740,21 @@ mod tests {
         app.editor_sel = (0, 14);
         app.editor_indent();
         assert_eq!(app.source, "    mov rax, 1\n    mov rbx, 2\n");
+    }
+
+    /// Les tabulations sont développées jusqu'au taquet, pas remplacées par
+    /// quatre espaces en aveugle : sinon une colonne déjà entamée se décale.
+    #[test]
+    fn expand_tabs_goes_to_the_next_stop() {
+        // Colonne 0 : un cran plein. Colonne 3 : un seul espace pour atteindre 4.
+        assert_eq!(expand_tabs("\tmov").unwrap(), "    mov");
+        assert_eq!(expand_tabs("mov\trax").unwrap(), "mov rax");
+        // Chaque ligne repart de la colonne zéro.
+        assert_eq!(expand_tabs("a\tb\nc\td").unwrap(), "a   b\nc   d");
+        // Les accents comptent pour un caractère, pas pour leurs octets.
+        assert_eq!(expand_tabs("; déjà\tvu").unwrap(), "; déjà  vu");
+        // Rien à faire : on ne recopie pas le fichier pour rien.
+        assert_eq!(expand_tabs("mov rax, 1\n"), None);
     }
 
     /// Une opération qui ne change rien ne doit pas replacer le curseur : cela
