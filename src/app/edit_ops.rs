@@ -357,13 +357,18 @@ impl App {
 
     pub(super) fn editor_indent(&mut self) {
         let sel = self.editor_selection();
+        let (a, b) = (sel.0.min(sel.1), sel.0.max(sel.1));
         // Sur une sélection qui tient dans une ligne, Tab reste un Tab : il
-        // insère un cran là où l'on est, au lieu de pousser toute la ligne.
-        let (first, last) = touched_lines(&self.source, sel.0, sel.1);
-        let edit = if first == last && sel.0 == sel.1 {
-            insert_indent(&self.source, sel)
-        } else {
+        // remplace ce qui est sélectionné par un cran, au lieu de pousser toute
+        // la ligne. Le critère est le saut de ligne, pas le numéro de ligne :
+        // une ligne entière prise AVEC son `\n` tient dans une seule ligne au
+        // sens de `touched_lines`, et il faut pourtant la décaler, pas
+        // l'effacer.
+        let crosses_lines = self.source.chars().skip(a).take(b - a).any(|c| c == '\n');
+        let edit = if crosses_lines {
             indent(&self.source, sel)
+        } else {
+            insert_indent(&self.source, sel)
         };
         self.apply_edit(edit);
     }
@@ -658,6 +663,43 @@ mod tests {
         assert_eq!(app.editor_ln, 3, "au-delà de la fin : on va à la dernière ligne");
         app.goto_line(0);
         assert_eq!(app.editor_ln, 1, "au-dessus du début : on va au début");
+    }
+
+    /// Tab, selon ce que couvre la sélection. Le cas qui manquait : une
+    /// sélection dans une seule ligne poussait la ligne entière au lieu d'être
+    /// remplacée par un cran — le commentaire de `editor_indent` disait déjà le
+    /// contraire du code.
+    #[test]
+    fn tab_replaces_a_selection_held_in_one_line_and_shifts_the_rest() {
+        // Curseur seul : un cran s'insère là où l'on est.
+        let mut app = App::new();
+        app.source = "movrax".into();
+        app.editor_sel = at(3);
+        app.editor_indent();
+        assert_eq!(app.source, "mov    rax");
+
+        // « rax » sélectionné : il cède la place au cran.
+        let mut app = App::new();
+        app.source = "mov rax, 1\nmov rbx, 2\n".into();
+        app.editor_sel = (4, 7);
+        app.editor_indent();
+        assert_eq!(app.source, "mov     , 1\nmov rbx, 2\n");
+        assert_eq!(app.pending_editor_sel, Some(at(8)), "le curseur suit le cran");
+
+        // Une ligne entière prise avec son saut de ligne se DÉCALE : la
+        // remplacer l'effacerait.
+        let mut app = App::new();
+        app.source = "mov rax, 1\nmov rbx, 2\n".into();
+        app.editor_sel = (0, 11);
+        app.editor_indent();
+        assert_eq!(app.source, "    mov rax, 1\nmov rbx, 2\n");
+
+        // Sélection à cheval sur deux lignes : les deux se décalent.
+        let mut app = App::new();
+        app.source = "mov rax, 1\nmov rbx, 2\n".into();
+        app.editor_sel = (0, 14);
+        app.editor_indent();
+        assert_eq!(app.source, "    mov rax, 1\n    mov rbx, 2\n");
     }
 
     /// Une opération qui ne change rien ne doit pas replacer le curseur : cela
