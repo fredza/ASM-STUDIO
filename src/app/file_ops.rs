@@ -745,9 +745,16 @@ impl App {
 #[cfg(test)]
 mod explorer_ops_tests {
     use super::super::App;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    static NEXT_TEST_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    /// Un dossier par appel, comme dans `project_tests`. Le seul PID ne suffit
+    /// pas : les tests de ce module tournent en parallèle et `remove_dir_all`
+    /// emporterait alors les fichiers témoins des voisins.
     fn test_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("asm-studio-explorer-{}", std::process::id()));
+        let id = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("asm-studio-explorer-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("dossier temporaire");
         dir
