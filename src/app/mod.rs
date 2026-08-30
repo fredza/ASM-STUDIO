@@ -978,6 +978,17 @@ impl App {
         };
         app.load_settings();
         app.license = crate::license::load();
+        // Une version corrigée ne sert à rien si personne n'apprend qu'elle
+        // existe : l'IDE regarde donc de lui-même, une fois, au démarrage. La
+        // vérification est discrète (voir [`Updater::check_quietly`]) — elle ne
+        // se manifeste que si une version plus récente est vraiment en ligne,
+        // et jamais pour dire « rien de neuf » ou « pas de réseau ».
+        //
+        // Les tests n'ouvrent pas de socket : `App::new` y est appelé des
+        // centaines de fois, et chaque appel lancerait un thread vers GitHub.
+        if !cfg!(test) {
+            app.updater.check_quietly();
+        }
         // Plus d'ouverture automatique au lancement : un rappel systématique
         // à chaque démarrage était trop intrusif. La fenêtre se rouvre plutôt
         // toute seule à intervalle irrégulier pendant que l'app tourne (voir
@@ -1279,7 +1290,7 @@ impl App {
 
         // Échec : l'ancienne version tourne toujours, on le dit plutôt que de
         // laisser la fenêtre de mise à jour annoncer un succès.
-        self.updater.state = crate::updater::UpdateState::Error(format!(
+        self.updater.report_error(format!(
             "{} {} : {error}",
             crate::i18n::tr3(
                 self.lang,
@@ -1293,15 +1304,7 @@ impl App {
 
     /// mouvement de souris.
     fn open_dialog_count(&self) -> usize {
-        use crate::updater::UpdateState;
-        let updater_shown = matches!(
-            self.updater.state,
-            UpdateState::Checking
-                | UpdateState::Available(_)
-                | UpdateState::Downloading(_)
-                | UpdateState::Done(_)
-                | UpdateState::Error(_)
-        );
+        let updater_shown = self.updater.should_show();
         [
             self.show_about,
             self.show_license,
@@ -1418,7 +1421,17 @@ impl eframe::App for App {
         self.license_gate_window(ctx);
         self.license_reset_confirm_window(ctx);
         self.repaint_on_dialog_close(ctx, dialogs_before);
-        self.updater.poll();
+        // La vérification et le téléchargement répondent depuis un thread, par
+        // un canal — ce qui n'est un événement pour personne. Sans ces demandes
+        // d'image, la mise à jour trouvée au démarrage attendrait le prochain
+        // mouvement de souris pour s'annoncer.
+        if self.updater.poll() {
+            // Le résultat vient d'arriver : l'image en cours a été peinte avec
+            // l'état précédent, il en faut une autre tout de suite.
+            ctx.request_repaint();
+        } else if self.updater.is_working() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
     }
 }
 

@@ -61,9 +61,18 @@ pub struct ReleaseInfo {
 
 #[derive(Debug, Clone)]
 pub enum UpdateState {
+    /// Rien en cours, rien à dire : l'état de repos, celui où la fenêtre de
+    /// mise à jour n'existe pas.
+    ///
+    /// Distinct de [`UpdateState::UpToDate`], qui est une *réponse* — « je
+    /// viens de regarder, il n'y a rien de neuf ». Les confondre revenait à ne
+    /// jamais pouvoir afficher cette réponse : la fenêtre se fermait au moment
+    /// même où le résultat arrivait, et l'utilisateur qui cliquait
+    /// « Vérifier les mises à jour » voyait un compte à rebours sans conclusion.
+    Idle,
     /// Vérification en cours (thread actif).
     Checking,
-    /// Version actuelle déjà à jour.
+    /// Vérification terminée : rien de plus récent en ligne.
     UpToDate,
     /// Nouvelle version disponible.
     Available(ReleaseInfo),
@@ -102,21 +111,43 @@ struct GhAsset {
 pub struct Updater {
     pub state: UpdateState,
     rx: Option<Receiver<UpdateState>>,
+    /// La vérification en cours a-t-elle été demandée par l'utilisateur ?
+    ///
+    /// Celle du démarrage ne l'est pas : elle ne doit donc rien montrer tant
+    /// qu'elle n'a rien à annoncer. Une fenêtre « Vérification en cours… » à
+    /// chaque lancement, ou « Réseau: … » à chaque lancement hors ligne, ferait
+    /// payer à tout le monde un service que personne n'a demandé.
+    quiet: bool,
 }
 
 impl Updater {
     pub fn new() -> Self {
         Self {
-            state: UpdateState::UpToDate,
+            state: UpdateState::Idle,
             rx: None,
+            quiet: false,
         }
     }
 
-    /// Lance la vérification en arrière-plan. Sans effet si déjà en cours.
+    /// Vérification demandée par l'utilisateur : elle montre tout, y compris
+    /// « vous êtes à jour » et les erreurs réseau.
     pub fn check(&mut self) {
+        self.start_check(false);
+    }
+
+    /// Vérification du démarrage : discrète. Elle n'ouvre la fenêtre que si une
+    /// version plus récente existe vraiment ; sinon — à jour, hors ligne, API
+    /// muette — elle repart sans que rien ne bouge à l'écran.
+    pub fn check_quietly(&mut self) {
+        self.start_check(true);
+    }
+
+    /// Lance la vérification en arrière-plan. Sans effet si déjà en cours.
+    fn start_check(&mut self, quiet: bool) {
         if matches!(self.state, UpdateState::Checking) {
             return;
         }
+        self.quiet = quiet;
         self.state = UpdateState::Checking;
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
@@ -126,11 +157,56 @@ impl Updater {
         });
     }
 
+    /// Affiche une erreur venue d'ailleurs que de la vérification — un
+    /// redémarrage qui échoue, par exemple. Passe par ici plutôt que par le
+    /// champ `state` pour lever la discrétion : une erreur que l'utilisateur a
+    /// provoquée doit lui revenir, même si la dernière vérification était celle
+    /// du démarrage.
+    pub fn report_error(&mut self, message: String) {
+        self.quiet = false;
+        self.state = UpdateState::Error(message);
+    }
+
+    /// Un thread de fond est-il en train de travailler ?
+    ///
+    /// L'interface est peinte à la demande : un résultat qui arrive par un
+    /// canal n'est *pas* un événement pour egui, et personne ne le regarderait
+    /// avant le prochain mouvement de souris. Tant que ceci est vrai, l'appelant
+    /// redemande une image.
+    pub fn is_working(&self) -> bool {
+        matches!(self.state, UpdateState::Checking | UpdateState::Downloading(_))
+    }
+
+    /// Referme la fenêtre sans rien décider : « Plus tard », la croix, ou le
+    /// simple accusé de réception d'un message.
+    pub fn dismiss(&mut self) {
+        self.state = UpdateState::Idle;
+        self.quiet = false;
+    }
+
+    /// La fenêtre de mise à jour a-t-elle quelque chose à montrer ?
+    ///
+    /// Une seule définition, partagée par la fenêtre elle-même et par le
+    /// comptage des dialogues ouverts : les deux listes d'états, tenues à jour
+    /// séparément, finiraient par diverger — et un dialogue qu'on ne compte pas
+    /// est un dialogue dont la fermeture ne repeint pas la fenêtre.
+    pub fn should_show(&self) -> bool {
+        match self.state {
+            UpdateState::Idle => false,
+            // Le seul état que la discrétion masque encore ici : les résultats
+            // d'une vérification silencieuse sont, eux, ramenés à `Idle` par
+            // [`Updater::poll`] au moment où ils arrivent.
+            UpdateState::Checking => !self.quiet,
+            _ => true,
+        }
+    }
+
     /// Injecte directement un état « mise à jour disponible » sans réseau.
     /// Pratique pour tester l'UI sans GitHub. Réservé aux builds de debug, où
     /// se trouve l'entrée de menu « Simuler une mise à jour ».
     #[cfg(debug_assertions)]
     pub fn simulate(&mut self) {
+        self.quiet = false;
         self.state = UpdateState::Available(ReleaseInfo {
             tag: "v99.0.0".to_string(),
             notes: "## Simulation de mise à jour\n\
@@ -147,6 +223,9 @@ impl Updater {
     /// Lance le téléchargement + remplacement en arrière-plan.
     /// Si l'URL commence par `simulate://`, fait un dry-run avec fausse progression.
     pub fn install(&mut self, info: ReleaseInfo) {
+        // À partir d'ici l'utilisateur a cliqué : la progression, le résultat et
+        // les erreurs lui sont dus, même si la vérification était discrète.
+        self.quiet = false;
         self.state = UpdateState::Downloading(0.0);
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
@@ -162,10 +241,19 @@ impl Updater {
     }
 
     /// À appeler chaque frame pour consommer les messages du thread de fond.
-    pub fn poll(&mut self) {
-        let Some(rx) = &self.rx else { return };
+    ///
+    /// Renvoie `true` quand un message est arrivé — donc quand l'état affiché
+    /// n'est plus le bon. C'est à l'appelant de redemander une image : le
+    /// message vient d'un canal, et un canal n'est pas un événement pour egui.
+    /// Sans cette réponse, la toute dernière image manquait toujours à l'appel :
+    /// celle qui apprend le résultat est aussi celle qui n'a plus de raison de
+    /// demander la suivante, et la fenêtre attendait un mouvement de souris.
+    pub fn poll(&mut self) -> bool {
+        let Some(rx) = &self.rx else { return false };
+        let mut received = false;
         while let Ok(s) = rx.try_recv() {
             self.state = s;
+            received = true;
         }
         if matches!(
             self.state,
@@ -174,8 +262,18 @@ impl Updater {
                 | UpdateState::UpToDate
                 | UpdateState::Available(_)
         ) {
+            // Une vérification discrète n'avait qu'une chose à annoncer : une
+            // version plus récente. Tout le reste — « rien de neuf », « pas de
+            // réseau » — retombe dans l'état de repos sans jamais s'afficher,
+            // et le drapeau retombe avec, pour qu'une erreur signalée plus tard
+            // par un autre chemin ne se retrouve pas muselée à son tour.
+            if self.quiet && !matches!(self.state, UpdateState::Available(_)) {
+                self.state = UpdateState::Idle;
+            }
+            self.quiet = false;
             self.rx = None;
         }
+        received
     }
 }
 
@@ -433,6 +531,111 @@ fn new_tempfile_beside(exe: &Path) -> Result<(PathBuf, std::fs::File), String> {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+
+    /// Un `Updater` dont la vérification vient de rendre `result`, discrète ou
+    /// non. Le canal est branché à la main : le test n'a rien à faire d'un
+    /// thread ni du réseau, il ne juge que ce que `poll` fait du résultat.
+    fn settled(quiet: bool, result: UpdateState) -> Updater {
+        let (tx, rx) = mpsc::channel();
+        tx.send(result).expect("le canal accepte le résultat");
+        let mut updater = Updater::new();
+        updater.quiet = quiet;
+        updater.state = UpdateState::Checking;
+        updater.rx = Some(rx);
+        assert!(updater.poll(), "un résultat reçu doit être signalé, pour qu'une image soit redemandée");
+        updater
+    }
+
+    /// La vérification du démarrage ne parle que pour annoncer une version plus
+    /// récente. « Rien de neuf » et « pas de réseau » ne doivent pas ouvrir de
+    /// fenêtre : sinon chaque lancement hors ligne s'ouvrirait sur une erreur
+    /// que personne n'a demandée.
+    #[test]
+    fn a_quiet_check_only_speaks_to_announce_a_new_version() {
+        for result in [
+            UpdateState::UpToDate,
+            UpdateState::Error("Réseau: hors ligne".to_string()),
+        ] {
+            let updater = settled(true, result);
+            assert!(matches!(updater.state, UpdateState::Idle), "état vu : {:?}", updater.state);
+            assert!(!updater.should_show(), "aucune fenêtre pour ce résultat");
+        }
+
+        let updater = settled(
+            true,
+            UpdateState::Available(ReleaseInfo {
+                tag: "v9.9.9".to_string(),
+                notes: String::new(),
+                download_url: String::new(),
+                signature_url: String::new(),
+            }),
+        );
+        assert!(updater.should_show(), "une version plus récente s'annonce d'elle-même");
+    }
+
+    /// Une vérification demandée à la main répond toujours, y compris pour dire
+    /// qu'il n'y a rien : c'est la réponse à un clic.
+    #[test]
+    fn a_manual_check_always_answers() {
+        for result in [
+            UpdateState::UpToDate,
+            UpdateState::Error("Réseau: hors ligne".to_string()),
+        ] {
+            let updater = settled(false, result);
+            assert!(updater.should_show(), "état vu : {:?}", updater.state);
+        }
+    }
+
+    /// Le compte à rebours lui-même est discret au démarrage — et visible quand
+    /// c'est l'utilisateur qui a cliqué.
+    #[test]
+    fn only_a_requested_check_shows_its_spinner() {
+        let mut quiet = Updater::new();
+        quiet.quiet = true;
+        quiet.state = UpdateState::Checking;
+        assert!(!quiet.should_show());
+
+        let mut asked = Updater::new();
+        asked.state = UpdateState::Checking;
+        assert!(asked.should_show());
+    }
+
+    /// Une erreur venue d'ailleurs — un redémarrage qui échoue — s'affiche même
+    /// juste après une vérification discrète : sans quoi le bouton
+    /// « Appliquer et redémarrer » resterait sans réponse.
+    #[test]
+    fn an_error_reported_after_a_quiet_check_is_still_shown() {
+        let mut updater = settled(true, UpdateState::UpToDate);
+        updater.report_error("Redémarrage impossible".to_string());
+        assert!(updater.should_show(), "l'erreur doit être visible");
+    }
+
+    /// Sans message, rien à repeindre : la boucle de l'IDE ne doit pas réclamer
+    /// une image à chaque frame pour un canal muet.
+    #[test]
+    fn polling_an_empty_channel_asks_for_nothing() {
+        let (_tx, rx) = mpsc::channel::<UpdateState>();
+        let mut updater = Updater::new();
+        updater.state = UpdateState::Checking;
+        updater.rx = Some(rx);
+        assert!(!updater.poll(), "aucun message : rien à signaler");
+        assert!(matches!(updater.state, UpdateState::Checking));
+
+        let mut resting = Updater::new();
+        assert!(!resting.poll(), "sans canal non plus");
+    }
+
+    /// « Plus tard » et la croix ramènent au repos, pas à une réponse : la
+    /// fenêtre ne doit pas se rouvrir sur « vous êtes à jour » à la frame
+    /// suivante.
+    #[test]
+    fn dismissing_returns_to_rest() {
+        let mut updater = settled(false, UpdateState::UpToDate);
+        assert!(updater.should_show());
+        updater.dismiss();
+        assert!(matches!(updater.state, UpdateState::Idle));
+        assert!(!updater.should_show());
+    }
 
     #[test]
     fn version_comparison() {

@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-beta.4] - 2026-08-30
+
+### Added
+- **Update check at startup**: The IDE asks GitHub once when it starts, in a
+  background thread. The check is *quiet*: it opens a window only when a newer
+  version really exists. "Nothing new" and "no network" fall back to silence —
+  otherwise every offline launch would have opened on an error nobody asked
+  for. A check asked for by hand (*Tools → Check for updates*) still answers in
+  every case.
+
+### Changed
+- **Downloading and restarting are now two decisions**: A single "Install and
+  restart" button asked for both at once, although only the second one
+  interrupts the work in progress. A new version now offers **Download** or
+  **Later**; once the download is verified, **Apply and restart** does exactly
+  that — and *Later* keeps the update on disk, where the next launch picks it
+  up anyway.
+
+### Fixed
+- **A background result no longer waited for a mouse movement**: The interface
+  is painted on demand, and a result arriving through a channel is not an event
+  for anyone. The frame that learned the result was also the one with no reason
+  left to ask for another, so the window sat invisible until the mouse moved —
+  the update found at startup was never announced. Polling now reports that a
+  message arrived, and the frame is requested.
+- **"You are on the latest version" was impossible to read**: The resting state
+  and the answer "I have just looked, there is nothing new" were the same
+  value, so the window closed at the very instant the result came in. They are
+  two distinct states now, and a check asked for by hand shows its conclusion.
+
 ## [0.5.0-beta.3] - 2026-08-30
 
 ### Added

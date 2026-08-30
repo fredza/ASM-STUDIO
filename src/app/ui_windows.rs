@@ -2068,15 +2068,7 @@ impl App {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
 
-        let show = matches!(
-            self.updater.state,
-            UpdateState::Checking
-                | UpdateState::Available(_)
-                | UpdateState::Downloading(_)
-                | UpdateState::Done(_)
-                | UpdateState::Error(_)
-        );
-        if !show {
+        if !self.updater.should_show() {
             return;
         }
 
@@ -2094,13 +2086,27 @@ impl App {
                             ui.label(tr("Vérification en cours…", "Checking…", "Verificando…"));
                         });
                     }
+                    // Réponse à une vérification demandée à la main : celle du
+                    // démarrage n'arrive jamais jusqu'ici (voir
+                    // [`crate::updater::Updater::poll`]).
                     UpdateState::UpToDate => {
-                        ui.label(tr(
+                        ui.label(RichText::new(tr(
                             "✔  Vous utilisez la dernière version.",
                             "✔  You are on the latest version.",
                             "✔  Está usando la última versión.",
-                        ));
+                        )).strong());
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(crate::version::full()).monospace().weak());
+                        ui.add_space(6.0);
+                        ui.vertical_centered(|ui| {
+                            if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
+                                self.updater.dismiss();
+                            }
+                        });
                     }
+                    // Rien en cours : la fenêtre n'est pas ouverte, mais le
+                    // `match` doit rester exhaustif.
+                    UpdateState::Idle => {}
                     UpdateState::Available(info) => {
                         let info = info.clone();
                         ui.label(RichText::new(format!(
@@ -2120,15 +2126,21 @@ impl App {
                         }
                         ui.separator();
                         ui.horizontal(|ui| {
+                            // Deux temps, et deux décisions distinctes :
+                            // télécharger maintenant, puis redémarrer quand on
+                            // le veut bien. Un seul bouton « Installer et
+                            // redémarrer » demandait les deux à la fois, alors
+                            // que le second moment est le seul qui interrompe
+                            // réellement le travail en cours.
                             if ui.button(RichText::new(tr(
-                                "⬇  Installer et redémarrer",
-                                "⬇  Install and restart",
-                                "⬇  Instalar y reiniciar",
+                                "⬇  Télécharger",
+                                "⬇  Download",
+                                "⬇  Descargar",
                             )).strong()).clicked() {
                                 self.updater.install(info);
                             }
                             if ui.button(tr("Plus tard", "Later", "Más tarde")).clicked() {
-                                self.updater.state = UpdateState::UpToDate;
+                                self.updater.dismiss();
                             }
                         });
                     }
@@ -2144,15 +2156,15 @@ impl App {
                     UpdateState::Done(exe) => {
                         let exe = exe.clone();
                         ui.label(RichText::new(tr(
-                            "✔  Mise à jour installée.",
-                            "✔  Update installed.",
-                            "✔  Actualización instalada.",
+                            "✔  Mise à jour téléchargée et vérifiée.",
+                            "✔  Update downloaded and verified.",
+                            "✔  Actualización descargada y verificada.",
                         )).strong());
                         ui.add_space(4.0);
                         ui.label(tr(
-                            "La nouvelle version démarre avec le fichier ouvert.",
-                            "The new version starts with the current file open.",
-                            "La nueva versión se abre con el archivo actual.",
+                            "Elle prend effet au redémarrage, et la nouvelle version rouvre le fichier en cours. Sans redémarrage, elle s'appliquera au prochain lancement.",
+                            "It takes effect on restart, and the new version reopens the current file. Without a restart, it applies at the next launch.",
+                            "Se aplica al reiniciar, y la nueva versión vuelve a abrir el archivo actual. Sin reinicio, se aplicará en el próximo arranque.",
                         ));
                         ui.add_space(6.0);
                         ui.vertical_centered(|ui| {
@@ -2161,13 +2173,17 @@ impl App {
                                 // la question part avant le redémarrage, pas
                                 // après, où il serait trop tard.
                                 if ui
-                                    .button(tr("Redémarrer maintenant", "Restart now", "Reiniciar ahora"))
+                                    .button(RichText::new(tr(
+                                        "✔  Appliquer et redémarrer",
+                                        "✔  Apply and restart",
+                                        "✔  Aplicar y reiniciar",
+                                    )).strong())
                                     .clicked()
                                 {
                                     self.guarded(super::unsaved::PendingAction::Restart { exe });
                                 }
                                 if ui.button(tr("Plus tard", "Later", "Más tarde")).clicked() {
-                                    self.updater.state = UpdateState::UpToDate;
+                                    self.updater.dismiss();
                                 }
                             });
                         });
@@ -2180,14 +2196,14 @@ impl App {
                         ui.add_space(4.0);
                         ui.vertical_centered(|ui| {
                             if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
-                                self.updater.state = UpdateState::UpToDate;
+                                self.updater.dismiss();
                             }
                         });
                     }
                 }
             });
         if !open {
-            self.updater.state = UpdateState::UpToDate;
+            self.updater.dismiss();
         }
     }
 
@@ -2512,6 +2528,79 @@ mod about_tests {
             app.show_about = true;
             let ctx = egui::Context::default();
             let _ = ctx.run(Default::default(), |ctx| app.about_window(ctx));
+        }
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+    use crate::app::ui_chrome::status_bar_tests::collect_text;
+    use crate::updater::{ReleaseInfo, UpdateState};
+
+    fn release() -> ReleaseInfo {
+        ReleaseInfo {
+            tag: "v9.9.9".to_string(),
+            notes: "### Nouveautés\n- de quoi lire".to_string(),
+            download_url: String::new(),
+            signature_url: String::new(),
+        }
+    }
+
+    /// Le texte peint par la fenêtre. Deux frames : une fenêtre flottante
+    /// n'existe pas encore à la première — egui lui découvre sa taille et sa
+    /// place — et ne peint donc rien qu'on puisse lire.
+    fn painted(app: &mut App) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.update_window(ctx));
+        let out = ctx.run(Default::default(), |ctx| app.update_window(ctx));
+        collect_text(&out.shapes)
+    }
+
+    /// Au repos, rien : c'est ce qui rend supportable une vérification à chaque
+    /// démarrage.
+    #[test]
+    fn nothing_is_painted_at_rest() {
+        let mut app = App::new();
+        assert!(matches!(app.updater.state, UpdateState::Idle), "un IDE qui démarre n'a rien à annoncer");
+        assert!(painted(&mut app).is_empty(), "aucune fenêtre au repos");
+    }
+
+    /// Les deux temps de la mise à jour, chacun avec sa décision : on télécharge
+    /// d'abord, on applique ensuite — et le second moment est le seul qui
+    /// interrompe le travail en cours.
+    #[test]
+    fn the_two_steps_offer_their_own_button() {
+        let mut app = App::new();
+        app.updater.state = UpdateState::Available(release());
+        let texts = painted(&mut app);
+        assert!(texts.iter().any(|t| t.contains("Télécharger")), "vu : {texts:?}");
+        assert!(texts.iter().any(|t| t.contains("Plus tard")), "vu : {texts:?}");
+        assert!(texts.iter().any(|t| t.contains("v9.9.9")), "la version proposée se nomme : {texts:?}");
+
+        app.updater.state = UpdateState::Done(std::path::PathBuf::from("/tmp/asm-studio-neuf"));
+        let texts = painted(&mut app);
+        assert!(texts.iter().any(|t| t.contains("Appliquer et redémarrer")), "vu : {texts:?}");
+        assert!(texts.iter().any(|t| t.contains("Plus tard")), "vu : {texts:?}");
+    }
+
+    /// Chaque état se rend dans les trois langues sans paniquer.
+    #[test]
+    fn every_state_renders_in_every_language() {
+        for lang in [i18n::Lang::Fr, i18n::Lang::En, i18n::Lang::Es] {
+            for state in [
+                UpdateState::Checking,
+                UpdateState::UpToDate,
+                UpdateState::Available(release()),
+                UpdateState::Downloading(0.5),
+                UpdateState::Done(std::path::PathBuf::from("/tmp/asm-studio-neuf")),
+                UpdateState::Error("Réseau: hors ligne".to_string()),
+            ] {
+                let mut app = App::new();
+                app.lang = lang;
+                app.updater.state = state;
+                let _ = painted(&mut app);
+            }
         }
     }
 }

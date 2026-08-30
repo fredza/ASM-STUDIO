@@ -2024,7 +2024,7 @@ mod menu_tests {
 }
 
 #[cfg(test)]
-mod status_bar_tests {
+pub(super) mod status_bar_tests {
     use super::*;
 
     /// La barre d'état annonce le format que « Assembler » va produire, à côté
@@ -2128,8 +2128,10 @@ mod status_bar_tests {
         pos
     }
 
-    /// Tout le texte peint pendant une frame, à plat.
-    pub(super) fn collect_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+    /// Tout le texte peint pendant une frame, à plat. Partagé avec les autres
+    /// modules de tests de l'interface : ce que l'utilisateur lit à l'écran est
+    /// la seule chose qu'un test d'UI puisse vraiment vérifier.
+    pub(in crate::app) fn collect_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
         fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
             match shape {
                 egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
