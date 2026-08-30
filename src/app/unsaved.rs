@@ -1,8 +1,8 @@
 //! Garde-fou du travail non enregistré.
 //!
-//! Quatre gestes remplacent le contenu de l'éditeur sans que l'élève l'ait
+//! Cinq gestes remplacent le contenu de l'éditeur sans que l'élève l'ait
 //! demandé explicitement : Nouveau, Ouvrir (dialogue ou explorateur), charger
-//! une leçon, et quitter. Aucun ne consultait l'état « modifié » : un exercice
+//! une leçon, quitter, et redémarrer après une mise à jour. Aucun ne consultait l'état « modifié » : un exercice
 //! à moitié écrit disparaissait sans un mot, ce qui est la pire chose qu'un
 //! IDE d'apprentissage puisse faire à quelqu'un qui débute.
 //!
@@ -29,6 +29,10 @@ pub(crate) enum PendingAction {
     /// Leçon du parcours guidé, retenue par son identifiant : le catalogue la
     /// rendra à l'identique, et on n'a pas à en garder une copie ici.
     LoadLesson(String),
+    /// Redémarrage après une mise à jour, vers le binaire fraîchement
+    /// installé. Le chemin vient de l'updater : voir
+    /// [`crate::updater::UpdateState::Done`].
+    Restart { exe: PathBuf },
     /// Fermeture de l'application. N'arrive jamais par [`App::guarded`] mais
     /// par l'interception de l'événement de fermeture, qui a besoin d'annuler
     /// celui-ci avant de pouvoir poser la question.
@@ -69,6 +73,7 @@ impl App {
             // `discard_confirmed` : le `Close` qu'on réémet repasse par
             // `check_close_request`, qui reposerait la question à l'infini
             // puisque le tampon est resté modifié.
+            PendingAction::Restart { exe } => self.restart_now(exe),
             PendingAction::Quit => {
                 self.discard_confirmed = true;
                 self.quit_requested = true;
@@ -102,6 +107,9 @@ impl App {
                 ),
                 None => tr("Charger la leçon", "Load the lesson", "Cargar la lección").to_string(),
             },
+            PendingAction::Restart { .. } => {
+                tr("Redémarrer ASM Studio", "Restart ASM Studio", "Reiniciar ASM Studio").to_string()
+            }
             PendingAction::Quit => {
                 tr("Quitter ASM Studio", "Quit ASM Studio", "Salir de ASM Studio").to_string()
             }
@@ -339,6 +347,25 @@ mod tests {
         app.perform_pending(PendingAction::Quit);
         assert!(app.quit_requested, "la fermeture doit être réémise");
         assert!(app.discard_confirmed, "sans quoi la question se reposerait en boucle");
+    }
+
+    /// Le redémarrage qui suit une mise à jour est un geste comme les autres :
+    /// il passe par la question. Sans cela, l'élève perdrait son source au
+    /// moment le plus inattendu — un clic sur « Redémarrer maintenant ».
+    ///
+    /// Le test s'arrête volontairement à la question : jouer l'action
+    /// remplacerait l'image du processus de test par ASM Studio.
+    #[test]
+    fn restarting_after_an_update_goes_through_the_guard() {
+        let mut app = dirty_app();
+        let action = PendingAction::Restart {
+            exe: PathBuf::from("/inexistant/asm-studio"),
+        };
+        assert!(
+            !app.guarded(action.clone()),
+            "un tampon modifié doit poser la question avant de redémarrer"
+        );
+        assert_eq!(app.unsaved_prompt, Some(action));
     }
 
     /// Une leçon disparue du catalogue ne doit rien casser.

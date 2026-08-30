@@ -2073,7 +2073,7 @@ impl App {
             UpdateState::Checking
                 | UpdateState::Available(_)
                 | UpdateState::Downloading(_)
-                | UpdateState::Done
+                | UpdateState::Done(_)
                 | UpdateState::Error(_)
         );
         if !show {
@@ -2141,17 +2141,35 @@ impl App {
                             .animate(true);
                         ui.add(bar);
                     }
-                    UpdateState::Done => {
+                    UpdateState::Done(exe) => {
+                        let exe = exe.clone();
                         ui.label(RichText::new(tr(
-                            "✔  Mise à jour installée. Relancez l'application.",
-                            "✔  Update installed. Please restart the application.",
-                            "✔  Actualización instalada. Reinicie la aplicación.",
+                            "✔  Mise à jour installée.",
+                            "✔  Update installed.",
+                            "✔  Actualización instalada.",
                         )).strong());
+                        ui.add_space(4.0);
+                        ui.label(tr(
+                            "La nouvelle version démarre avec le fichier ouvert.",
+                            "The new version starts with the current file open.",
+                            "La nueva versión se abre con el archivo actual.",
+                        ));
                         ui.add_space(6.0);
                         ui.vertical_centered(|ui| {
-                            if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
-                                self.updater.state = UpdateState::UpToDate;
-                            }
+                            ui.horizontal(|ui| {
+                                // Le tampon modifié est traité par `guarded` :
+                                // la question part avant le redémarrage, pas
+                                // après, où il serait trop tard.
+                                if ui
+                                    .button(tr("Redémarrer maintenant", "Restart now", "Reiniciar ahora"))
+                                    .clicked()
+                                {
+                                    self.guarded(super::unsaved::PendingAction::Restart { exe });
+                                }
+                                if ui.button(tr("Plus tard", "Later", "Más tarde")).clicked() {
+                                    self.updater.state = UpdateState::UpToDate;
+                                }
+                            });
                         });
                     }
                     UpdateState::Error(msg) => {

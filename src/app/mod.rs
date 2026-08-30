@@ -1242,6 +1242,55 @@ impl App {
     /// l'image qui EFFACE la fenêtre fermée n'est pas toujours présentée d'elle-
     /// même (frame callback Wayland, animations coupées…). Un repaint explicite
     /// à cet instant garantit que le dialogue disparaît sans attendre le prochain
+    /// Relance l'application depuis le binaire fraîchement installé.
+    ///
+    /// `exe` vient de l'updater plutôt que de `current_exe()` : après le
+    /// remplacement atomique, celui-ci renverrait l'ancien inode, suffixé
+    /// « (deleted) ». Le fichier ouvert est passé en argument, comme le ferait
+    /// un gestionnaire de fichiers, pour que l'élève retrouve son source à
+    /// l'écran plutôt qu'un tampon vide.
+    ///
+    /// N'est atteint que par [`unsaved::PendingAction::Restart`] : un tampon
+    /// modifié pose donc sa question avant, et non après.
+    pub(super) fn restart_now(&mut self, exe: std::path::PathBuf) {
+        // Les réglages s'écrivent déjà à chaque changement ; on force malgré
+        // tout, parce que remplacer l'image du processus ne laisse aucune
+        // occasion de le faire ensuite.
+        self.save_settings();
+
+        let mut command = std::process::Command::new(&exe);
+        if self.src_path.is_file() {
+            command.arg(&self.src_path);
+        }
+
+        // `exec` remplace l'image du processus : aucune fenêtre où deux
+        // instances coexistent, aucun parent qui survit à l'enfant. Il ne rend
+        // la main qu'en cas d'échec.
+        #[cfg(unix)]
+        let error = {
+            use std::os::unix::process::CommandExt;
+            command.exec()
+        };
+        #[cfg(not(unix))]
+        let error = match command.spawn() {
+            Ok(_) => std::process::exit(0),
+            Err(e) => e,
+        };
+
+        // Échec : l'ancienne version tourne toujours, on le dit plutôt que de
+        // laisser la fenêtre de mise à jour annoncer un succès.
+        self.updater.state = crate::updater::UpdateState::Error(format!(
+            "{} {} : {error}",
+            crate::i18n::tr3(
+                self.lang,
+                "Redémarrage impossible",
+                "Cannot restart",
+                "No se puede reiniciar"
+            ),
+            exe.display()
+        ));
+    }
+
     /// mouvement de souris.
     fn open_dialog_count(&self) -> usize {
         use crate::updater::UpdateState;
@@ -1250,7 +1299,7 @@ impl App {
             UpdateState::Checking
                 | UpdateState::Available(_)
                 | UpdateState::Downloading(_)
-                | UpdateState::Done
+                | UpdateState::Done(_)
                 | UpdateState::Error(_)
         );
         [

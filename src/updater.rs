@@ -69,8 +69,13 @@ pub enum UpdateState {
     Available(ReleaseInfo),
     /// Téléchargement en cours (0.0 … 1.0).
     Downloading(f32),
-    /// Mise à jour appliquée — redémarrage nécessaire.
-    Done,
+    /// Mise à jour appliquée — redémarrage nécessaire. Porte le chemin du
+    /// binaire installé.
+    ///
+    /// Ce chemin est retenu plutôt que redemandé au moment du redémarrage :
+    /// après le `rename`, l'inode d'origine est délié et `current_exe()`
+    /// renvoie l'ancien chemin suffixé « (deleted) », qui ne s'exécute pas.
+    Done(PathBuf),
     /// Erreur non bloquante.
     Error(String),
 }
@@ -164,7 +169,7 @@ impl Updater {
         }
         if matches!(
             self.state,
-            UpdateState::Done
+            UpdateState::Done(_)
                 | UpdateState::Error(_)
                 | UpdateState::UpToDate
                 | UpdateState::Available(_)
@@ -183,7 +188,9 @@ fn simulate_download(tx: &Sender<UpdateState>) -> UpdateState {
         std::thread::sleep(std::time::Duration::from_millis(100));
         let _ = tx.send(UpdateState::Downloading(i as f32 / steps as f32));
     }
-    UpdateState::Done
+    // Rien n'a été remplacé : redémarrer relancerait la même version, ce qui
+    // est exactement ce qu'un dry-run doit faire.
+    UpdateState::Done(std::env::current_exe().unwrap_or_default())
 }
 
 /// Interroge l'API GitHub et renvoie l'état correspondant.
@@ -335,7 +342,7 @@ fn download_and_install(url: &str, signature_url: &str, tx: &Sender<UpdateState>
         return UpdateState::Error(format!("Remplacement atomique: {e}"));
     }
 
-    UpdateState::Done
+    UpdateState::Done(exe)
 }
 
 /// Télécharge et décode une signature Ed25519 encodée en Base64.
