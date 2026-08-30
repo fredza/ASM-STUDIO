@@ -463,7 +463,7 @@ fn latte() -> Theme {
 // l'éditeur `#000C18`, le violet profond du panneau latéral `#060621`, le bleu
 // `#08286B` de la ligne sélectionnée, l'or `#DDBB88` du curseur.
 //
-// Deux écarts assumés, tous deux sur la coloration du code :
+// Trois écarts assumés — deux sur la coloration du code, un sur les fenêtres :
 //
 // * Abyss peint les mots-clés en `#225588`, soit un contraste de 2,5:1 sur le
 //   fond de l'éditeur. Passe encore pour un `if` isolé ; ici les directives
@@ -472,6 +472,14 @@ fn latte() -> Theme {
 // * Les mnémoniques prennent `#9966B8` (`support.function` d'Abyss) plutôt que
 //   le même `#225588` : en assembleur, l'instruction est le mot le plus lu de
 //   la ligne, elle ne peut pas être le plus terne.
+// * Les fenêtres reprennent le fond du panneau latéral, et non
+//   `editorWidget.background` (`#262641`). Dans VS Code ce ton habille la
+//   petite boîte de recherche qui flotte AU-DESSUS de l'éditeur, où être plus
+//   clair est le but ; ici il habillerait de grandes fenêtres, nombreuses, et
+//   il serait la surface la plus claire de toute la palette — plus claire que
+//   `faint` et que `surface`, ce qu'aucun autre thème du catalogue ne fait.
+//   Les fenêtres restent lisibles comme telles par leur bordure `#2B2B4A`,
+//   leur arrondi et leur ombre.
 // ---------------------------------------------------------------------------
 
 fn abyss() -> Theme {
@@ -489,7 +497,8 @@ fn abyss() -> Theme {
         dark: true,
         ui: Palette {
             bg: side,
-            window: rgb(0x262641),         // editorWidget.background
+            // Pas `editorWidget.background` : voir l'écart assumé ci-dessus.
+            window: side,
             extreme: editor,
             faint: chrome,
             surface: rgb(0x181F2F),        // input.background
@@ -742,6 +751,10 @@ mod tests {
         assert_eq!(t.ui.extreme, rgb(0x000C18), "editor.background");
         assert_eq!(t.ui.bg, rgb(0x060621), "sideBar.background");
         assert_eq!(t.ui.sel_row, rgb(0x08286B), "list.activeSelectionBackground");
+        assert_eq!(
+            t.ui.window, t.ui.bg,
+            "écart assumé : les fenêtres suivent le panneau latéral, pas editorWidget.background"
+        );
         assert_eq!(t.syntax.text, rgb(0x6688CC), "editor.foreground");
         assert_eq!(t.syntax.number, rgb(0xF280D0), "constant.numeric");
     }
