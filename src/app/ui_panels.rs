@@ -1491,6 +1491,22 @@ impl App {
                     ui.label(RichText::new(format!("{} {}", info.file_size, tr("octets", "bytes", "bytes"))).monospace());
                     ui.end_row();
                 });
+                // Ce panneau répond aux questions qu'ASM Studio sait poser d'un
+                // binaire ; Desdec pose les autres. Le bouton est ici plutôt
+                // qu'à la barre d'outils parce que c'est ici qu'on regarde le
+                // fichier produit, et que la question vient en le regardant.
+                ui.add_space(4.0);
+                if ui
+                    .button(tr("Ouvrir dans Desdec ↗", "Open in Desdec ↗", "Abrir en Desdec ↗"))
+                    .on_hover_text(tr(
+                        "Réassemble, puis ouvre le binaire dans Desdec : entropie, chaînes, fonctions, désassemblage complet. Desdec s'installe à part.",
+                        "Re-assembles, then opens the binary in Desdec: entropy, strings, functions, full disassembly. Desdec is installed separately.",
+                        "Reensambla y abre el binario en Desdec: entropía, cadenas, funciones, desensamblado completo. Desdec se instala aparte.",
+                    ))
+                    .clicked()
+                {
+                    self.send_to_desdec();
+                }
             });
 
             ui.add_space(6.0);

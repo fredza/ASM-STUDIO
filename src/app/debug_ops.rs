@@ -95,6 +95,48 @@ impl App {
         }
     }
 
+    /// Assemble, puis ouvre le binaire produit dans Desdec.
+    ///
+    /// L'assemblage est refait à chaque envoi, même si un binaire traîne déjà :
+    /// le source a pu changer depuis, et montrer ailleurs autre chose que ce
+    /// qui est à l'écran serait la pire façon d'expliquer un format de fichier.
+    ///
+    /// Les deux cibles s'envoient. Desdec lit l'ELF comme le PE, et c'est
+    /// justement ce qu'ASM Studio a de mieux à offrir d'un `.exe` qu'il ne sait
+    /// pas exécuter : le voir lu par un outil qui ne l'exécute pas non plus.
+    pub(super) fn send_to_desdec(&mut self) {
+        self.build();
+        // `build` a déjà tout dit de son échec, console et barre d'état
+        // comprises : rien à ajouter, sinon un second message pour le même
+        // problème.
+        let Some(binary) = self.binary.clone() else { return };
+        match crate::desdec::send(&binary, self.lang) {
+            Ok(()) => {
+                self.log(&format!(
+                    "{} {}",
+                    i18n::tr3(
+                        self.lang,
+                        "→ Envoyé à Desdec :",
+                        "→ Sent to Desdec:",
+                        "→ Enviado a Desdec:",
+                    ),
+                    binary.display()
+                ));
+                self.status = i18n::tr3(self.lang, "Envoyé à Desdec", "Sent to Desdec", "Enviado a Desdec").to_string();
+            }
+            Err(e) => {
+                self.log(&e);
+                self.status = i18n::tr3(
+                    self.lang,
+                    "Envoi à Desdec impossible",
+                    "Cannot send to Desdec",
+                    "No se puede enviar a Desdec",
+                )
+                .to_string();
+            }
+        }
+    }
+
     /// Applique le réglage « assemblage Windows » après un changement.
     ///
     /// Couper l'option pendant qu'une cible Windows est active laisserait un
@@ -915,6 +957,26 @@ mod tests {
         app.source = source.to_string();
         app.launch();
         app
+    }
+
+    /// Un source qui ne s'assemble pas ne part nulle part : Desdec s'ouvrirait
+    /// sur le binaire de l'assemblage PRÉCÉDENT, et l'élève lirait le format
+    /// d'un programme qui n'est plus le sien.
+    #[test]
+    fn a_source_that_does_not_assemble_is_not_sent_to_desdec() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/dbgops-desdec.asm");
+        app.out_dir = PathBuf::from("build/dbgops-desdec");
+        app.source = "ceci n'est pas de l'assembleur\n".to_string();
+
+        app.send_to_desdec();
+
+        assert!(app.binary.is_none(), "rien n'a été produit");
+        assert!(
+            !app.console.contains("Desdec"),
+            "l'échec d'assemblage se suffit à lui-même, vu : {}",
+            app.console
+        );
     }
 
     #[test]

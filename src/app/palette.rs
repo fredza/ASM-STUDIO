@@ -69,6 +69,9 @@ pub(crate) enum Command {
     ClearBreakpoints,
     Stop,
     ResumeHere,
+    /// Assemble, puis ouvre le binaire produit dans Desdec — l'explorateur de
+    /// binaires qui, lui, passe déjà la main à ASM Studio.
+    SendToDesdec,
     // Timeline
     TimelineStart,
     TimelineEnd,
@@ -235,6 +238,12 @@ impl Command {
             .into(),
             Command::Stop => t("Arrêter le programme", "Stop the program", "Detener el programa").into(),
             Command::ResumeHere => t("Reprendre à cette étape", "Resume at this step", "Reanudar en este paso").into(),
+            Command::SendToDesdec => t(
+                "Envoyer le binaire vers Desdec",
+                "Send the binary to Desdec",
+                "Enviar el binario a Desdec",
+            )
+            .into(),
             Command::TimelineStart => t("Timeline : début", "Timeline: start", "Línea de tiempo: inicio").into(),
             Command::TimelineEnd => t("Timeline : fin", "Timeline: end", "Línea de tiempo: fin").into(),
             Command::TimelinePrev => t("Timeline : étape précédente", "Timeline: previous step", "Línea de tiempo: paso anterior").into(),
@@ -426,6 +435,7 @@ impl Command {
             Command::Build,
             Command::Stop,
             Command::ResumeHere,
+            Command::SendToDesdec,
             Command::ToggleBreakpoint,
             Command::BreakpointCondition,
             Command::ClearBreakpoints,
@@ -696,6 +706,7 @@ impl App {
             Command::ReplaceCurrent => self.find_replace_current(),
             Command::ReplaceAll => self.find_replace_all(),
             Command::Build => self.build(),
+            Command::SendToDesdec => self.send_to_desdec(),
             Command::Run => self.launch(),
             Command::Step => self.step(),
             Command::StepOver => self.step_over(),
@@ -1324,12 +1335,13 @@ mod tests {
     /// ajoutées seraient présentes mais introuvables.
     #[test]
     fn the_new_commands_are_reachable_by_typing() {
-        let cases: [(&str, Command); 5] = [
+        let cases: [(&str, Command); 6] = [
             ("remplacer toutes", Command::ReplaceAll),
             ("theme catppuccin mocha", Command::SetTheme(crate::theme::Choice::Named("catppuccin-mocha"))),
             ("quitter", Command::Quit),
             ("exemples", Command::OpenExamples),
             ("onglet suivant", Command::NextTab),
+            ("desdec", Command::SendToDesdec),
         ];
         for (query, expected) in cases {
             let r = filter(query, Lang::Fr, true, true);

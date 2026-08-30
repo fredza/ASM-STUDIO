@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-beta.3] - 2026-08-30
+
+### Added
+- **Send the assembled binary to Desdec**: Desdec — a binary explorer — already
+  hands over to ASM Studio: it exports a function to NASM and opens the file
+  here. The other direction was missing. *Tools → Send to Desdec*, the
+  `Open in Desdec ↗` button in the FORMAT panel, or the command palette now
+  assembles the current source and opens the binary produced in Desdec:
+  sections and entropy, strings, import table, full disassembly. Both targets
+  travel — Desdec reads a PE as it reads an ELF, and that is the best ASM
+  Studio has to offer of an `.exe` it cannot run itself. The source is always
+  re-assembled first, so what is read over there is what is on screen here.
+  Desdec is installed separately: when its executable is on neither the `PATH`
+  nor `~/.local/bin`, the console says so, and says where to put it, instead of
+  failing in silence.
+
 ## [0.5.0-beta.2] - 2026-08-30
 
 ### Fixed

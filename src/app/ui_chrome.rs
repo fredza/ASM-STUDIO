@@ -835,6 +835,24 @@ impl App {
                         self.show_calculator = true;
                     }
                     ui.separator();
+                    // Desdec n'est pas fourni avec l'IDE, et l'entrée reste
+                    // pourtant toujours cliquable : la griser demanderait de
+                    // fouiller le PATH à chaque image du menu, et un clic sans
+                    // Desdec installé répond déjà, en toutes lettres, ce qu'il
+                    // manque et où le mettre.
+                    if ui
+                        .add(egui::Button::new(tr("Envoyer vers Desdec", "Send to Desdec", "Enviar a Desdec")))
+                        .on_hover_text(tr(
+                            "Assemble, puis ouvre le binaire produit dans Desdec : sections, chaînes, table d'import, désassemblage complet. Desdec s'installe à part.",
+                            "Assembles, then opens the binary produced in Desdec: sections, strings, import table, full disassembly. Desdec is installed separately.",
+                            "Ensambla y abre el binario producido en Desdec: secciones, cadenas, tabla de importación, desensamblado completo. Desdec se instala aparte.",
+                        ))
+                        .clicked()
+                    {
+                        ui.close();
+                        self.send_to_desdec();
+                    }
+                    ui.separator();
                     if item(ui, tr("Vérifier les mises à jour", "Check for updates", "Buscar actualizaciones"), "") {
                         self.updater.check();
                     }

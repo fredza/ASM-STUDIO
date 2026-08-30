@@ -4,6 +4,7 @@ mod assemble;
 mod binfmt;
 mod breakpoint;
 mod debugger;
+mod desdec;
 mod diagnostic;
 mod disasm;
 mod effects;
