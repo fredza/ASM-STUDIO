@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-beta.2] - 2026-08-30
+
+### Fixed
+- **`Tab` on a selection that fits on one line**: It pushed the whole line
+  aside instead of replacing what was selected. The condition guarding the two
+  behaviours asked for an *empty* selection where its own comment promised
+  "a selection held in one line". The criterion is now the line break rather
+  than the line number — a whole line taken *with* its `\n` still counts as a
+  single line internally, and has to be shifted, not erased.
+- **Tabs in a file written elsewhere**: egui renders `\t` with a fixed
+  four-space advance and no notion of tab stop, so a source indented with tabs
+  showed its columns out of line — worse still on a file that mixed tabs and
+  spaces. Tabs are now expanded to the next stop when the file is opened, and
+  the console says so rather than doing it in silence.
+- **Abyss dressed its windows in the wrong blue**: Settings and the Calculator
+  wore `editorWidget.background` (`#262641`), which in VS Code dresses the small
+  find box floating *over* the editor, where being lighter is the whole point.
+  On full-size windows it became the lightest surface of the entire palette —
+  lighter than `faint` and than `surface`, something no other theme in the
+  catalogue does. Windows now take the side panel's background, and are still
+  told apart by their border, their rounding and their shadow.
+
 ## [0.5.0-beta.1] - 2026-08-30
 
 ### Added
