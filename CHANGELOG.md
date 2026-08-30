@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-beta.1] - 2026-08-30
+
+### Added
+- **The Abyss theme**: VS Code's theme, carried over from its official file —
+  the `#000C18` night blue of the editor, the `#060621` of the side panels, the
+  `#08286B` of the selected row, the `#DDBB88` gold of the cursor. Two
+  deliberate departures, both on syntax colouring: Abyss paints keywords at
+  `#225588`, a contrast of 2.5:1 against its own background, so directives are
+  lifted towards the theme's foreground blue; and mnemonics take `#9966B8`
+  (Abyss's `support.function`) — in assembly, the instruction cannot be the
+  dullest word on the line.
+- **A real tree in the explorer**: Folders expand and collapse in place instead
+  of replacing the displayed root. `←`/`→` collapse and expand — or step out to
+  the parent, or into the first child — and `↑`/`↓` now walk the tree *as it is
+  displayed*. They only ever saw the root before, and skipped over everything
+  the mouse had unfolded.
+- **A context menu worth the name**: open, expand, use as root, new file *here*,
+  new folder *here*, rename, copy path, delete.
+- **Explorer rows that read as a tree**: a full-width selection band with an
+  accent edge, indentation guides, chevrons and icons drawn as vectors (no
+  glyph that shifts with the system font), long names elided rather than cut,
+  and a marker on the file currently open in the editor.
+
+### Fixed
+- **Renaming in the explorer validates with `Enter`**: The field asked for the
+  focus on *every* frame, so it never lost it, so `lost_focus()` never fired and
+  `Enter` was never seen. The focus is asked once. `Escape` gives up, clicking
+  away validates, and the name's stem — not its extension — comes preselected.
+- **Saving a file after renaming it**: The rename rebuilt every related path
+  with `to.join(tail)`; for the renamed entry itself `tail` is empty, and
+  `join("")` appends a separator. `src_path` became `file.asm/`, which the file
+  system reads as a *folder* — every write failed with “Is a directory”, while
+  “Save As…”, starting from the path handed over by the native dialog, kept
+  working. Two `PathBuf` differing only by that separator compare equal, which
+  is why nothing had caught it.
+- **The mouse no longer behaves erratically when the focus changes**: while a
+  rename was open, the explorer took the focus back from whatever field had just
+  been clicked. And the keys of the floating windows — breakpoint condition, go
+  to line, new project, calculator, palette, program input — were shared with the
+  panel behind them: the arrows moved a selection there, `Enter` opened a file
+  and `Escape` stopped the program.
+- **A new folder is created in the folder that asked for it**, and the dialog
+  says why a name is refused before you press “Create”, instead of reporting the
+  failure to the console afterwards.
+- **Renaming an expanded folder no longer collapses it.**
+
 ## [0.4.9-beta.1] - 2026-08-13
 
 ### Added

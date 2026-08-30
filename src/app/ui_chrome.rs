@@ -388,10 +388,19 @@ impl App {
                     if up || down {
                         self.move_explorer_selection(down);
                     }
+                    // ←/→ replient et déplient l'arbre : sans elles, le clavier
+                    // ne pouvait atteindre que la racine.
+                    let (left, right) = ctx.input(|i| {
+                        (i.key_pressed(Key::ArrowLeft), i.key_pressed(Key::ArrowRight))
+                    });
+                    if left || right {
+                        self.slide_explorer_selection(right);
+                    }
+                    // Entrée ouvre le fichier, et déplie le dossier — elle ne
+                    // change plus de racine : l'arbre se parcourt sur place.
                     if enter && let Some(f) = self.explorer_selected.clone() {
                         if f.is_dir() {
-                            self.explorer_dir = f;
-                            self.explorer_selected = None;
+                            self.toggle_explorer_expanded(&f);
                         } else {
                             self.open_file(f);
                         }

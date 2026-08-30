@@ -10,7 +10,9 @@ use super::{
     changed_color, changed_color2, lerp_color,
     panel_header, icon_img, icon_tab,
     hex_dump_rows, parse_hex, parse_hex_bytes,
-    explorer_entries, explorer_row, ExplorerAction, ExplorerRowColors, ExplorerRowLabels,
+    dialog_window,
+    explorer_entries, explorer_row, EXPLORER_ROW_H, ExplorerAction, ExplorerRename,
+    ExplorerRowColors, ExplorerRowLabels, ExplorerRowMarks,
 };
 use super::pedagogy::bit_diff_strip;
 
@@ -318,6 +320,7 @@ impl App {
                         );
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut self.stdin_input)
+                                .id(super::stdin_id())
                                 .desired_width(f32::INFINITY)
                                 .font(egui::TextStyle::Monospace)
                                 .hint_text(hint),
@@ -736,14 +739,29 @@ impl App {
 
     // ---------- Explorateur de fichiers (panneau de gauche) ----------
 
-    /// Déplace la sélection clavier de l'explorateur sur une entrée racine.
+    /// L'arbre tel qu'il s'affiche : les dossiers dépliés, aplatis dans l'ordre
+    /// des lignes.
     ///
-    /// Ne parcourt que le dossier racine : Entrée ouvre ensuite le dossier
-    /// choisi. Les catégories `elf` et `windows` doivent rester accessibles
-    /// sans souris, sans pour autant rendre la navigation récursive implicite.
+    /// Le clavier et la souris parcourent désormais la MÊME liste. C'est ce qui
+    /// manquait : ↑/↓ ne voyaient que la racine pendant que la souris atteignait
+    /// toute la profondeur dépliée, et la sélection semblait sauter au hasard.
+    fn explorer_rows(&self) -> Vec<std::path::PathBuf> {
+        explorer_entries(&self.explorer_expanded, &self.explorer_dir)
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect()
+    }
+
+    /// Déplie un dossier replié, replie un dossier déplié.
+    pub(super) fn toggle_explorer_expanded(&mut self, path: &std::path::Path) {
+        if !self.explorer_expanded.remove(path) {
+            self.explorer_expanded.insert(path.to_path_buf());
+        }
+    }
+
+    /// Déplace la sélection clavier d'une ligne dans l'arbre affiché.
     pub(super) fn move_explorer_selection(&mut self, down: bool) {
-        let (dirs, files) = super::list_entries(&self.explorer_dir);
-        let entries: Vec<_> = dirs.into_iter().chain(files).collect();
+        let entries = self.explorer_rows();
         if entries.is_empty() {
             return;
         }
@@ -761,124 +779,228 @@ impl App {
         self.scroll_to_sel = Some(super::dock::Panel::Explorer);
     }
 
-    pub(super) fn explorer_ui(&mut self, ui: &mut egui::Ui) {
-        let up_tip = i18n::tr3(self.lang, "Dossier parent comme racine", "Parent folder as root", "Carpeta padre como raíz");
-        let new_tip = i18n::tr3(
-            self.lang,
-            "Nouveau fichier dans ce dossier — le format (ELF ou PE) est demandé",
-            "New file in this folder — the format (ELF or PE) is asked for",
-            "Archivo nuevo en esta carpeta — se pregunta el formato (ELF o PE)",
-        );
+    /// ←/→ dans l'arbre : replier ou déplier le dossier retenu, et à défaut
+    /// remonter au dossier parent ou descendre sur son premier enfant.
+    ///
+    /// C'est le geste attendu d'un arbre, et le seul moyen de déplier sans
+    /// viser le chevron à la souris.
+    pub(super) fn slide_explorer_selection(&mut self, right: bool) {
+        let Some(sel) = self.explorer_selected.clone() else {
+            self.move_explorer_selection(true);
+            return;
+        };
+        let is_dir = sel.is_dir();
+        let open = self.explorer_expanded.contains(&sel);
+        if right {
+            if is_dir && !open {
+                self.explorer_expanded.insert(sel);
+            } else if is_dir {
+                // Déjà déplié : la flèche descend sur le premier enfant, qui
+                // suit immédiatement son dossier dans la liste aplatie.
+                let rows = self.explorer_rows();
+                if let Some(i) = rows.iter().position(|p| *p == sel)
+                    && let Some(next) = rows.get(i + 1)
+                    && next.starts_with(&sel)
+                {
+                    self.explorer_selected = Some(next.clone());
+                }
+            }
+        } else if is_dir && open {
+            self.explorer_expanded.remove(&sel);
+        } else if let Some(parent) = sel.parent()
+            && parent != self.explorer_dir
+            && parent.starts_with(&self.explorer_dir)
+        {
+            self.explorer_selected = Some(parent.to_path_buf());
+        }
+        self.scroll_to_sel = Some(super::dock::Panel::Explorer);
+    }
 
-        // Barre d'outils : les actions usuelles restent visibles, sans cacher
-        // l'arbre derrière un menu. Le clic droit d'une ligne apporte ensuite
-        // renommer/supprimer directement là où l'on travaille.
+    pub(super) fn explorer_ui(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+
+        // --- En-tête : la racine à gauche, les actions à droite ---
+        //
+        // Dans ce sens, un nom de dossier long s'élide au lieu de repousser les
+        // boutons hors du panneau — un explorateur est souvent la colonne la
+        // plus étroite de la fenêtre.
         let mut go_up = false;
-        let mut new_here = false;
-        ui.horizontal(|ui| {
-            if self
-                .tip(ui.small_button("⬆"), up_tip)
-                .clicked()
-            {
-                go_up = true;
-            }
-            // Créer un fichier depuis l'explorateur : c'est là qu'on regarde
-            // ses fichiers, donc là qu'on veut en ajouter un — sans avoir à
-            // remonter au menu Fichier.
-            if self.tip(ui.small_button("✚"), new_tip).clicked() {
-                new_here = true;
-            }
-            if self
-                .tip(
-                    ui.small_button("🗀+"),
-                    i18n::tr3(self.lang, "Nouveau dossier", "New folder", "Nueva carpeta"),
-                )
-                .clicked()
-            {
-                self.explorer_new_folder_input.clear();
-                self.explorer_new_folder = true;
-            }
-            let root = self
-                .explorer_dir
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| self.explorer_dir.display().to_string());
-            ui.label(RichText::new(root).strong().color(self.c_header()))
-                .on_hover_text(self.explorer_dir.display().to_string());
+        let mut new_file = false;
+        let mut new_folder = false;
+        let mut collapse_all = false;
+        let root_label = self
+            .explorer_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.explorer_dir.display().to_string());
+        let root_path = self.explorer_dir.display().to_string();
+        panel_header(ui, |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                collapse_all = self
+                    .tip(ui.small_button("⊟"), tr("Tout replier", "Collapse all", "Contraer todo"))
+                    .clicked();
+                new_folder = self
+                    .tip(
+                        ui.small_button("🗀"),
+                        tr("Nouveau dossier", "New folder", "Nueva carpeta"),
+                    )
+                    .clicked();
+                new_file = self
+                    .tip(
+                        ui.small_button("✚"),
+                        tr(
+                            "Nouveau fichier dans ce dossier — le format (ELF ou PE) est demandé",
+                            "New file in this folder — the format (ELF or PE) is asked for",
+                            "Archivo nuevo en esta carpeta — se pregunta el formato (ELF o PE)",
+                        ),
+                    )
+                    .clicked();
+                go_up = self
+                    .tip(
+                        ui.small_button("⬆"),
+                        tr("Dossier parent comme racine", "Parent folder as root", "Carpeta padre como raíz"),
+                    )
+                    .clicked();
+                ui.add_space(2.0);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    self.tip(
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&root_label).strong().color(self.c_header()),
+                            )
+                            .truncate(),
+                        ),
+                        &root_path,
+                    );
+                });
+            });
         });
         if go_up && let Some(p) = self.explorer_dir.parent() {
             self.explorer_dir = p.to_path_buf();
             self.explorer_selected = None;
         }
-        if new_here {
-            self.new_file();
+        if collapse_all {
+            self.explorer_expanded.clear();
         }
-        ui.separator();
+        if new_file {
+            let dir = self.explorer_dir.clone();
+            self.new_file_in(dir);
+        }
+        if new_folder {
+            self.begin_explorer_new_folder(self.explorer_dir.clone());
+        }
 
+        // --- L'arbre ---
+        let theme = crate::theme::current();
+        let colors = ExplorerRowColors {
+            asm: self.c_mnemonic(),
+            other: self.c_bytes(),
+            text: theme.ui.text,
+            // Un dossier ambre, un fichier assembleur de la couleur des
+            // mnémoniques, le reste éteint : le type se lit à l'icône.
+            folder: theme.ui.action,
+            sel_bg: self.c_sel_row(),
+            hover_bg: ui.visuals().widgets.hovered.weak_bg_fill.gamma_multiply(0.5),
+            sel_fg: theme.ui.text_strong,
+            accent: theme.ui.accent,
+            dim: theme.ui.off,
+        };
+        let labels = ExplorerRowLabels {
+            open: tr("Ouvrir", "Open", "Abrir"),
+            expand: tr("Déplier / replier", "Expand / collapse", "Desplegar / contraer"),
+            set_root: tr(
+                "Ouvrir ce dossier comme racine",
+                "Open this folder as root",
+                "Abrir esta carpeta como raíz",
+            ),
+            new_file: tr("Nouveau fichier ici", "New file here", "Archivo nuevo aquí"),
+            new_folder: tr("Nouveau dossier ici", "New folder here", "Nueva carpeta aquí"),
+            rename: tr("Renommer  (F2)", "Rename  (F2)", "Renombrar  (F2)"),
+            copy_path: tr("Copier le chemin", "Copy path", "Copiar la ruta"),
+            delete: tr("Supprimer…  (Suppr)", "Delete…  (Del)", "Eliminar…  (Supr)"),
+        };
+        // Le repère suit la sélection clavier quand il y en a une, sinon le
+        // fichier ouvert : sans cela, les flèches déplaceraient un curseur
+        // invisible.
+        let selected = self.explorer_selected.clone().unwrap_or_else(|| self.src_path.clone());
+        let open_in_editor = self.src_path.clone();
+        let path_tip = self.show_tooltips;
+        let scroll_here = self.take_scroll_request(super::dock::Panel::Explorer);
+        let renaming = self.explorer_renaming.clone();
+        // `take` : l'aplatissement a besoin des dossiers dépliés pendant que les
+        // lignes empruntent `self` en écriture (le champ de renommage). L'état
+        // est rendu intact juste après.
+        let expanded = std::mem::take(&mut self.explorer_expanded);
+        let entries = explorer_entries(&expanded, &self.explorer_dir);
+        let mut explorer_action = None;
+        let mut renaming_is_visible = false;
+        // Les lignes se touchent : `show_rows` espace les rangées de
+        // `item_spacing.y`, et les huit points de blanc du reste de l'interface
+        // transformeraient l'arbre en liste flottante — bandes de survol
+        // détachées, traits de retrait pointillés.
+        ui.spacing_mut().item_spacing.y = 0.0;
         // Arbre virtualisé : au défilement, `show_rows` ne rend que la tranche
         // visible au lieu de reconstruire l'intégralité de l'arborescence.
-        let asm_col = self.c_mnemonic();
-        let other_col = self.c_bytes();
-        // Le repère suit la sélection clavier quand il y en a une, sinon le
-        // fichier ouvert : sans cela, les flèches déplaceraient un curseur invisible.
-        let cur = self.explorer_selected.clone().unwrap_or_else(|| self.src_path.clone());
-        let scroll_here = self.take_scroll_request(super::dock::Panel::Explorer);
-        let root = self.explorer_dir.clone();
-        let entries = explorer_entries(ui, &root);
-        let renaming = self.explorer_renaming.clone();
-        let mut explorer_action = None;
-        let row_h = 24.0;
         egui::ScrollArea::vertical()
             .id_salt("explorer_scroll")
             .auto_shrink([false, false])
-            .show_rows(ui, row_h, entries.len(), |ui, rows| {
+            .show_rows(ui, EXPLORER_ROW_H, entries.len(), |ui, rows| {
                 for index in rows {
                     let entry = &entries[index];
                     let renaming_this = renaming.as_ref() == Some(&entry.path);
-                    let action = explorer_row(
-                        ui,
-                        entry,
-                        entry.path == cur,
-                        scroll_here && entry.path == cur,
-                        renaming_this.then_some(&mut self.explorer_rename_input),
-                        ExplorerRowLabels {
-                            open_folder: i18n::tr3(self.lang, "Ouvrir ce dossier", "Open this folder", "Abrir esta carpeta"),
-                            rename: i18n::tr3(self.lang, "Renommer", "Rename", "Renombrar"),
-                            delete: i18n::tr3(self.lang, "Supprimer…", "Delete…", "Eliminar…"),
-                        },
-                        ExplorerRowColors { asm: asm_col, other: other_col },
-                    );
-                    if action.is_some() {
-                        explorer_action = action;
+                    renaming_is_visible |= renaming_this;
+                    let marks = ExplorerRowMarks {
+                        selected: entry.path == selected,
+                        open_in_editor: entry.path == open_in_editor,
+                        scroll_to: scroll_here && entry.path == selected,
+                        path_tip,
+                    };
+                    let rename = renaming_this.then_some(ExplorerRename {
+                        input: &mut self.explorer_rename_input,
+                        focus: &mut self.explorer_rename_focus,
+                    });
+                    if let Some(action) = explorer_row(ui, entry, &marks, rename, &labels, &colors)
+                    {
+                        explorer_action = Some(action);
                     }
                 }
             });
+        self.explorer_expanded = expanded;
         if entries.is_empty() {
-            ui.weak(i18n::tr3(self.lang, "Ce dossier est vide.", "This folder is empty.", "Esta carpeta está vacía."));
+            ui.weak(tr("Ce dossier est vide.", "This folder is empty.", "Esta carpeta está vacía."));
+        }
+        // La ligne en cours de renommage a quitté l'arbre (dossier replié,
+        // racine changée, défilement) : on valide, comme un clic ailleurs, au
+        // lieu de laisser une saisie invisible bloquée.
+        if renaming.is_some() && !renaming_is_visible && self.explorer_renaming == renaming {
+            self.finish_explorer_rename();
         }
         match explorer_action {
             Some(ExplorerAction::Open(path)) => {
                 self.explorer_selected = Some(path.clone());
                 self.open_file(path);
             }
-            Some(ExplorerAction::Select(path)) => {
-                if self.explorer_renaming.as_ref() == Some(&path) {
-                    self.explorer_renaming = None;
-                }
-                self.explorer_selected = Some(path);
+            Some(ExplorerAction::Select(path)) => self.explorer_selected = Some(path),
+            Some(ExplorerAction::Toggle(path)) => {
+                self.explorer_selected = Some(path.clone());
+                self.toggle_explorer_expanded(&path);
             }
             Some(ExplorerAction::Navigate(path)) => {
                 self.explorer_dir = path;
                 self.explorer_selected = None;
             }
-            Some(ExplorerAction::Rename(path)) => {
-                if self.explorer_renaming.as_ref() == Some(&path) {
-                    self.finish_explorer_rename();
-                } else {
-                    self.begin_explorer_rename(path);
-                }
-            }
+            Some(ExplorerAction::BeginRename(path)) => self.begin_explorer_rename(path),
+            Some(ExplorerAction::CommitRename) => self.finish_explorer_rename(),
+            Some(ExplorerAction::CancelRename) => self.cancel_explorer_rename(),
             Some(ExplorerAction::Delete(path)) => self.explorer_delete = Some(path),
+            Some(ExplorerAction::NewFolderIn(dir)) => self.begin_explorer_new_folder(dir),
+            Some(ExplorerAction::NewFileIn(dir)) => self.new_file_in(dir),
+            Some(ExplorerAction::CopyPath(path)) => {
+                let path = path.display().to_string();
+                ui.ctx().copy_text(path.clone());
+                self.status = format!("{} {path}", tr("Chemin copié :", "Path copied:", "Ruta copiada:"));
+            }
             None => {}
         }
         self.explorer_dialogs(ui.ctx());
@@ -890,20 +1012,72 @@ impl App {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         if self.explorer_new_folder {
+            let parent = self
+                .explorer_new_folder_parent
+                .clone()
+                .unwrap_or_else(|| self.explorer_dir.clone());
+            // Le nom est jugé AVANT d'être peint : la boîte peut alors dire
+            // pourquoi elle refuse, au lieu de laisser cliquer « Créer » pour
+            // n'afficher l'échec qu'ensuite, dans la console.
+            let name = self.explorer_new_folder_input.trim().to_string();
+            let problem = if name.is_empty() {
+                None
+            } else if !Self::valid_explorer_name(&name) {
+                Some(tr(
+                    "Un nom simple, sans / ni \\.",
+                    "One simple name, without / or \\.",
+                    "Un nombre simple, sin / ni \\.",
+                ))
+            } else if parent.join(&name).exists() {
+                Some(tr(
+                    "Ce nom est déjà pris dans ce dossier.",
+                    "That name is already taken in this folder.",
+                    "Ese nombre ya existe en esta carpeta.",
+                ))
+            } else {
+                None
+            };
+            let can_create = !name.is_empty() && problem.is_none();
             let mut open = true;
             let mut create = false;
             let mut cancel = false;
-            egui::Window::new(tr("Nouveau dossier", "New folder", "Nueva carpeta"))
-                .collapsible(false)
+            dialog_window(ctx, tr("Nouveau dossier", "New folder", "Nueva carpeta"))
                 .resizable(false)
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    ui.label(tr("Nom du dossier", "Folder name", "Nombre de la carpeta"));
-                    let response = ui.add(egui::TextEdit::singleline(&mut self.explorer_new_folder_input).desired_width(280.0));
-                    response.request_focus();
+                    ui.set_width(380.0);
+                    ui.label(tr("Dans", "In", "En"));
+                    ui.label(RichText::new(parent.display().to_string()).monospace().weak());
+                    ui.add_space(8.0);
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.explorer_new_folder_input)
+                            .id(super::explorer_new_folder_id())
+                            .desired_width(f32::INFINITY)
+                            .hint_text(tr("Nom du dossier", "Folder name", "Nombre de la carpeta")),
+                    );
+                    // Le focus une seule fois, à l'ouverture : le redemander à
+                    // chaque image empêcherait le champ de le perdre, donc
+                    // Entrée de se voir, et le volerait à tout le reste.
+                    if std::mem::take(&mut self.explorer_new_folder_focus) {
+                        response.request_focus();
+                    }
+                    ui.add_space(4.0);
+                    match problem {
+                        Some(msg) => {
+                            ui.label(RichText::new(msg).color(false_col()));
+                        }
+                        None => {
+                            ui.label(RichText::new(" ").small());
+                        }
+                    }
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if ui.button(tr("Créer", "Create", "Crear")).clicked()
-                            || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                        if ui
+                            .add_enabled(can_create, egui::Button::new(tr("Créer", "Create", "Crear")))
+                            .clicked()
+                            || (can_create
+                                && response.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                         {
                             create = true;
                         }
@@ -912,18 +1086,21 @@ impl App {
                         }
                     });
                 });
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                cancel = true;
+            }
             if create {
                 self.create_explorer_folder();
             }
             if !open || cancel {
                 self.explorer_new_folder = false;
+                self.explorer_new_folder_parent = None;
             }
         }
         if let Some(path) = self.explorer_delete.clone() {
             let mut confirm = false;
             let mut cancel = false;
-            egui::Window::new(tr("Supprimer ?", "Delete?", "¿Eliminar?"))
-                .collapsible(false)
+            dialog_window(ctx, tr("Supprimer ?", "Delete?", "¿Eliminar?"))
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.label(if path.is_dir() {
@@ -932,6 +1109,7 @@ impl App {
                         tr("Ce fichier sera supprimé.", "This file will be deleted.", "Este archivo se eliminará.")
                     });
                     ui.label(RichText::new(path.display().to_string()).monospace().weak());
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui.button(RichText::new(tr("Supprimer", "Delete", "Eliminar")).color(false_col())).clicked() {
                             confirm = true;
@@ -941,6 +1119,9 @@ impl App {
                         }
                     });
                 });
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                cancel = true;
+            }
             if confirm {
                 self.explorer_delete = None;
                 self.delete_explorer_entry(path);
@@ -1654,6 +1835,363 @@ niveau2:
                 app.syscalls_ui(ui);
             });
         });
+    }
+
+    // ---------- Explorateur ----------
+
+    /// Un dossier de travail vide, propre à chaque test.
+    fn explorer_sandbox(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("asmstudio-explorateur-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dossier de test");
+        dir
+    }
+
+    /// Rend l'explorateur une image, en lui remettant les événements donnés.
+    fn render_explorer(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let input = egui::RawInput { events, ..Default::default() };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_max_width(240.0);
+                app.explorer_ui(ui);
+            });
+        });
+    }
+
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// LE défaut signalé : on tapait le nouveau nom, on appuyait sur Entrée, et
+    /// rien ne se passait.
+    ///
+    /// La cause était un `request_focus()` redemandé à CHAQUE image : le champ
+    /// ne perdait donc jamais le focus, `lost_focus()` restait faux, et la
+    /// validation n'arrivait jamais. Le test tient les deux bouts — le focus ne
+    /// se demande qu'une fois, et Entrée renomme pour de bon sur le disque.
+    #[test]
+    fn enter_validates_a_rename_in_the_tree() {
+        let dir = explorer_sandbox("entree");
+        let before = dir.join("avant.asm");
+        std::fs::write(&before, "; rien\n").unwrap();
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.src_path = before.clone();
+        app.begin_explorer_rename(before.clone());
+        app.explorer_rename_input = "apres.asm".to_string();
+
+        let ctx = egui::Context::default();
+        render_explorer(&ctx, &mut app, Vec::new());
+        assert!(
+            !app.explorer_rename_focus,
+            "la demande de focus est à usage unique, sinon Entrée ne se voit jamais"
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(super::super::explorer_rename_id()),
+            "le champ de renommage doit avoir pris le focus"
+        );
+
+        render_explorer(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        assert!(dir.join("apres.asm").is_file(), "Entrée doit renommer le fichier");
+        assert!(!before.exists(), "l'ancien nom ne doit plus exister");
+        assert_eq!(app.explorer_renaming, None, "la saisie se referme après validation");
+        assert_eq!(app.src_path, dir.join("apres.asm"), "le fichier ouvert suit son nom");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Échap abandonne : le fichier garde son nom.
+    #[test]
+    fn escape_abandons_a_rename() {
+        let dir = explorer_sandbox("echap");
+        let file = dir.join("garde-moi.asm");
+        std::fs::write(&file, "; rien\n").unwrap();
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.begin_explorer_rename(file.clone());
+        app.explorer_rename_input = "autre.asm".to_string();
+
+        let ctx = egui::Context::default();
+        render_explorer(&ctx, &mut app, Vec::new());
+        render_explorer(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+
+        assert!(file.is_file(), "Échap ne renomme rien");
+        assert!(!dir.join("autre.asm").exists());
+        assert_eq!(app.explorer_renaming, None, "la saisie se referme quand même");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// L'autre moitié du même défaut : tant qu'un renommage était ouvert, le
+    /// champ reprenait le focus à chaque image — donc à tout autre champ que
+    /// l'on venait de cliquer. C'est ce qui rendait la souris « erratique »
+    /// partout ailleurs dans l'application.
+    #[test]
+    fn a_rename_never_steals_the_focus_back() {
+        let dir = explorer_sandbox("focus");
+        let file = dir.join("un.asm");
+        std::fs::write(&file, "; rien\n").unwrap();
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.begin_explorer_rename(file.clone());
+
+        let ctx = egui::Context::default();
+        render_explorer(&ctx, &mut app, Vec::new());
+
+        // L'utilisateur clique ailleurs : un autre champ prend le focus.
+        let elsewhere = egui::Id::new("un_autre_champ");
+        ctx.memory_mut(|m| m.request_focus(elsewhere));
+        let mut other = String::new();
+        let input = egui::RawInput::default();
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.explorer_ui(ui);
+                ui.add(egui::TextEdit::singleline(&mut other).id(elsewhere));
+            });
+        });
+
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(elsewhere),
+            "l'explorateur ne doit pas reprendre le focus au champ que l'on vient de cliquer"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pendant la frappe du nouveau nom, les flèches, F2 et Suppr doivent
+    /// appartenir au champ et non à l'arbre : le champ est donc déclaré dans
+    /// [`text_inputs`], avec le panneau auquel il appartient.
+    #[test]
+    fn typing_a_new_name_is_typing_not_navigating() {
+        let mut app = App::new();
+        app.focus_panel(super::super::dock::Panel::Explorer);
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|m| m.request_focus(super::super::explorer_rename_id()));
+        assert!(
+            app.typing_in_focused_panel(&ctx),
+            "le champ de renommage doit compter comme une saisie"
+        );
+    }
+
+    /// Le clavier doit parcourir l'arbre TEL QU'IL EST AFFICHÉ : un dossier
+    /// déplié se traverse, ses fichiers compris. Avant, ↑/↓ ne voyaient que la
+    /// racine et sautaient par-dessus tout ce que la souris avait déplié.
+    #[test]
+    fn arrows_walk_the_expanded_tree() {
+        let dir = explorer_sandbox("arbre");
+        let sub = dir.join("atelier");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("dedans.asm"), "").unwrap();
+        std::fs::write(dir.join("zzz.asm"), "").unwrap();
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.explorer_selected = Some(sub.clone());
+
+        // Replié : après le dossier vient le fichier de la racine.
+        app.move_explorer_selection(true);
+        assert_eq!(app.explorer_selected.as_deref(), Some(dir.join("zzz.asm").as_path()));
+
+        // Déplié : c'est l'enfant qui vient juste après.
+        app.explorer_selected = Some(sub.clone());
+        app.slide_explorer_selection(true);
+        assert!(app.explorer_expanded.contains(&sub), "→ déplie le dossier retenu");
+        app.move_explorer_selection(true);
+        assert_eq!(app.explorer_selected.as_deref(), Some(sub.join("dedans.asm").as_path()));
+
+        // ← depuis un enfant remonte à son dossier, puis le replie.
+        app.slide_explorer_selection(false);
+        assert_eq!(app.explorer_selected.as_deref(), Some(sub.as_path()));
+        app.slide_explorer_selection(false);
+        assert!(!app.explorer_expanded.contains(&sub), "← replie le dossier retenu");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Renommer un dossier déplié ne doit pas le replier : l'état est indexé
+    /// par chemin, et le chemin vient de changer.
+    #[test]
+    fn renaming_a_folder_keeps_it_expanded() {
+        let dir = explorer_sandbox("deplie");
+        let sub = dir.join("avant");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("x.asm"), "").unwrap();
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.explorer_expanded.insert(sub.clone());
+        app.begin_explorer_rename(sub.clone());
+        app.explorer_rename_input = "apres".to_string();
+        app.finish_explorer_rename();
+
+        assert!(dir.join("apres").is_dir(), "le dossier doit être renommé");
+        assert!(
+            app.explorer_expanded.contains(&dir.join("apres")),
+            "et rester déplié sous son nouveau nom"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Un nom refusé garde la ligne en édition ET lui rend le focus : sans
+    /// cela, la ligne restait éditable mais plus rien n'écoutait la frappe.
+    #[test]
+    fn a_refused_name_keeps_the_field_alive() {
+        let dir = explorer_sandbox("refus");
+        let file = dir.join("un.asm");
+        std::fs::write(&file, "").unwrap();
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.begin_explorer_rename(file.clone());
+        app.explorer_rename_input = "sous/dossier.asm".to_string();
+        app.explorer_rename_focus = false;
+        app.finish_explorer_rename();
+
+        assert_eq!(app.explorer_renaming, Some(file.clone()), "la saisie reste ouverte");
+        assert!(app.explorer_rename_focus, "et reprend le focus");
+        assert!(file.is_file(), "rien n'a bougé sur le disque");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Un dossier créé depuis le clic droit d'un sous-dossier naît CHEZ LUI, et
+    /// le déplie pour qu'on le voie apparaître.
+    #[test]
+    fn a_new_folder_lands_in_the_folder_that_asked_for_it() {
+        let dir = explorer_sandbox("creation");
+        let sub = dir.join("atelier");
+        std::fs::create_dir(&sub).unwrap();
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.begin_explorer_new_folder(sub.clone());
+        app.explorer_new_folder_input = "exercices".to_string();
+        app.create_explorer_folder();
+
+        assert!(sub.join("exercices").is_dir(), "le dossier naît dans celui visé");
+        assert!(app.explorer_expanded.contains(&sub), "son parent se déplie");
+        assert!(!app.explorer_new_folder, "la boîte se referme");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Les quatre boutons de la barre de l'explorateur doivent avoir un glyphe
+    /// dans les polices par défaut d'egui : sans cela, ils s'affichent en carré
+    /// vide et plus personne ne devine ce qu'ils font.
+    #[test]
+    fn the_explorer_toolbar_buttons_have_real_glyphs() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |_| {});
+        for icon in ["⬆", "✚", "🗀", "⊟"] {
+            let has =
+                ctx.fonts_mut(|f| f.has_glyphs(&egui::FontId::proportional(14.0), icon));
+            assert!(has, "{icon} n'a pas de glyphe : il s'afficherait en tofu");
+        }
+    }
+
+    /// L'arbre se rend dans une colonne étroite, à plusieurs niveaux de
+    /// profondeur et avec un thème quelconque, sans rien faire paniquer.
+    #[test]
+    fn the_explorer_renders_deep_and_narrow_in_every_theme() {
+        let dir = explorer_sandbox("rendu");
+        let deep = dir.join("un").join("deux").join("trois");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("un-nom-de-fichier-vraiment-tres-long.asm"), "").unwrap();
+        std::fs::write(dir.join("racine.o"), "").unwrap();
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.explorer_expanded.insert(dir.join("un"));
+        app.explorer_expanded.insert(dir.join("un").join("deux"));
+        app.explorer_expanded.insert(deep.clone());
+
+        let _guard = crate::theme::lock_for_test();
+        let ctx = egui::Context::default();
+        for theme in crate::theme::THEMES.iter() {
+            crate::theme::set_current(theme);
+            render_explorer(&ctx, &mut app, Vec::new());
+        }
+        crate::theme::set_current(&crate::theme::THEMES[0]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Peint l'explorateur avec `selected` en surbrillance et renvoie
+    /// (zone du panneau, bande de sélection).
+    fn explorer_selection_band(app: &mut App, selected: &std::path::Path) -> (egui::Rect, egui::Rect) {
+        // La couleur cherchée vient du thème, global au processus.
+        let _theme = crate::theme::lock_for_test();
+        app.explorer_selected = Some(selected.to_path_buf());
+        let sel = app.c_sel_row();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(260.0, 500.0))),
+            ..Default::default()
+        };
+        let mut avail = egui::Rect::ZERO;
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                avail = ui.max_rect();
+                app.explorer_ui(ui);
+            });
+        });
+        let band = out
+            .shapes
+            .iter()
+            .find_map(|cs| match &cs.shape {
+                egui::Shape::Rect(r) if r.fill == sel => Some(r.rect),
+                _ => None,
+            })
+            .expect("la ligne sélectionnée doit porter sa bande");
+        (avail, band)
+    }
+
+    /// La bande de sélection couvre TOUTE la largeur du panneau, et les lignes
+    /// se touchent : `show_rows` espace les rangées de `item_spacing.y`, et les
+    /// huit points de blanc du reste de l'interface auraient transformé l'arbre
+    /// en liste flottante.
+    #[test]
+    fn explorer_rows_are_full_width_and_contiguous() {
+        let dir = explorer_sandbox("bandes");
+        std::fs::write(dir.join("a.asm"), "").unwrap();
+        std::fs::write(dir.join("b.asm"), "").unwrap();
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+
+        let (avail, first) = explorer_selection_band(&mut app, &dir.join("a.asm"));
+        assert!(
+            (first.left() - avail.left()).abs() < 1.0 && (first.right() - avail.right()).abs() < 1.0,
+            "bande large de {} sur {} disponibles",
+            first.width(),
+            avail.width()
+        );
+        assert!(
+            (first.height() - EXPLORER_ROW_H).abs() < 0.5,
+            "hauteur de bande {} au lieu de {EXPLORER_ROW_H}",
+            first.height()
+        );
+
+        let (_, second) = explorer_selection_band(&mut app, &dir.join("b.asm"));
+        assert!(
+            (second.top() - first.top() - EXPLORER_ROW_H).abs() < 0.5,
+            "les lignes doivent se toucher : pas de {} pour une hauteur de {EXPLORER_ROW_H}",
+            second.top() - first.top()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// L'explorateur se parcourt au clavier et s'arrête aux bornes, comme le

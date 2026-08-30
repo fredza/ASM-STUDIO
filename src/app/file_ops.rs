@@ -38,7 +38,7 @@ fn push_bounded(buf: &mut String, s: &str, lang: i18n::Lang) {
 impl App {
     /// Un nom saisi dans l'explorateur doit désigner une seule entrée locale :
     /// ni chemin relatif, ni parent, ni séparateur qui ferait sortir du dossier.
-    fn valid_explorer_name(name: &str) -> bool {
+    pub(super) fn valid_explorer_name(name: &str) -> bool {
         !name.is_empty()
             && name != "."
             && name != ".."
@@ -54,6 +54,15 @@ impl App {
             .into_owned();
         self.explorer_selected = Some(path.clone());
         self.explorer_renaming = Some(path);
+        // Le champ apparaît cette image-ci : il lui faut le focus, une fois.
+        self.explorer_rename_focus = true;
+    }
+
+    /// Abandonne le renommage en cours (Échap) sans toucher au disque.
+    pub(super) fn cancel_explorer_rename(&mut self) {
+        self.explorer_renaming = None;
+        self.explorer_rename_focus = false;
+        self.explorer_rename_input.clear();
     }
 
     /// Applique le renommage initié directement dans l'arbre et maintient les
@@ -69,6 +78,9 @@ impl App {
                 "Nombre no válido: use un solo nombre, sin / ni \\.",
             ));
             self.explorer_renaming = Some(from);
+            // Le nom est refusé : on rend la main au champ plutôt que de
+            // laisser une ligne éditable que plus rien n'écoute.
+            self.explorer_rename_focus = true;
             return;
         }
         let Some(parent) = from.parent() else {
@@ -93,13 +105,37 @@ impl App {
                     from.display()
                 ));
                 self.explorer_renaming = Some(from);
+                self.explorer_rename_focus = true;
             }
         }
     }
 
-    /// Crée un dossier enfant dans le dossier affiché. Le nom est contrôlé ici
+    /// Ouvre la boîte « Nouveau dossier » pour un dossier PARENT donné : le
+    /// clic droit d'un sous-dossier crée chez lui, pas à la racine affichée.
+    pub(super) fn begin_explorer_new_folder(&mut self, parent: PathBuf) {
+        self.explorer_new_folder_input.clear();
+        self.explorer_new_folder_parent = Some(parent);
+        self.explorer_new_folder = true;
+        self.explorer_new_folder_focus = true;
+    }
+
+    /// Crée un fichier dans un dossier donné, en dépliant le chemin qui y mène
+    /// pour que le nouveau fichier soit visible là où on vient de le demander.
+    pub(super) fn new_file_in(&mut self, dir: PathBuf) {
+        if dir != self.explorer_dir {
+            self.explorer_expanded.insert(dir.clone());
+        }
+        self.explorer_new_file_dir = Some(dir);
+        self.guarded(super::unsaved::PendingAction::NewFile);
+    }
+
+    /// Crée un dossier enfant dans le dossier visé. Le nom est contrôlé ici
     /// aussi, car l'action peut ensuite être exposée par la palette.
     pub(super) fn create_explorer_folder(&mut self) {
+        let parent = self
+            .explorer_new_folder_parent
+            .clone()
+            .unwrap_or_else(|| self.explorer_dir.clone());
         let name = self.explorer_new_folder_input.trim();
         if !Self::valid_explorer_name(name) {
             self.log(i18n::tr3(
@@ -110,11 +146,17 @@ impl App {
             ));
             return;
         }
-        let path = self.explorer_dir.join(name);
+        let path = parent.join(name);
         match std::fs::create_dir(&path) {
             Ok(()) => {
                 self.explorer_new_folder = false;
+                self.explorer_new_folder_parent = None;
                 self.explorer_new_folder_input.clear();
+                // Le dossier qui vient de le recevoir se déplie : un dossier
+                // créé mais invisible donne l'impression que rien n'a marché.
+                if parent != self.explorer_dir {
+                    self.explorer_expanded.insert(parent);
+                }
                 self.explorer_selected = Some(path.clone());
                 self.status = format!("{} {}", i18n::tr(self.lang, "Dossier créé :", "Folder created:"), path.display());
             }
@@ -163,8 +205,21 @@ impl App {
 
     /// Remplace `from` par `to` dans tous les chemins liés à l'explorateur.
     /// Fonctionne aussi lorsqu'un dossier parent est renommé.
+    ///
+    /// Le cas de l'entrée renommée ELLE-MÊME se traite à part : `strip_prefix`
+    /// rend alors le reste vide, et `to.join("")` ajoute un séparateur final —
+    /// `vide.asm/`. Deux `PathBuf` qui ne diffèrent que par lui se comparent
+    /// égaux (ils ont les mêmes composants), donc rien ne le signalait ; mais
+    /// pour le système de fichiers, ce chemin désigne un DOSSIER, et toute
+    /// écriture dessus échoue en « Is a directory ». C'est ce qui empêchait
+    /// d'enregistrer un fichier après l'avoir renommé, là où « Enregistrer
+    /// sous… » — qui repart du chemin rendu par le dialogue natif — marchait.
     fn replace_explorer_path(&mut self, from: &Path, to: &Path) {
-        let replace = |path: &Path| path.strip_prefix(from).ok().map(|tail| to.join(tail));
+        let replace = |path: &Path| {
+            path.strip_prefix(from).ok().map(|tail| {
+                if tail.as_os_str().is_empty() { to.to_path_buf() } else { to.join(tail) }
+            })
+        };
         if let Some(path) = replace(&self.explorer_dir) {
             self.explorer_dir = path;
         }
@@ -174,6 +229,13 @@ impl App {
         if let Some(selected) = self.explorer_selected.as_ref().and_then(|path| replace(path)) {
             self.explorer_selected = Some(selected);
         }
+        // Renommer un dossier déplié ne doit pas le replier : ses entrées
+        // sont indexées par chemin, et le chemin vient de changer.
+        self.explorer_expanded = self
+            .explorer_expanded
+            .iter()
+            .map(|path| replace(path).unwrap_or_else(|| path.clone()))
+            .collect();
         for recent in &mut self.recent_files {
             if let Some(path) = replace(recent) {
                 *recent = path;
@@ -482,6 +544,10 @@ impl App {
     /// Repart d'un squelette vierge, après s'être assuré que le travail en
     /// cours ne part pas avec (voir [`super::unsaved`]).
     pub(super) fn new_file(&mut self) {
+        // Sans consigne, le fichier naît dans la racine affichée : une visée
+        // laissée par un « Nouveau fichier ici » abandonné ne doit pas
+        // resservir ici, des minutes plus tard.
+        self.explorer_new_file_dir = None;
         self.guarded(super::unsaved::PendingAction::NewFile);
     }
 
@@ -622,7 +688,10 @@ impl App {
         // Le nouveau fichier vise le dossier actuellement affiché dans
         // l'explorateur, et porte l'extension du monde dont il relève.
         let name = if target.is_windows() { "sans-titre-win.asm" } else { "sans-titre.asm" };
-        self.src_path = self.explorer_dir.join(name);
+        // « Nouveau fichier ici » (clic droit d'un sous-dossier) vise ce
+        // dossier-là ; sans consigne, c'est la racine affichée.
+        let dir = self.explorer_new_file_dir.take().unwrap_or_else(|| self.explorer_dir.clone());
+        self.src_path = dir.join(name);
         // Le squelette n'est pas du travail : tant que l'élève n'y a pas
         // touché, fermer ou changer de fichier ne lui coûte rien, et il serait
         // absurde de lui poser la question.
@@ -704,6 +773,46 @@ mod explorer_ops_tests {
         assert_eq!(app.src_path, new);
         assert_eq!(app.explorer_selected, Some(dir.join("apres.asm")));
         assert_eq!(app.recent_files, vec![dir.join("apres.asm")]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Le vrai symptôme du chemin à séparateur final : après avoir renommé le
+    /// fichier ouvert, `Fichier ▸ Enregistrer` ne faisait plus rien — seul
+    /// « Enregistrer sous… », qui repart d'un chemin rendu par le dialogue
+    /// natif, marchait encore.
+    ///
+    /// Comparer deux `PathBuf` ne l'attrape pas : `vide.asm` et `vide.asm/` ont
+    /// les mêmes composants, donc se comparent égaux. Il faut donc écrire pour
+    /// de bon, et regarder la forme textuelle du chemin.
+    #[test]
+    fn saving_still_works_after_renaming_the_open_file() {
+        let dir = test_dir();
+        let old = dir.join("sans-titre.asm");
+        let new = dir.join("vide.asm");
+        std::fs::write(&old, "; depart\n").expect("fichier témoin");
+
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.src_path = old.clone();
+        app.source = "; depart\n".to_string();
+        app.mark_saved();
+        app.begin_explorer_rename(old);
+        app.explorer_rename_input = "vide.asm".to_string();
+        app.finish_explorer_rename();
+
+        assert!(
+            !app.src_path.to_string_lossy().ends_with('/'),
+            "le chemin du fichier ouvert ne doit pas gagner de séparateur final : {:?}",
+            app.src_path
+        );
+
+        app.source.push_str("    syscall\n");
+        assert!(app.dirty());
+        assert!(app.save_source(), "Enregistrer doit réussir après un renommage");
+        assert!(!app.dirty(), "et le tampon n'a plus rien à sauver");
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), app.source, "le disque porte le texte");
+        assert!(new.is_file(), "et le nouveau nom est bien un fichier");
+
         let _ = std::fs::remove_dir_all(dir);
     }
 

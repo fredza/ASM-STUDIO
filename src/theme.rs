@@ -456,6 +456,88 @@ fn latte() -> Theme {
 }
 
 // ---------------------------------------------------------------------------
+// Abyss — thème intégré de VS Code (Microsoft, licence MIT)
+//
+// Les valeurs viennent du fichier officiel du thème
+// (`extensions/theme-abyss/themes/abyss-color-theme.json`) : le bleu nuit de
+// l'éditeur `#000C18`, le violet profond du panneau latéral `#060621`, le bleu
+// `#08286B` de la ligne sélectionnée, l'or `#DDBB88` du curseur.
+//
+// Deux écarts assumés, tous deux sur la coloration du code :
+//
+// * Abyss peint les mots-clés en `#225588`, soit un contraste de 2,5:1 sur le
+//   fond de l'éditeur. Passe encore pour un `if` isolé ; ici les directives
+//   (`section`, `global`, `db`) structurent chaque fichier. La teinte est donc
+//   remontée vers le bleu de premier plan du thème — même couleur, lisible.
+// * Les mnémoniques prennent `#9966B8` (`support.function` d'Abyss) plutôt que
+//   le même `#225588` : en assembleur, l'instruction est le mot le plus lu de
+//   la ligne, elle ne peut pas être le plus terne.
+// ---------------------------------------------------------------------------
+
+fn abyss() -> Theme {
+    let editor = rgb(0x000C18); // editor.background
+    let side = rgb(0x060621); // sideBar.background
+    let chrome = rgb(0x10192C); // titleBar / statusBar / sideBarSectionHeader
+    let fore = rgb(0x6688CC); // editor.foreground
+    let gold = rgb(0xDDBB88); // editorCursor.foreground
+    let cream = rgb(0xFFEEBB); // entity.name.type
+    let green = rgb(0x22AA44); // string
+    let keyword = rgb(0x225588); // keyword / storage
+    Theme {
+        id: "abyss",
+        name: "Abyss",
+        dark: true,
+        ui: Palette {
+            bg: side,
+            window: rgb(0x262641),         // editorWidget.background
+            extreme: editor,
+            faint: chrome,
+            surface: rgb(0x181F2F),        // input.background
+            surface_hover: rgb(0x2B3C5D),  // button.background
+            surface_active: rgb(0x08286B), // list.activeSelectionBackground
+            border: rgb(0x2B2B4A),         // panel.border
+            // Abyss ne fixe pas la couleur de texte de l'interface : VS Code
+            // retombe alors sur son gris clair par défaut. On le teinte à peine
+            // de bleu pour qu'il appartienne au thème.
+            text: rgb(0xC5CEDE),
+            text_strong: rgb(0xEDF2FA),
+            header: rgb(0x596F99), // focusBorder / pickerGroup.foreground
+            accent: rgb(0x2277FF),
+            action: gold,
+            changed: cream,
+            flash: mix(cream, Color32::WHITE, 0.55),
+            ok: green,
+            off: rgb(0x384887), // la teinte des commentaires : présente, éteinte
+            error: rgb(0xFF7882), // terminal.ansiBrightRed
+            warn: rgb(0xCB4B16),  // markup.changed
+            addr: rgb(0x80A2C2),  // editorLineNumber.activeForeground
+            bytes: rgb(0x406385), // editorLineNumber.foreground
+            mnemonic: rgb(0x9966B8),
+            gutter: rgb(0x406385),
+            rip_row: mix(editor, gold, 0.22),
+            sel_row: rgb(0x08286B),
+        },
+        syntax: Syntax {
+            comment: rgb(0x384887),
+            mnemonic: rgb(0x9966B8),
+            register: rgb(0x2277FF), // variable.parameter
+            number: rgb(0xF280D0),   // constant.numeric
+            directive: mix(keyword, fore, 0.45),
+            label: gold, // entity.name.function
+            string: green,
+            text: fore,
+            // Les fonds se peignent par-dessus celui de l'éditeur.
+            line_bg: mix(editor, gold, 0.22),
+            cursor_line_bg: rgb(0x082050), // editor.lineHighlightBackground
+            match_bg: mix(editor, Color32::WHITE, 0.22),
+            // Le rouge sourd `#770811` de la sélection d'Abyss, sa signature.
+            match_current_bg: mix(editor, rgb(0x770811), 0.85),
+            bracket_bg: mix(editor, green, 0.30),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Catalogue et thème courant
 // ---------------------------------------------------------------------------
 
@@ -465,7 +547,7 @@ fn latte() -> Theme {
 /// l'ajouter ici. Réglages, palette de commandes et persistance suivent tout
 /// seuls — aucun des trois ne connaît la liste autrement que par ce tableau.
 pub static THEMES: LazyLock<Vec<Theme>> = LazyLock::new(|| {
-    vec![dark_theme(), light_theme(), latte(), frappe(), macchiato(), mocha()]
+    vec![dark_theme(), light_theme(), latte(), frappe(), macchiato(), mocha(), abyss()]
 });
 
 /// Index du thème « sombre » et du thème « clair » retenus quand la préférence
@@ -648,6 +730,20 @@ mod tests {
             let d = (lum(t.syntax.text) - lum(t.ui.extreme)).abs();
             assert!(d > 80.0, "{} : texte et fond trop proches ({d})", t.id);
         }
+    }
+
+    /// Abyss est repris d'un thème existant : ses couleurs de signature — le
+    /// bleu nuit de l'éditeur, le bleu de la ligne sélectionnée — doivent
+    /// rester celles du fichier officiel, sinon ce n'est plus Abyss.
+    #[test]
+    fn abyss_keeps_the_signature_colours_of_the_vs_code_theme() {
+        let t = by_id("abyss").expect("Abyss doit être au catalogue");
+        assert!(t.dark);
+        assert_eq!(t.ui.extreme, rgb(0x000C18), "editor.background");
+        assert_eq!(t.ui.bg, rgb(0x060621), "sideBar.background");
+        assert_eq!(t.ui.sel_row, rgb(0x08286B), "list.activeSelectionBackground");
+        assert_eq!(t.syntax.text, rgb(0x6688CC), "editor.foreground");
+        assert_eq!(t.syntax.number, rgb(0xF280D0), "constant.numeric");
     }
 
     #[test]

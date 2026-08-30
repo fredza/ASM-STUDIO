@@ -14,6 +14,7 @@ use crate::explain;
 
 use super::{action, changed_col, false_col, flag_on};
 use super::paths::{file_name, is_asm, list_entries};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Hauteur fixe de la ligne d'en-tête d'un panneau, pour aligner les
@@ -251,6 +252,31 @@ pub(super) fn micro_static_flags(ui: &mut egui::Ui, hdr: Color32, e: &explain::E
     }
 }
 
+// ---------------------------------------------------------------------------
+// Explorateur de fichiers
+//
+// L'arbre est dessiné à la main plutôt qu'assemblé à coups de `Button` et de
+// `CollapsingHeader` : une ligne d'explorateur est une bande pleine largeur où
+// chevron, icône et nom occupent des colonnes fixes, et rien de tout cela ne
+// s'obtient d'une suite de widgets dont la largeur dépend du glyphe rendu.
+//
+// L'état déplié/replié n'est pas non plus dans la mémoire d'egui : il vit dans
+// `App::explorer_expanded`, donc le clavier voit exactement l'arbre que la
+// souris voit — c'est ce qui manquait pour que ↑/↓ parcourent autre chose que
+// la racine.
+// ---------------------------------------------------------------------------
+
+/// Hauteur d'une ligne de l'arbre : `ScrollArea::show_rows` a besoin qu'elle
+/// soit connue d'avance, panneau et ligne doivent donc lire la même constante.
+pub(super) const EXPLORER_ROW_H: f32 = 24.0;
+
+/// Retrait d'un niveau de profondeur.
+const EXPLORER_INDENT: f32 = 14.0;
+
+/// Profondeur au-delà de laquelle on cesse de descendre. Un lien symbolique
+/// circulaire ferait sinon tourner l'aplatissement jusqu'à la pile.
+const EXPLORER_MAX_DEPTH: usize = 24;
+
 /// Une ligne visible de l'explorateur. L'arbre est aplati avant le rendu pour
 /// pouvoir utiliser `ScrollArea::show_rows` : même un gros dossier ne redessine
 /// alors que les lignes réellement visibles pendant le défilement.
@@ -259,177 +285,374 @@ pub(super) struct ExplorerEntry {
     pub(super) path: PathBuf,
     pub(super) depth: usize,
     pub(super) is_dir: bool,
+    /// Dossier déplié ? Relevé une fois pendant l'aplatissement.
+    pub(super) open: bool,
 }
 
 /// Action demandée par une ligne de l'explorateur. Les mutations disque restent
 /// dans `App`, jamais dans ce widget sans état.
+///
+/// Renommer se dit en trois temps — commencer, valider, abandonner — et non
+/// par une bascule unique : Entrée, Échap et le clic ailleurs veulent chacun
+/// quelque chose de précis, et l'ancienne bascule les confondait.
 pub(super) enum ExplorerAction {
+    /// Ouvrir le fichier dans l'éditeur.
     Open(PathBuf),
-    Select(PathBuf),
+    /// Déplier ou replier un dossier, sans changer de racine.
+    Toggle(PathBuf),
+    /// Prendre ce dossier comme racine de l'explorateur.
     Navigate(PathBuf),
-    Rename(PathBuf),
+    /// Poser la sélection sans rien ouvrir.
+    Select(PathBuf),
+    BeginRename(PathBuf),
+    CommitRename,
+    CancelRename,
     Delete(PathBuf),
+    /// Créer un dossier DANS celui-ci.
+    NewFolderIn(PathBuf),
+    /// Créer un fichier DANS celui-ci.
+    NewFileIn(PathBuf),
+    CopyPath(PathBuf),
 }
 
-/// Les trois libellés du menu contextuel, fournis déjà traduits par le panneau.
+/// Les libellés du menu contextuel, fournis déjà traduits par le panneau.
 pub(super) struct ExplorerRowLabels<'a> {
-    pub(super) open_folder: &'a str,
+    pub(super) open: &'a str,
+    pub(super) expand: &'a str,
+    pub(super) set_root: &'a str,
+    pub(super) new_file: &'a str,
+    pub(super) new_folder: &'a str,
     pub(super) rename: &'a str,
+    pub(super) copy_path: &'a str,
     pub(super) delete: &'a str,
 }
 
-/// Les deux teintes d'une ligne : ce qui est de l'assembleur (dossiers et
-/// sources `.asm`) et le reste. Elles viennent du thème, que ce module ne
-/// connaît pas — comme les libellés viennent de la langue, qu'il ne connaît
-/// pas davantage.
+/// Les teintes d'une ligne. Elles viennent du thème, que ce module ne connaît
+/// pas — comme les libellés viennent de la langue, qu'il ne connaît pas non
+/// plus.
 pub(super) struct ExplorerRowColors {
+    /// Sources assembleur : ce sont elles que l'on vient chercher.
     pub(super) asm: Color32,
+    /// Les autres fichiers.
     pub(super) other: Color32,
+    /// Nom d'un dossier, et texte courant de la ligne.
+    pub(super) text: Color32,
+    /// Icône de dossier.
+    pub(super) folder: Color32,
+    /// Fond de la ligne sélectionnée, puis de la ligne survolée.
+    pub(super) sel_bg: Color32,
+    pub(super) hover_bg: Color32,
+    /// Texte de la ligne sélectionnée, et trait qui la marque à gauche.
+    pub(super) sel_fg: Color32,
+    pub(super) accent: Color32,
+    /// Chevrons et traits verticaux de retrait.
+    pub(super) dim: Color32,
 }
 
-/// Aplatisse les seuls dossiers actuellement dépliés. L'état de dépliage est
-/// persisté par egui, et n'est lu qu'une fois par dossier ouvert — contrairement
-/// à l'ancien `CollapsingHeader` récursif rendu entièrement à chaque frame.
-pub(super) fn explorer_entries(ui: &egui::Ui, root: &Path) -> Vec<ExplorerEntry> {
-    fn visit(ui: &egui::Ui, dir: &Path, depth: usize, out: &mut Vec<ExplorerEntry>) {
+/// Ce que la ligne doit signaler en plus de son nom.
+pub(super) struct ExplorerRowMarks {
+    pub(super) selected: bool,
+    /// C'est le fichier actuellement ouvert dans l'éditeur.
+    pub(super) open_in_editor: bool,
+    /// Amener cette ligne à l'écran (sélection déplacée au clavier).
+    pub(super) scroll_to: bool,
+    /// Afficher le chemin complet au survol (réglage « info-bulles »).
+    pub(super) path_tip: bool,
+}
+
+/// L'état du renommage, quand c'est CETTE ligne que l'on renomme.
+pub(super) struct ExplorerRename<'a> {
+    pub(super) input: &'a mut String,
+    /// Consommé au premier rendu du champ. Le focus se demande **une fois** :
+    /// le redemander à chaque image empêchait le champ de le perdre, donc
+    /// `lost_focus()` de se produire — Entrée ne validait jamais — et le
+    /// reprenait à tout autre widget cliqué pendant ce temps.
+    pub(super) focus: &'a mut bool,
+}
+
+/// Aplatit les seuls dossiers dépliés, dans l'ordre où ils s'affichent.
+pub(super) fn explorer_entries(expanded: &HashSet<PathBuf>, root: &Path) -> Vec<ExplorerEntry> {
+    fn visit(expanded: &HashSet<PathBuf>, dir: &Path, depth: usize, out: &mut Vec<ExplorerEntry>) {
+        if depth > EXPLORER_MAX_DEPTH {
+            return;
+        }
         let (dirs, files) = list_entries(dir);
         for path in dirs {
-            let id = ui.make_persistent_id(("explorer_open", &path));
-            let open = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false).is_open();
-            out.push(ExplorerEntry { path: path.clone(), depth, is_dir: true });
+            let open = expanded.contains(&path);
+            out.push(ExplorerEntry { path: path.clone(), depth, is_dir: true, open });
             if open {
-                visit(ui, &path, depth + 1, out);
+                visit(expanded, &path, depth + 1, out);
             }
         }
-        out.extend(files.into_iter().map(|path| ExplorerEntry { path, depth, is_dir: false }));
+        out.extend(
+            files
+                .into_iter()
+                .map(|path| ExplorerEntry { path, depth, is_dir: false, open: false }),
+        );
     }
 
     let mut entries = Vec::new();
-    visit(ui, root, 0, &mut entries);
+    visit(expanded, root, 0, &mut entries);
     entries
 }
 
-/// Rend une ligne de l'explorateur moderne : sélection, dépliage, menu contextuel
-/// et renommage directement dans l'arbre.
+/// Le triangle de dépliage, dessiné et non écrit : un glyphe dépendrait de la
+/// police retenue par le système, et se décalerait d'un thème à l'autre.
+fn chevron(painter: &egui::Painter, c: egui::Pos2, color: Color32, open: bool) {
+    let r = 3.6;
+    let pts = if open {
+        vec![
+            egui::pos2(c.x - r, c.y - r * 0.55),
+            egui::pos2(c.x + r, c.y - r * 0.55),
+            egui::pos2(c.x, c.y + r * 0.75),
+        ]
+    } else {
+        vec![
+            egui::pos2(c.x - r * 0.55, c.y - r),
+            egui::pos2(c.x + r * 0.75, c.y),
+            egui::pos2(c.x - r * 0.55, c.y + r),
+        ]
+    };
+    painter.add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
+}
+
+/// Icône de dossier : un corps et sa languette.
+fn folder_icon(painter: &egui::Painter, c: egui::Pos2, color: Color32) {
+    let body = egui::Rect::from_center_size(c + egui::vec2(0.0, 1.0), egui::vec2(14.0, 9.0));
+    let tab = egui::Rect::from_min_size(
+        egui::pos2(body.left(), body.top() - 2.5),
+        egui::vec2(6.0, 3.0),
+    );
+    painter.rect_filled(tab, egui::CornerRadius { nw: 2, ne: 2, sw: 0, se: 0 }, color);
+    painter.rect_filled(body, egui::CornerRadius::same(2), color);
+}
+
+/// Icône de fichier : une feuille et ses trois lignes de texte.
+fn file_icon(painter: &egui::Painter, c: egui::Pos2, color: Color32) {
+    let sheet = egui::Rect::from_center_size(c, egui::vec2(11.0, 13.0));
+    painter.rect_stroke(
+        sheet,
+        egui::CornerRadius::same(2),
+        egui::Stroke::new(1.2_f32, color),
+        egui::StrokeKind::Inside,
+    );
+    for i in 0..3 {
+        let y = (sheet.top() + 4.0 + i as f32 * 3.0).round() + 0.5;
+        painter.line_segment(
+            [egui::pos2(sheet.left() + 2.5, y), egui::pos2(sheet.right() - 2.5, y)],
+            egui::Stroke::new(1.0_f32, color.gamma_multiply(0.6)),
+        );
+    }
+}
+
+/// Au premier rendu du champ de renommage, présélectionne le **radical** du nom
+/// et non l'extension : on renomme `boucle.asm` en `boucle-corrigee.asm`, on ne
+/// change presque jamais le `.asm`. C'est le geste de VS Code et des
+/// gestionnaires de fichiers.
+fn select_stem(ctx: &egui::Context, id: egui::Id, name: &str) {
+    let stem = Path::new(name)
+        .file_stem()
+        .map_or(name.chars().count(), |s| s.to_string_lossy().chars().count());
+    let mut state = egui::widgets::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+        egui::text::CCursor::new(0),
+        egui::text::CCursor::new(stem),
+    )));
+    state.store(ctx, id);
+}
+
+/// Rend une ligne de l'explorateur : bande de sélection pleine largeur, traits
+/// de retrait, chevron, icône, nom élidé, et le menu contextuel qui va avec.
 pub(super) fn explorer_row(
     ui: &mut egui::Ui,
     entry: &ExplorerEntry,
-    selected: bool,
-    scroll_to_selected: bool,
-    rename_input: Option<&mut String>,
-    labels: ExplorerRowLabels<'_>,
-    colors: ExplorerRowColors,
+    marks: &ExplorerRowMarks,
+    rename: Option<ExplorerRename<'_>>,
+    labels: &ExplorerRowLabels<'_>,
+    colors: &ExplorerRowColors,
 ) -> Option<ExplorerAction> {
     let mut action = None;
-    // Une grille à colonnes fixes, et non une succession de widgets dont la
-    // largeur dépend du glyphe : c'est ce qui garde chevrons, icônes et noms
-    // parfaitement alignés entre fichiers et dossiers.
-    let row_width = ui.available_width();
-    ui.allocate_ui_with_layout(
-        egui::vec2(row_width, 22.0),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-        ui.add_space(entry.depth as f32 * 16.0);
+    // Pendant le renommage, la bande ne capte plus le clic : il appartient au
+    // champ de saisie posé par-dessus.
+    let sense = if rename.is_some() { egui::Sense::hover() } else { egui::Sense::click() };
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), EXPLORER_ROW_H), sense);
+    let painter = ui.painter().with_clip_rect(rect);
+
+    if marks.selected {
+        painter.rect_filled(rect, egui::CornerRadius::same(4), colors.sel_bg);
+        // Le liseré d'accent à gauche : la bande seule se confond avec un
+        // survol, surtout sur un thème où les deux fonds sont proches.
+        painter.rect_filled(
+            egui::Rect::from_min_size(rect.left_top(), egui::vec2(2.0, rect.height())),
+            egui::CornerRadius::same(1),
+            colors.accent,
+        );
+    } else if response.hovered() {
+        painter.rect_filled(rect, egui::CornerRadius::same(4), colors.hover_bg);
+    }
+
+    // Traits de retrait : à trois niveaux de profondeur, l'œil ne rattache plus
+    // un fichier à son dossier sans eux.
+    let base = rect.left() + 6.0;
+    for level in 0..entry.depth {
+        let x = (base + level as f32 * EXPLORER_INDENT + 5.0).round() + 0.5;
+        painter.line_segment(
+            [egui::pos2(x, rect.top() + 1.0), egui::pos2(x, rect.bottom() - 1.0)],
+            egui::Stroke::new(1.0_f32, colors.dim.gamma_multiply(0.45)),
+        );
+    }
+
+    let mut x = base + entry.depth as f32 * EXPLORER_INDENT;
+    if entry.is_dir {
+        chevron(&painter, egui::pos2(x + 5.0, rect.center().y), colors.dim, entry.open);
+    }
+    x += 13.0;
+    let is_source = is_asm(&entry.path);
+    let icon_color = if entry.is_dir {
+        colors.folder
+    } else if is_source {
+        colors.asm
+    } else {
+        colors.other
+    };
+    if entry.is_dir {
+        folder_icon(&painter, egui::pos2(x + 8.0, rect.center().y), icon_color);
+    } else {
+        file_icon(&painter, egui::pos2(x + 8.0, rect.center().y), icon_color);
+    }
+    x += 21.0;
+
+    if let Some(rn) = rename {
+        let field = egui::Rect::from_min_max(
+            egui::pos2(x, rect.top() + 1.0),
+            egui::pos2(rect.right() - 4.0, rect.bottom() - 1.0),
+        );
+        let resp = ui.put(
+            field,
+            egui::TextEdit::singleline(rn.input)
+                .id(super::explorer_rename_id())
+                .margin(egui::Margin::symmetric(4, 1)),
+        );
+        if std::mem::take(rn.focus) {
+            resp.request_focus();
+            select_stem(ui.ctx(), resp.id, rn.input);
+            resp.scroll_to_me(Some(egui::Align::Center));
+        }
+        // Échap abandonne ; sortir du champ autrement — Entrée, ou un clic
+        // ailleurs — vaut validation, comme dans tous les explorateurs.
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            action = Some(ExplorerAction::CancelRename);
+        } else if resp.lost_focus() {
+            action = Some(ExplorerAction::CommitRename);
+        }
+        return action;
+    }
+
+    // Ce sont les ICÔNES qui portent le type, pas les noms : une colonne de
+    // noms bariolés se lit moins bien qu'une colonne de noms d'une seule
+    // couleur. Seuls s'en écartent la ligne sélectionnée, le fichier ouvert, et
+    // ce qui n'est pas de l'assembleur — atténué, car on ne vient pas le
+    // chercher.
+    let name_color = if marks.selected {
+        colors.sel_fg
+    } else if marks.open_in_editor {
+        colors.accent
+    } else if entry.is_dir || is_source {
+        colors.text
+    } else {
+        colors.other
+    };
+    // Un nom trop long s'élide au lieu d'être coupé net : dans un panneau
+    // étroit, `…` dit qu'il en manque, un rognage laisse croire au nom entier.
+    let mut job = egui::text::LayoutJob::single_section(
+        file_name(&entry.path),
+        egui::TextFormat {
+            font_id: egui::TextStyle::Button.resolve(ui.style()),
+            color: name_color,
+            ..Default::default()
+        },
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: (rect.right() - 12.0 - x).max(8.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    painter.galley(
+        egui::pos2(x, rect.center().y - galley.size().y * 0.5),
+        galley,
+        name_color,
+    );
+    // Le fichier ouvert dans l'éditeur se repère même quand la sélection est
+    // ailleurs : sans ce point, rien ne dit lequel des dix `.asm` on édite.
+    if marks.open_in_editor {
+        painter.circle_filled(egui::pos2(rect.right() - 7.0, rect.center().y), 2.5, colors.accent);
+    }
+
+    if marks.scroll_to {
+        response.scroll_to_me(Some(egui::Align::Center));
+    }
+    if response.clicked() {
+        action = Some(if entry.is_dir {
+            ExplorerAction::Toggle(entry.path.clone())
+        } else {
+            ExplorerAction::Open(entry.path.clone())
+        });
+    }
+    response.context_menu(|ui| {
+        // Le clic droit sélectionne aussi : agir sur une ligne sans la
+        // sélectionner laisserait le clavier travailler ailleurs.
+        if !marks.selected {
+            action = Some(ExplorerAction::Select(entry.path.clone()));
+        }
         if entry.is_dir {
-            let id = ui.make_persistent_id(("explorer_open", &entry.path));
-            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
-            if ui
-                .add_sized(
-                    [18.0, 22.0],
-                    egui::Button::new(if state.is_open() { "⌄" } else { "›" }).frame(false),
-                )
-                .clicked()
-            {
-                state.toggle(ui);
-                state.store(ui.ctx());
+            if ui.button(labels.expand).clicked() {
+                action = Some(ExplorerAction::Toggle(entry.path.clone()));
+                ui.close();
             }
-        } else {
-            // Un fichier est le contenu du dossier affiché : son icône démarre
-            // directement à la marge de son niveau, sans une colonne de flèche
-            // vide. C'est la lecture attendue d'un explorateur moderne.
-        }
-        // Colonne réservée à l'icône : aucun décalage lorsque le système de
-        // polices donne une largeur différente aux pictogrammes emoji.
-        ui.add_sized(
-            [20.0, 22.0],
-            egui::Label::new(RichText::new(if entry.is_dir { "🗀" } else { "🗎" }).color(if entry.is_dir { colors.asm } else { colors.other })),
-        );
-        ui.add_space(2.0);
-
-        if let Some(input) = rename_input {
-            let response = ui.add_sized(
-                [ui.available_width(), 22.0],
-                egui::TextEdit::singleline(input).id_salt(("explorer_rename", &entry.path)),
-            );
-            response.request_focus();
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                action = Some(ExplorerAction::Rename(entry.path.clone()));
-            }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                action = Some(ExplorerAction::Select(entry.path.clone()));
-            }
-            return;
-        }
-
-        let color = if selected {
-            changed_col()
-        } else if entry.is_dir || is_asm(&entry.path) {
-            colors.asm
-        } else {
-            colors.other
-        };
-        // `Button` centre son libellé dans la largeur restante. Une ligne
-        // d'explorateur doit au contraire partir de sa marge, quel que soit le
-        // nom du fichier. On gère donc l'interaction et le fond de sélection
-        // séparément, puis on pose un `Label` explicitement aligné à gauche.
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click());
-        let visuals = ui.style().interact_selectable(&response, selected);
-        if selected || response.hovered() {
-            ui.painter().rect_filled(rect, egui::CornerRadius::same(4), visuals.weak_bg_fill);
-        }
-        let painter = ui.painter().with_clip_rect(rect.shrink2(egui::vec2(5.0, 0.0)));
-        let galley = painter.layout_no_wrap(
-            file_name(&entry.path),
-            egui::TextStyle::Button.resolve(ui.style()),
-            color,
-        );
-        painter.galley(
-            egui::pos2(rect.left() + 5.0, rect.center().y - galley.size().y * 0.5),
-            galley,
-            color,
-        );
-        if selected && scroll_to_selected {
-            response.scroll_to_me(Some(egui::Align::Center));
-        }
-        if response.double_clicked() {
-            action = Some(if entry.is_dir {
-                ExplorerAction::Navigate(entry.path.clone())
-            } else {
-                ExplorerAction::Open(entry.path.clone())
-            });
-        } else if response.clicked() {
-            action = Some(if entry.is_dir {
-                ExplorerAction::Select(entry.path.clone())
-            } else {
-                ExplorerAction::Open(entry.path.clone())
-            });
-        }
-        response.context_menu(|ui| {
-            if entry.is_dir && ui.button(labels.open_folder).clicked() {
+            if ui.button(labels.set_root).clicked() {
                 action = Some(ExplorerAction::Navigate(entry.path.clone()));
                 ui.close();
             }
-            if ui.button(labels.rename).clicked() {
-                action = Some(ExplorerAction::Rename(entry.path.clone()));
-                ui.close();
-            }
-            if ui.button(labels.delete).clicked() {
-                action = Some(ExplorerAction::Delete(entry.path.clone()));
-                ui.close();
-            }
-        });
-    },
-    );
+        } else if ui.button(labels.open).clicked() {
+            action = Some(ExplorerAction::Open(entry.path.clone()));
+            ui.close();
+        }
+        ui.separator();
+        // Créer se fait DANS le dossier visé, ou à côté du fichier visé : c'est
+        // là que l'on regarde au moment du clic droit.
+        let target = if entry.is_dir {
+            entry.path.clone()
+        } else {
+            entry.path.parent().map_or_else(|| entry.path.clone(), Path::to_path_buf)
+        };
+        if ui.button(labels.new_file).clicked() {
+            action = Some(ExplorerAction::NewFileIn(target.clone()));
+            ui.close();
+        }
+        if ui.button(labels.new_folder).clicked() {
+            action = Some(ExplorerAction::NewFolderIn(target));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(labels.rename).clicked() {
+            action = Some(ExplorerAction::BeginRename(entry.path.clone()));
+            ui.close();
+        }
+        if ui.button(labels.copy_path).clicked() {
+            action = Some(ExplorerAction::CopyPath(entry.path.clone()));
+            ui.close();
+        }
+        if ui.button(egui::RichText::new(labels.delete).color(false_col())).clicked() {
+            action = Some(ExplorerAction::Delete(entry.path.clone()));
+            ui.close();
+        }
+    });
+    if marks.path_tip {
+        response.on_hover_text(entry.path.display().to_string());
+    }
     action
 }
 

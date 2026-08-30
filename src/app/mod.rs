@@ -61,7 +61,13 @@ pub(super) fn editor_id() -> egui::Id {
 /// dès qu'on avait cliqué une fois dans « aller @ » (egui garde ce focus
 /// indéfiniment) ; « un champ de saisie a-t-il le focus ? » avait le même
 /// défaut, à peine atténué. Seule l'appartenance au panneau focalisé tranche.
-pub(super) fn text_inputs() -> [(egui::Id, dock::Panel); 6] {
+/// **Tout champ de texte vivant dans un panneau doit figurer ici**, avec son
+/// panneau : c'est ce qui permet de distinguer un champ où l'on tape (il garde
+/// les touches) d'un champ resté focalisé dans un panneau que l'on a quitté (il
+/// ne doit pas geler la navigation du panneau courant). Voir
+/// [`App::typing_in_focused_panel`], qui traite tout champ NON inscrit comme un
+/// champ de fenêtre flottante — donc comme une saisie, où qu'on en soit.
+pub(super) fn text_inputs() -> [(egui::Id, dock::Panel); 8] {
     [
         (editor_id(), dock::Panel::Editor),
         (egui::Id::new("kb_mem_goto"), dock::Panel::Memory),
@@ -69,7 +75,28 @@ pub(super) fn text_inputs() -> [(egui::Id, dock::Panel); 6] {
         (egui::Id::new("kb_reg_edit"), dock::Panel::Registers),
         (find_query_id(), dock::Panel::Editor),
         (find_replace_id(), dock::Panel::Editor),
+        (explorer_rename_id(), dock::Panel::Explorer),
+        (stdin_id(), dock::Panel::Console),
     ]
+}
+
+/// Id stable du champ d'entrée de la console.
+pub(super) fn stdin_id() -> egui::Id {
+    egui::Id::new("kb_stdin")
+}
+
+/// Id stable du champ de renommage de l'explorateur.
+///
+/// Stable, et non dérivé du chemin : une seule ligne se renomme à la fois, et
+/// un id fixe permet de l'inscrire dans [`text_inputs`] — c'est ce qui empêche
+/// ↑/↓, F2, Suppr et Entrée de piloter l'arbre pendant que l'on tape le nom.
+pub(super) fn explorer_rename_id() -> egui::Id {
+    egui::Id::new("kb_explorer_rename")
+}
+
+/// Id stable du champ « Nouveau dossier ».
+pub(super) fn explorer_new_folder_id() -> egui::Id {
+    egui::Id::new("kb_explorer_new_folder")
 }
 
 /// Id stable du champ de recherche de l'éditeur (Ctrl+F).
@@ -88,13 +115,26 @@ impl App {
         let Some(f) = ctx.memory(|m| m.focused()) else { return false };
         // Le champ de la prédiction vit dans une fenêtre flottante, hors de
         // l'arbre : dès qu'il a le focus, il garde les flèches.
-        if f == egui::Id::new("kb_pred_input") {
-            return true;
+        let registered = text_inputs();
+        // Un champ inscrit garde les touches quand SON panneau est celui qui a
+        // le focus. Sinon, un champ resté focalisé dans un panneau que l'on a
+        // quitté gèlerait la navigation du panneau courant.
+        if let Some((_, panel)) = registered.iter().find(|(id, _)| *id == f) {
+            return Some(*panel) == self.focused_panel();
         }
-        let focused = self.focused_panel();
-        text_inputs()
-            .iter()
-            .any(|(id, panel)| *id == f && Some(*panel) == focused)
+        // Un champ de texte NON inscrit est, par construction, celui d'une
+        // fenêtre flottante — condition d'arrêt, aller à la ligne, nouveau
+        // dossier, nouveau projet, calculatrice, palette, entrée du programme.
+        // Ceux-là vivent hors de l'arbre des panneaux : tant qu'on y tape, les
+        // touches leur appartiennent, où que soit le panneau focalisé. Faute de
+        // quoi les flèches déplaçaient une sélection derrière la fenêtre,
+        // Entrée y ouvrait un fichier et Échap arrêtait le programme — une
+        // interface qui répond de travers dès que le focus change de champ.
+        //
+        // On reconnaît un champ de texte à l'état qu'un `TextEdit` range sous
+        // son propre id ; un bouton ou une case à cocher, eux aussi
+        // focalisables au clavier, n'en rangent aucun.
+        egui::widgets::text_edit::TextEditState::load(ctx, f).is_some()
     }
 }
 
@@ -420,12 +460,29 @@ pub struct App {
     pub(super) explorer_dir: PathBuf,
     /// Fichier retenu au clavier dans l'explorateur (surligné, ouvert par Entrée).
     pub(super) explorer_selected: Option<PathBuf>,
+    /// Dossiers dépliés dans l'arbre. C'est de l'état d'APPLICATION et non de
+    /// la mémoire d'egui : le clavier (`move_explorer_selection`) doit voir
+    /// exactement l'arbre que la souris voit, or il ne dispose d'aucun `Ui`.
+    pub(super) explorer_expanded: std::collections::HashSet<PathBuf>,
     /// Entrée dont le nom est édité directement dans l'explorateur.
     pub(super) explorer_renaming: Option<PathBuf>,
     pub(super) explorer_rename_input: String,
-    /// Boîte légère de création de dossier depuis l'explorateur.
+    /// Demande de focus du champ de renommage, consommée au premier rendu.
+    /// Sans ce « une seule fois », le champ reprenait le focus à chaque image :
+    /// il ne le perdait donc jamais (Entrée ne validait rien) et le volait à
+    /// tout autre champ cliqué entre-temps.
+    pub(super) explorer_rename_focus: bool,
+    /// Boîte légère de création de dossier depuis l'explorateur, et le dossier
+    /// PARENT dans lequel elle crée — le clic droit d'un sous-dossier crée chez
+    /// lui, pas à la racine affichée.
     pub(super) explorer_new_folder: bool,
     pub(super) explorer_new_folder_input: String,
+    pub(super) explorer_new_folder_parent: Option<PathBuf>,
+    /// Dossier visé par le prochain « Nouveau fichier », quand il a été demandé
+    /// depuis une ligne de l'arbre plutôt que depuis la barre du panneau.
+    pub(super) explorer_new_file_dir: Option<PathBuf>,
+    /// Même demande de focus, pour le champ de cette boîte.
+    pub(super) explorer_new_folder_focus: bool,
     /// Entrée dont la suppression attend une confirmation explicite.
     pub(super) explorer_delete: Option<PathBuf>,
     pub(super) view_index: usize,
@@ -800,10 +857,15 @@ impl App {
             recent_files: Vec::new(),
             explorer_dir,
             explorer_selected: None,
+            explorer_expanded: std::collections::HashSet::new(),
             explorer_renaming: None,
             explorer_rename_input: String::new(),
+            explorer_rename_focus: false,
             explorer_new_folder: false,
             explorer_new_folder_input: String::new(),
+            explorer_new_folder_parent: None,
+            explorer_new_file_dir: None,
+            explorer_new_folder_focus: false,
             explorer_delete: None,
             view_index: 0,
             mem_addr: 0,
@@ -1434,6 +1496,41 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tant qu'un champ de texte a le focus — y compris dans une fenêtre
+    /// flottante, hors de l'arbre des panneaux — la frappe lui appartient : les
+    /// flèches, Entrée et Suppr ne doivent pas continuer à piloter un panneau
+    /// derrière. Un bouton focalisé, lui, n'est pas une saisie.
+    #[test]
+    fn a_focused_text_field_takes_the_keys_wherever_it_lives() {
+        let mut app = App::new();
+
+        let ctx = egui::Context::default();
+        let field = egui::Id::new("champ_flottant_de_test");
+        let mut buffer = String::new();
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::Window::new("flottante").show(ctx, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut buffer).id(field)).request_focus();
+            });
+        });
+        assert_eq!(ctx.memory(|m| m.focused()), Some(field));
+        assert!(app.typing_in_focused_panel(&ctx), "un champ focalisé, c'est une saisie");
+
+        let ctx = egui::Context::default();
+        let mut button = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let response = ui.button("agir");
+                response.request_focus();
+                button = Some(response.id);
+            });
+        });
+        assert_eq!(ctx.memory(|m| m.focused()), button);
+        assert!(
+            !app.typing_in_focused_panel(&ctx),
+            "un bouton focalisé ne doit pas confisquer les flèches au panneau"
+        );
+    }
 
     /// Chaque case à cocher des Réglages doit survivre à la fermeture de
     /// l'application. L'oubli type est d'ajouter un réglage à la fenêtre sans
