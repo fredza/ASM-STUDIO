@@ -1006,6 +1006,18 @@ impl App {
             nag_next_at: None,
         };
         app.load_settings();
+        // Reprendre la session précédente : sans ça, l'IDE rouvrait toujours
+        // le même exemple `hello_world.asm` au lancement, même après avoir
+        // travaillé des heures sur un projet — la liste des fichiers récents
+        // existait déjà (menu Fichier ▸ Récents) mais personne ne s'en servait
+        // pour ça. On ne le fait qu'en dehors des tests (`load_settings` n'y
+        // lit rien, `recent_files` y reste donc vide de toute façon) et
+        // seulement si le fichier ou le projet le plus récent existe encore
+        // sur disque — un chemin disparu entre deux séances laisse l'accueil
+        // habituel plutôt que d'échouer en silence sur un fichier introuvable.
+        if !cfg!(test) {
+            app.resume_last_session();
+        }
         app.license = crate::license::load();
         // Une version corrigée ne sert à rien si personne n'apprend qu'elle
         // existe : l'IDE regarde donc de lui-même, une fois, au démarrage. La
@@ -1445,7 +1457,13 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    // eframe 0.36 a remplacé `update(&Context)` par `ui(&mut Ui)` — le `Ui`
+    // racine n'a ni marge ni fond, d'où le besoin (déjà pris en charge plus
+    // bas par `dock_ui`, via `CentralPanel`) de les fournir soi-même. Le reste
+    // du corps continue de travailler sur `&egui::Context`, comme avant :
+    // `ui.ctx()` le redonne à l'identique, cloné (bon marché, c'est un `Arc`).
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         if self.icons.is_none() {
             self.icons = Some(Icons::load(ctx));
             // Une seule fois, au premier frame : recharger les polices à chaque
@@ -1477,14 +1495,20 @@ impl eframe::App for App {
         }
         self.handle_shortcuts(ctx);
 
-        self.menu_bar(ctx);
-        self.toolbar(ctx);
-        self.welcome_banner(ctx);
-        self.status_bar(ctx);
+        // Décorations natives coupées (`main.rs`) : la fenêtre redessine
+        // elle-même ses poignées de redimensionnement. Avant tout le reste,
+        // pour qu'un bord de fenêtre reste prioritaire même si un panneau
+        // venait à s'étendre jusque-là.
+        self.window_resize_handles(ctx);
+
+        self.menu_bar(ui);
+        self.toolbar(ui);
+        self.welcome_banner(ui);
+        self.status_bar(ui);
 
         // Toute la zone centrale est un arbre de panneaux ancrables : chaque
         // panneau est un onglet que l'on déplace, empile ou détache en fenêtre.
-        self.dock_ui(ctx);
+        self.dock_ui(ui);
 
         // Une boîte fermée par son bouton (« Fermer », « Valider »…) bascule son
         // état APRÈS avoir été peinte cette image. On mémorise combien étaient
@@ -1674,8 +1698,9 @@ mod tests {
         let ctx = egui::Context::default();
         let field = egui::Id::new("champ_flottant_de_test");
         let mut buffer = String::new();
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::Window::new("flottante").show(ctx, |ui| {
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            egui::Window::new("flottante").show(&ctx, |ui| {
                 ui.add(egui::TextEdit::singleline(&mut buffer).id(field)).request_focus();
             });
         });
@@ -1684,8 +1709,9 @@ mod tests {
 
         let ctx = egui::Context::default();
         let mut button = None;
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| {
                 let response = ui.button("agir");
                 response.request_focus();
                 button = Some(response.id);
@@ -1787,10 +1813,11 @@ mod tests {
             app.theme_pref = crate::theme::Choice::Named(t.id);
             app.show_settings = true;
             let ctx = egui::Context::default();
-            let _ = ctx.run(Default::default(), |ctx| {
-                app.apply_theme(ctx);
-                app.dock_ui(ctx);
-                app.settings_window(ctx);
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                let ctx = ui.ctx().clone();
+                app.apply_theme(&ctx);
+                app.dock_ui(ui);
+                app.settings_window(&ctx);
             });
             assert_eq!(crate::theme::current().id, t.id, "{} n'a pas été appliqué", t.id);
         }
@@ -1820,8 +1847,9 @@ mod tests {
         let opened_before = 1; // ... alors qu'une l'était en début d'image
 
         let ctx = egui::Context::default();
-        let out = ctx.run(Default::default(), |ctx| {
-            app.repaint_on_dialog_close(ctx, opened_before);
+        let out = ctx.run_ui(Default::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            app.repaint_on_dialog_close(&ctx, opened_before);
         });
         let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
         assert_eq!(delay, Duration::ZERO, "la fermeture doit replanifier un rendu");
@@ -1840,10 +1868,11 @@ mod tests {
         // La première image d'un contexte neuf demande toujours un rendu de plus
         // (stabilisation polices/layout) : on stabilise avant de mesurer.
         for _ in 0..4 {
-            let _ = ctx.run(Default::default(), |_| {});
+            let _ = ctx.run_ui(Default::default(), |_| {});
         }
-        let out = ctx.run(Default::default(), |ctx| {
-            app.repaint_on_dialog_close(ctx, opened_before);
+        let out = ctx.run_ui(Default::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            app.repaint_on_dialog_close(&ctx, opened_before);
         });
         let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
         assert!(delay > Duration::from_secs(1), "aucune fermeture ⇒ pas de repaint forcé");
@@ -1876,7 +1905,7 @@ mod tests {
 
         // La fenêtre se rend sans paniquer.
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.diagnosis_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.diagnosis_window(ui.ctx()));
         assert!(app.diagnosis.is_some(), "la fenêtre reste ouverte tant qu'on ne ferme pas");
     }
 
@@ -1953,7 +1982,7 @@ mod tests {
 
     fn run_at(app: &mut App, ctx: &egui::Context, time: f64) {
         let input = egui::RawInput { time: Some(time), ..Default::default() };
-        let _ = ctx.run(input, |ctx| app.check_license_nag(ctx));
+        let _ = ctx.run_ui(input, |ui| app.check_license_nag(ui.ctx()));
     }
 
     #[test]
@@ -2014,7 +2043,7 @@ mod tests {
         let mut app = App::new();
         assert!(!app.is_licensed());
         let ctx = egui::Context::default();
-        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        let out = ctx.run_ui(close_requested_input(), |ui| app.check_close_request(ui.ctx()));
 
         assert!(app.show_license_nag, "la fermeture doit ouvrir la carte de rappel");
         assert!(app.exit_pending, "on doit savoir que c'est une tentative de fermeture");
@@ -2030,7 +2059,7 @@ mod tests {
         let mut app = App::new();
         app.license = crate::license::valid_for_tests();
         let ctx = egui::Context::default();
-        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        let out = ctx.run_ui(close_requested_input(), |ui| app.check_close_request(ui.ctx()));
 
         assert!(!app.show_license_nag, "licencié : la fermeture doit se dérouler normalement");
         let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
@@ -2046,7 +2075,7 @@ mod tests {
         let mut app = App::new();
         app.quit_confirmed = true; // posé par le bouton « Quitter quand même »
         let ctx = egui::Context::default();
-        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        let out = ctx.run_ui(close_requested_input(), |ui| app.check_close_request(ui.ctx()));
 
         assert!(!app.show_license_nag, "la carte ne doit pas se rouvrir après confirmation");
         let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
@@ -2070,7 +2099,7 @@ mod tests {
         let ctx = egui::Context::default();
         // Même sans nouvel événement de fermeture, tant qu'on n'a pas
         // effectivement quitté on continue à réclamer un rendu immédiat.
-        let out = ctx.run(Default::default(), |ctx| app.check_close_request(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.check_close_request(ui.ctx()));
         let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
         assert_eq!(delay, Duration::ZERO, "un réveil immédiat doit être programmé");
     }
@@ -2091,7 +2120,7 @@ mod tests {
     fn closing_with_unsaved_work_is_cancelled_and_asks() {
         let mut app = app_with_unsaved_work();
         let ctx = egui::Context::default();
-        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        let out = ctx.run_ui(close_requested_input(), |ui| app.check_close_request(ui.ctx()));
 
         assert_eq!(
             app.unsaved_prompt,
@@ -2109,7 +2138,7 @@ mod tests {
         let mut app = app_with_unsaved_work();
         assert!(!app.is_licensed());
         let ctx = egui::Context::default();
-        let _ = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        let _ = ctx.run_ui(close_requested_input(), |ui| app.check_close_request(ui.ctx()));
         assert!(!app.show_license_nag, "une seule question à la fois");
         assert!(app.unsaved_prompt.is_some());
     }
@@ -2121,7 +2150,7 @@ mod tests {
         let mut app = app_with_unsaved_work();
         app.license = crate::license::valid_for_tests();
         let ctx = egui::Context::default();
-        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        let out = ctx.run_ui(close_requested_input(), |ui| app.check_close_request(ui.ctx()));
         assert!(app.unsaved_prompt.is_some());
         let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
         assert!(commands.contains(&egui::ViewportCommand::CancelClose));
@@ -2136,7 +2165,7 @@ mod tests {
         app.license = crate::license::valid_for_tests();
         app.discard_confirmed = true;
         let ctx = egui::Context::default();
-        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        let out = ctx.run_ui(close_requested_input(), |ui| app.check_close_request(ui.ctx()));
 
         assert!(app.unsaved_prompt.is_none(), "la question ne doit pas se reposer");
         let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
@@ -2150,7 +2179,7 @@ mod tests {
         app.license = crate::license::valid_for_tests();
         assert!(!app.dirty());
         let ctx = egui::Context::default();
-        let out = ctx.run(close_requested_input(), |ctx| app.check_close_request(ctx));
+        let out = ctx.run_ui(close_requested_input(), |ui| app.check_close_request(ui.ctx()));
         assert!(app.unsaved_prompt.is_none());
         let commands = &out.viewport_output[&egui::ViewportId::ROOT].commands;
         assert!(!commands.contains(&egui::ViewportCommand::CancelClose));
@@ -2160,7 +2189,7 @@ mod tests {
     fn a_frame_without_close_event_touches_nothing() {
         let mut app = App::new();
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.check_close_request(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.check_close_request(ui.ctx()));
         assert!(!app.show_license_nag);
         assert!(!app.exit_pending);
     }

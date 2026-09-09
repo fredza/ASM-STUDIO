@@ -178,7 +178,9 @@ asm-studio
 
 ## Licence
 
-ASM Studio Personal Free License (ASFL) v1.0 — voir [`LICENSE.md`](../LICENSE.md).
+GNU GPLv3 + Commons Clause — voir [`LICENSE.md`](../LICENSE.md).
 
-Usage gratuit et sans limite de durée, redistribution de la version officielle
-modifiée interdite sans l'accord écrit de l'auteur, vente interdite sans accord écrit de l'auteur.
+Usage gratuit et sans limite de durée, code source consultable et
+modifiable, redistribution (y compris de versions modifiées) autorisée sous
+la même licence ; seule la **vente** du logiciel, original ou modifié, est
+interdite (clause Commons Clause).

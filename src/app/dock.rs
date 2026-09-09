@@ -118,13 +118,20 @@ impl Panel {
 ///   │          ├──────────────────────────┤             │
 ///   │          │ Registres│Flags│Pile│…   │             │
 ///   │          ├──────────────────────────┤             │
-///   │          │ Mémoire │Timeline│Console│             │
+///   │          │ Mémoire │Timeline        │             │
 ///   └──────────┴──────────────────────────┴─────────────┘
 /// ```
 ///
 /// Le module Exercices n'y figure pas : il est appelé lorsqu'un exercice est
 /// ouvert, puis s'ancre près de l'éditeur. Le parcours est sa grande boîte
 /// propre, disponible en mode Apprentissage.
+///
+/// La Console n'y figure pas non plus, quel que soit le mode : le bouton
+/// « Sortie » (⏷) de la barre d'outils et l'en-tête du panneau lui-même
+/// bascule sa fenêtre, en lecture ET en écriture (voir
+/// `App::program_output_window`) — la garder ancrée en permanence prenait de
+/// la place pour un besoin qu'un bouton couvre désormais aussi bien. Elle
+/// reste ouvrable comme n'importe quel panneau, depuis le menu Affichage.
 pub(crate) fn default_layout() -> DockState<Panel> {
     // Surface principale : le centre, avec ses trois onglets empilés.
     let mut state = DockState::new(vec![Panel::Editor, Panel::Disasm, Panel::MemMap]);
@@ -150,7 +157,7 @@ pub(crate) fn default_layout() -> DockState<Panel> {
         ],
     );
     // Bande basse sous la bande CPU.
-    surface.split_below(cpu, 0.52, vec![Panel::Memory, Panel::Timeline, Panel::Console]);
+    surface.split_below(cpu, 0.52, vec![Panel::Memory, Panel::Timeline]);
     let _ = center;
     state
 }
@@ -167,7 +174,7 @@ pub(crate) const ADVANCED: [Panel; 7] = [
     Panel::Format,
 ];
 
-/// Disposition du mode apprentissage : huit panneaux au lieu de quatorze.
+/// Disposition du mode apprentissage : sept panneaux au lieu de quatorze.
 ///
 /// ```text
 ///   ┌──────────┬────────────────────────┬─────────────┐
@@ -176,9 +183,13 @@ pub(crate) const ADVANCED: [Panel; 7] = [
 ///   │          ├────────────────────────┤             │
 ///   │          │ Registres │Flags│ Pile │             │
 ///   │          ├────────────────────────┤             │
-///   │          │ Console │ Timeline     │             │
+///   │          │ Timeline               │             │
 ///   └──────────┴────────────────────────┴─────────────┘
 /// ```
+///
+/// La Console n'y figure pas — voir la note de [`default_layout`], valable
+/// ici aussi : le bouton « Sortie » de la barre d'outils la remplace pour
+/// l'essentiel, et elle reste ouvrable depuis le menu Affichage.
 pub(crate) fn learning_layout() -> DockState<Panel> {
     let mut state = DockState::new(vec![Panel::Editor]);
     let surface = state.main_surface_mut();
@@ -192,7 +203,7 @@ pub(crate) fn learning_layout() -> DockState<Panel> {
         0.55,
         vec![Panel::Registers, Panel::Flags, Panel::Stack],
     );
-    surface.split_below(cpu, 0.55, vec![Panel::Console, Panel::Timeline]);
+    surface.split_below(cpu, 0.55, vec![Panel::Timeline]);
     let _ = center;
     state
 }
@@ -346,12 +357,12 @@ impl App {
     ///
     /// `None` si aucun voisin n'est ouvert (l'élève a tout fermé autour) :
     /// l'appelant retombe alors sur la zone active.
-    fn home_leaf_for(&self, panel: Panel) -> Option<(SurfaceIndex, NodeIndex)> {
+    fn home_leaf_for(&self, panel: Panel) -> Option<egui_dock::NodePath> {
         // Le module Exercices n'appartient à aucune disposition par défaut : il
         // est appelé à la demande. Quand il s'ouvre, le joindre à l'éditeur le
         // garde près du code à modifier, sans réintroduire une colonne fixe.
         if panel == Panel::Exercise {
-            return self.dock.as_ref()?.find_tab(&Panel::Editor).map(|(surface, node, _)| (surface, node));
+            return self.dock.as_ref()?.find_tab(&Panel::Editor).map(|p| p.node_path());
         }
         let mut reference = layout_for(self.mode);
         // Un panneau absent de la disposition du mode courant n'a pas de place
@@ -362,7 +373,7 @@ impl App {
         if reference.find_tab(&panel).is_none() {
             reference = learning_layout();
         }
-        let (surface, node, _) = reference.find_tab(&panel)?;
+        let egui_dock::TabPath { surface, node, .. } = reference.find_tab(&panel)?;
         let neighbours: Vec<Panel> = reference[surface][node]
             .iter_tabs()
             .copied()
@@ -371,7 +382,7 @@ impl App {
         let dock = self.dock.as_ref()?;
         neighbours
             .iter()
-            .find_map(|n| dock.find_tab(n).map(|(s, node, _)| (s, node)))
+            .find_map(|n| dock.find_tab(n).map(|p| p.node_path()))
     }
 
     /// Affiche le panneau : le met au premier plan s'il existe déjà, sinon le
@@ -385,7 +396,7 @@ impl App {
         if let Some(dock) = self.dock.as_mut()
             && let Some(loc) = dock.find_tab(&panel)
         {
-            dock.set_active_tab(loc);
+            let _ = dock.set_active_tab(loc);
             return;
         }
         let home = self.home_leaf_for(panel);
@@ -427,7 +438,7 @@ impl App {
     /// quand il réorganise sa disposition.
     pub(super) fn cycle_tab(&mut self, backwards: bool) {
         let Some(dock) = self.dock.as_mut() else { return };
-        let Some((surface, node)) = dock.focused_leaf() else { return };
+        let Some(egui_dock::NodePath { surface, node }) = dock.focused_leaf() else { return };
         let n = dock[surface][node].tabs_count();
         if n < 2 {
             return;
@@ -437,15 +448,15 @@ impl App {
             _ => return,
         };
         let next = if backwards { (active + n - 1) % n } else { (active + 1) % n };
-        dock.set_active_tab((surface, node, egui_dock::TabIndex(next)));
+        let _ = dock.set_active_tab(egui_dock::TabPath::new(surface, node, egui_dock::TabIndex(next)));
     }
 
     /// Donne le focus clavier au panneau et le met au premier plan.
     pub(super) fn focus_panel(&mut self, panel: Panel) {
         let Some(dock) = self.dock.as_mut() else { return };
-        if let Some((surface, node, tab)) = dock.find_tab(&panel) {
-            dock.set_active_tab((surface, node, tab));
-            dock.set_focused_node_and_surface((surface, node));
+        if let Some(path) = dock.find_tab(&panel) {
+            let _ = dock.set_active_tab(path);
+            dock.set_focused_node_and_surface(path.node_path());
         }
     }
 
@@ -455,8 +466,8 @@ impl App {
         let Some(dock) = self.dock.as_ref() else { return Vec::new() };
         let mut docked = Vec::new();
         let mut windowed = Vec::new();
-        for ((surface, _), t) in dock.iter_all_tabs() {
-            if surface == SurfaceIndex::main() {
+        for (path, t) in dock.iter_all_tabs() {
+            if path.surface == SurfaceIndex::main() {
                 docked.push(*t);
             } else {
                 windowed.push(*t);
@@ -497,9 +508,10 @@ impl App {
     ///
     /// Le `DockState` est sorti de `self` le temps du rendu : `TabViewer` a
     /// besoin de `&mut App`, et l'état ne peut pas être emprunté deux fois.
-    pub(super) fn dock_ui(&mut self, ctx: &egui::Context) {
+    pub(super) fn dock_ui(&mut self, ui: &mut egui::Ui) {
         let Some(mut dock) = self.dock.take() else { return };
-        let mut style = egui_dock::Style::from_egui(&ctx.style());
+        let egui_style = ui.ctx().style_of(ui.ctx().theme());
+        let mut style = egui_dock::Style::from_egui(&egui_style);
         let p = &crate::theme::current().ui;
         // Les onglets deviennent des repères de navigation : barre calme,
         // onglet actif contrasté, séparateurs déplaçables visibles mais jamais
@@ -549,8 +561,8 @@ impl App {
 
         let mut focused_name = None;
         egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(0.0))
-            .show(ctx, |ui| {
+            .frame(egui::Frame::central_panel(&egui_style).inner_margin(0.0))
+            .show(ui, |ui| {
                 // Une SEULE croix par onglet : la rouge. egui_dock 0.18 ajoute
                 // par défaut, sur la barre d'onglets, une croix « tout fermer »
                 // et un chevron de repli — d'où la double croix. On les coupe
@@ -605,8 +617,8 @@ impl App {
     pub(super) fn dock_layout_string(&self) -> String {
         let Some(dock) = self.dock.as_ref() else { return String::new() };
         dock.iter_all_tabs()
-            .map(|((surface, _), t)| {
-                let kind = if surface == SurfaceIndex::main() { "d" } else { "w" };
+            .map(|(path, t)| {
+                let kind = if path.surface == SurfaceIndex::main() { "d" } else { "w" };
                 format!("{kind}:{}", t.key())
             })
             .collect::<Vec<_>>()
@@ -724,21 +736,23 @@ mod tests {
     }
 
     /// La disposition par défaut contient tous les panneaux sauf le module
-    /// Exercices, qui s'ouvre seulement avec un exercice concret.
+    /// Exercices (qui s'ouvre seulement avec un exercice concret) et la
+    /// Console (que le bouton « Sortie » remplace pour l'essentiel — voir la
+    /// doc de `default_layout`).
     #[test]
     fn default_layout_contains_every_panel_but_the_path() {
         let state = default_layout();
         let present: Vec<Panel> = state.iter_all_tabs().map(|(_, t)| *t).collect();
         for p in Panel::ALL {
-            if p == Panel::Exercise {
-                assert!(!present.contains(&p), "les exercices ne s'ouvrent qu'à la demande");
+            if p == Panel::Exercise || p == Panel::Console {
+                assert!(!present.contains(&p), "{p:?} ne doit pas être ouvert par défaut");
                 continue;
             }
             assert!(present.contains(&p), "{p:?} absent de la disposition par défaut");
         }
         assert_eq!(
             present.len(),
-            Panel::ALL.len() - 1,
+            Panel::ALL.len() - 2,
             "panneau dupliqué ou manquant : {present:?}"
         );
         assert!(learning_layout().find_tab(&Panel::Exercise).is_none());
@@ -759,7 +773,7 @@ mod tests {
         let state = default_layout();
         let found = state.find_tab(&Panel::Editor);
         assert!(found.is_some(), "l'éditeur doit être présent");
-        let (surface, _, _) = found.unwrap();
+        let surface = found.unwrap().surface;
         assert_eq!(surface, SurfaceIndex::main(), "l'éditeur est dans la surface principale");
     }
 
@@ -770,9 +784,11 @@ mod tests {
         let mut app = App::new();
         app.set_ui_mode(super::super::UiMode::Full);
         for p in Panel::ALL {
-            // Le parcours n'est pas de ce mode-là : il part fermé, et le
-            // contrat qui compte pour lui est de savoir s'ouvrir quand même.
-            if p != Panel::Exercise {
+            // Le parcours n'est pas de ce mode-là, et la Console n'est plus
+            // ouverte par défaut dans aucun mode (voir `default_layout`) :
+            // pour les deux, le contrat qui compte est de savoir s'ouvrir
+            // quand même, pas de partir déjà ouverts.
+            if p != Panel::Exercise && p != Panel::Console {
                 assert!(app.panel_is_open(p), "{p:?} devrait être ouvert au départ");
             }
             app.hide_panel(p);
@@ -792,7 +808,7 @@ mod tests {
         for p in Panel::ALL {
             app.hide_panel(p);
             app.show_panel(p);
-            let (surface, _, _) = app.dock.as_ref().unwrap().find_tab(&p).expect("rouvert");
+            let surface = app.dock.as_ref().unwrap().find_tab(&p).expect("rouvert").surface;
             assert_eq!(surface, SurfaceIndex::main(), "{p:?} rouvert en fenêtre flottante");
         }
     }
@@ -808,8 +824,8 @@ mod tests {
         app.hide_panel(Panel::Stack);
         app.show_panel(Panel::Stack);
         let dock = app.dock.as_ref().unwrap();
-        let (_, stack_node, _) = dock.find_tab(&Panel::Stack).expect("pile rouverte");
-        let (_, regs_node, _) = dock.find_tab(&Panel::Registers).expect("registres");
+        let stack_node = dock.find_tab(&Panel::Stack).expect("pile rouverte").node;
+        let regs_node = dock.find_tab(&Panel::Registers).expect("registres").node;
         assert_eq!(stack_node, regs_node, "la pile doit retrouver la bande CPU");
     }
 
@@ -831,7 +847,11 @@ mod tests {
     #[test]
     fn hiding_removes_every_occurrence() {
         let mut app = App::new();
+        // La Console n'est plus dans la disposition par défaut (voir
+        // `default_layout`) : les deux occurrences sont ajoutées ici à la
+        // main, pour que le test reste indépendant de ce détail.
         if let Some(d) = app.dock.as_mut() {
+            d.add_window(vec![Panel::Console]);
             d.add_window(vec![Panel::Console]);
         }
         let count = |app: &App| {
@@ -1011,10 +1031,13 @@ mod tests {
     fn focus_order_skips_closed_panels() {
         let mut app = App::new();
         app.set_ui_mode(super::super::UiMode::Full);
-        app.hide_panel(Panel::Console);
+        // Syscalls et Flags : deux panneaux réellement ouverts par défaut en
+        // mode Complet. La Console ne l'est plus (voir `default_layout`), la
+        // fermer ici n'aurait donc rien retiré du parcours.
+        app.hide_panel(Panel::Syscalls);
         app.hide_panel(Panel::Flags);
         let order = app.focus_order();
-        assert!(!order.contains(&Panel::Console), "console fermée mais parcourue");
+        assert!(!order.contains(&Panel::Syscalls), "syscalls fermé mais parcouru");
         assert!(!order.contains(&Panel::Flags), "flags fermé mais parcouru");
         assert_eq!(order.len(), panels_of(super::super::UiMode::Full).len() - 2);
     }
@@ -1070,9 +1093,13 @@ mod tests {
         }
         // Mais l'essentiel doit y être : sans éditeur ni instruction, le mode
         // n'apprendrait rien.
-        for p in [Panel::Editor, Panel::Instruction, Panel::Registers, Panel::Console] {
+        for p in [Panel::Editor, Panel::Instruction, Panel::Registers] {
             assert!(learning.contains(&p), "{p:?} manque au mode apprentissage");
         }
+        // La Console, elle, n'est plus imposée dans aucun des deux modes —
+        // voir la doc de `default_layout`.
+        assert!(!learning.contains(&Panel::Console), "la console ne doit plus être ouverte par défaut");
+        assert!(!full.contains(&Panel::Console), "la console ne doit plus être ouverte par défaut");
         // Aucun doublon.
         let mut u = learning.clone();
         u.sort_by_key(|p| p.key());
@@ -1106,13 +1133,15 @@ mod tests {
         assert!(app.panel_is_open(Panel::Disasm), "le mode complet l'ouvre");
 
         // L'élève ferme un panneau, puis re-sélectionne le mode déjà actif.
-        app.hide_panel(Panel::Console);
+        // Timeline : présent par défaut dans les deux modes, contrairement à
+        // la Console qui ne l'est plus dans aucun (voir `default_layout`).
+        app.hide_panel(Panel::Timeline);
         app.set_ui_mode(UiMode::Full);
-        assert!(!app.panel_is_open(Panel::Console), "sa disposition doit être préservée");
+        assert!(!app.panel_is_open(Panel::Timeline), "sa disposition doit être préservée");
 
         // Changer réellement de mode remet la disposition du nouveau mode.
         app.set_ui_mode(UiMode::Learning);
-        assert!(app.panel_is_open(Panel::Console), "l'apprentissage rétablit la console");
+        assert!(app.panel_is_open(Panel::Timeline), "l'apprentissage rétablit la timeline");
         assert!(!app.panel_is_open(Panel::Syscalls));
     }
 
@@ -1183,7 +1212,7 @@ mod tests {
         app.set_ui_mode(super::super::UiMode::Full);
         assert!(!app.is_licensed());
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.dock_ui(ui));
     }
 
     /// Avec une licence valide, les mêmes panneaux se rendent aussi sans
@@ -1195,6 +1224,6 @@ mod tests {
         app.license = crate::license::valid_for_tests();
         assert!(app.is_licensed());
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.dock_ui(ui));
     }
 }

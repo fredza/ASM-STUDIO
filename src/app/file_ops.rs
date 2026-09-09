@@ -745,6 +745,23 @@ impl App {
         self.recent_files.retain(|p| p.is_file());
     }
 
+    /// Rouvre le fichier ou projet le plus récent, s'il en reste un
+    /// d'ouvrable — c'est ce qui permet à [`App::new`] de reprendre la
+    /// session précédente au lancement plutôt que de toujours retomber sur
+    /// l'exemple d'accueil (voir l'appel dans `App::new`, gardé par
+    /// `!cfg!(test)`).
+    ///
+    /// Séparée de cet appel, et non gardée elle-même par `cfg!(test)`, pour
+    /// rester testable directement : on peuple `recent_files` à la main et on
+    /// vérifie ce qui s'ouvre, sans dépendre du disque de réglages réel — le
+    /// même principe que `apply_settings` face à `load_settings`.
+    pub(super) fn resume_last_session(&mut self) {
+        self.prune_recent();
+        if let Some(last) = self.recent_files.first().cloned() {
+            self.open_file_now(last);
+        }
+    }
+
     /// Répertoires de recherche `%include` pour nasm : dossier du fichier, et
     /// (si activé) dossier d'`asmstd.inc`.
     pub(super) fn include_dirs(&self) -> Vec<std::path::PathBuf> {
@@ -930,6 +947,86 @@ mod recent_tests {
         let app = App::new();
         assert!(app.recent_files.is_empty());
     }
+
+    // ---------- Reprise de session ----------
+    //
+    // `App::new` n'appelle `resume_last_session` que hors tests (voir son
+    // commentaire) : ces tests exercent donc la méthode directement, comme
+    // `apply_settings` le fait déjà pour `load_settings`.
+
+    /// Le fichier le plus récent doit se rouvrir pour de bon : c'est le
+    /// défaut signalé — l'IDE retombait toujours sur l'exemple d'accueil,
+    /// même avec un projet ouvert la veille.
+    #[test]
+    fn resuming_reopens_the_most_recent_file() {
+        let dir = std::env::temp_dir().join("asm-studio-resume-file-test");
+        std::fs::create_dir_all(&dir).expect("dossier de test");
+        let path = dir.join("reprise.asm");
+        std::fs::write(&path, "; travail de la veille\nsection .text\n").expect("écriture");
+
+        let mut app = App::new();
+        app.push_recent(&path);
+        app.resume_last_session();
+
+        assert_eq!(app.src_path, std::fs::canonicalize(&path).unwrap());
+        assert!(app.source.contains("travail de la veille"), "le contenu doit être celui du fichier repris");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Le manifeste d'un projet doit lui aussi se rouvrir avec tout son
+    /// contexte (`self.project`), pas seulement son fichier d'entrée.
+    #[test]
+    fn resuming_reopens_the_most_recent_project() {
+        let dir = std::env::temp_dir().join("asm-studio-resume-project-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dossier de test");
+        let project = crate::project::Project::create(
+            &dir,
+            "reprise-projet",
+            crate::assemble::Target::Linux,
+            "section .text\n    global _start\n_start:\n    mov rax, 60\n    xor rdi, rdi\n    syscall\n",
+        )
+        .expect("création du projet témoin");
+
+        let mut app = App::new();
+        app.push_recent(&project.manifest);
+        app.resume_last_session();
+
+        assert!(app.project.is_some(), "le projet doit être adopté, pas seulement son fichier d'entrée");
+        assert_eq!(app.src_path, std::fs::canonicalize(&project.entry).unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Un chemin disparu entre deux séances ne doit pas faire planter la
+    /// reprise, ni laisser l'IDE sur un état incohérent : il retombe sur son
+    /// accueil habituel, silencieusement.
+    #[test]
+    fn resuming_with_a_vanished_path_falls_back_silently() {
+        let mut app = App::new();
+        let src_before = app.src_path.clone();
+        app.push_recent(&PathBuf::from("/tmp/asm-studio-jamais-existe-resume.asm"));
+
+        app.resume_last_session();
+
+        assert!(app.recent_files.is_empty(), "l'entrée morte doit être élaguée");
+        assert_eq!(app.src_path, src_before, "rien n'a pu s'ouvrir : l'accueil habituel reste en place");
+    }
+
+    /// Sans aucun historique — premier lancement — la reprise ne doit rien
+    /// changer : c'est l'accueil sur l'exemple qui doit rester.
+    #[test]
+    fn resuming_on_a_fresh_install_does_nothing() {
+        let mut app = App::new();
+        let src_before = app.src_path.clone();
+        assert!(app.recent_files.is_empty());
+
+        app.resume_last_session();
+
+        assert_eq!(app.src_path, src_before);
+        assert!(app.project.is_none());
+    }
 }
 
 #[cfg(test)]
@@ -988,7 +1085,7 @@ mod project_tests {
         let mut app = App::new();
         app.new_project_prompt = true;
         let ctx = eframe::egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.new_project_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.new_project_window(ui.ctx()));
         assert!(app.new_project_prompt);
     }
 }

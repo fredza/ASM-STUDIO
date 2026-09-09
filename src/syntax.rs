@@ -403,7 +403,7 @@ mod tests {
         assert!(
             job.sections
                 .iter()
-                .any(|s| s.format.color == pal().string && src[s.byte_range.clone()].contains(';')),
+                .any(|s| s.format.color == pal().string && src[s.byte_range.start.0..s.byte_range.end.0].contains(';')),
             "le ; dans la chaîne ne doit pas déclencher un commentaire"
         );
     }

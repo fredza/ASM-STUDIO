@@ -390,11 +390,13 @@ mod tests {
         };
         // Deux images : la première place l'infobulle, la seconde la peint à sa
         // taille définitive.
-        let _ = ctx.run(input(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.inspect_tooltip(ui, char_index));
+        let _ = ctx.run_ui(input(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| app.inspect_tooltip(ui, char_index));
         });
-        let out = ctx.run(input(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.inspect_tooltip(ui, char_index));
+        let out = ctx.run_ui(input(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| app.inspect_tooltip(ui, char_index));
         });
         let mut rows = Vec::new();
         for cs in &out.shapes {

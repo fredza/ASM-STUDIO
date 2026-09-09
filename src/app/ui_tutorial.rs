@@ -1205,25 +1205,29 @@ mod tests {
         let ctx = egui::Context::default();
 
         app.tutorial_current = None;
-        let _ = ctx.run(Default::default(), |ctx| {
-            app.tutorial_dialog_ui(ctx);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            app.tutorial_dialog_ui(&ctx);
         });
 
         app.tutorial_current = Some("pile".into());
-        let _ = ctx.run(Default::default(), |ctx| {
-            app.tutorial_dialog_ui(ctx);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            app.tutorial_dialog_ui(&ctx);
         });
 
         // Une leçon annoncée mais non rédigée doit se rendre sans paniquer.
         app.tutorial_current = Some("shellcode".into());
-        let _ = ctx.run(Default::default(), |ctx| {
-            app.tutorial_dialog_ui(ctx);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            app.tutorial_dialog_ui(&ctx);
         });
 
         // Un identifiant disparu retombe sur le sommaire au lieu de planter.
         app.tutorial_current = Some("lecon_inexistante".into());
-        let _ = ctx.run(Default::default(), |ctx| {
-            app.tutorial_dialog_ui(ctx);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let ctx = ui.ctx().clone();
+            app.tutorial_dialog_ui(&ctx);
         });
     }
 

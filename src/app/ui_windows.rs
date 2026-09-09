@@ -567,11 +567,11 @@ impl App {
                         }
                         ui.label(tr("Licence", "License", "Licencia"));
                         if ui
-                            .link(RichText::new("ASFL v1.0").strong())
+                            .link(RichText::new(tr("GPLv3 + Commons Clause", "GPLv3 + Commons Clause", "GPLv3 + Commons Clause")).strong())
                             .on_hover_text(tr(
-                                "ASM Studio Personal Free License v1.0 — cliquer pour lire le texte complet.",
-                                "ASM Studio Personal Free License v1.0 — click to read the full text.",
-                                "ASM Studio Personal Free License v1.0 — clic para leer el texto completo.",
+                                "GNU GPLv3 avec clause Commons Clause (revente interdite) — cliquer pour lire le texte complet.",
+                                "GNU GPLv3 with the Commons Clause (no resale) — click to read the full text.",
+                                "GNU GPLv3 con la cláusula Commons Clause (reventa prohibida) — clic para leer el texto completo.",
                             ))
                             .clicked()
                         {
@@ -1546,6 +1546,15 @@ impl App {
         // signal d'attente impossible à obtenir.
         let wine_input_available = self.wine.as_ref().is_some_and(|run| run.is_running());
         let waiting_for_input = debugger_waiting_for_input || wine_input_available;
+        // Le champ de saisie doit rester disponible tout le temps où quelqu'un
+        // est au bout du tuyau, pas seulement à l'instant précis où le
+        // programme est suspendu sur un `read` : sinon cette fenêtre reste,
+        // la plupart du temps, une simple vitrine en lecture seule aux yeux de
+        // l'élève. Même règle, plus large, que le panneau Console
+        // (`can_input`, dans `console_ui`) — cette fenêtre s'y aligne pour
+        // pouvoir en tenir lieu sans qu'on ait plus besoin de le garder
+        // ancré, même en mode Complet.
+        let can_type = self.dbg.as_ref().is_some_and(|d| d.is_alive() && d.has_stdin()) || wine_input_available;
         // Le champ de la console existe aussi, mais cette fenêtre est celle qui
         // se rouvre à l'interaction : la réponse doit pouvoir être saisie ici,
         // sans chercher le panneau Console derrière une disposition dockée.
@@ -1623,6 +1632,7 @@ impl App {
             .default_pos(ctx.content_rect().center())
             .open(&mut open)
             .show(ctx, |ui| {
+                let mut open_console = false;
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(state_txt).color(state_col).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1634,27 +1644,61 @@ impl App {
                                 "Copiar la salida al portapapeles",
                             ))
                             .clicked();
+                        // Cette fenêtre couvre l'essentiel — voir la sortie,
+                        // répondre à une saisie — sans garder le panneau
+                        // Console ancré en permanence. Pour le reste — les
+                        // messages de l'IDE, l'historique complet — un lien
+                        // droit vers lui plutôt qu'à devoir le rouvrir depuis
+                        // le menu Affichage.
+                        open_console = ui
+                            .link(tr("Panneau Console…", "Console panel…", "Panel de consola…"))
+                            .on_hover_text(tr(
+                                "Ouvre le panneau Console complet (avec les messages de l'IDE)",
+                                "Opens the full Console panel (with the IDE's own messages)",
+                                "Abre el panel de consola completo (con los mensajes del IDE)",
+                            ))
+                            .clicked();
                     });
                 });
+                if open_console {
+                    self.show_panel(super::dock::Panel::Console);
+                }
                 ui.add_space(4.0);
 
-                if waiting_for_input {
-                    ui.label(
-                        RichText::new(if wine_input_available {
+                if can_type {
+                    // Le message souligne l'attente ACTIVE (le programme est
+                    // suspendu sur un `read`, en accent) ; le reste du temps —
+                    // le programme tourne, prêt à en recevoir une plus tard —
+                    // un rappel neutre suffit : le champ, lui, reste ouvert
+                    // dans les deux cas.
+                    let (hint_msg, hint_col) = if waiting_for_input {
+                        (
+                            if wine_input_available {
+                                tr(
+                                    "Saisissez une réponse pour le programme Windows, puis validez.",
+                                    "Enter a response for the Windows program, then submit.",
+                                    "Introduzca una respuesta para el programa Windows y envíela.",
+                                )
+                            } else {
+                                tr(
+                                    "Le programme attend votre saisie : tapez-la puis validez.",
+                                    "The program is waiting for input: type it, then submit.",
+                                    "El programa espera una entrada: escríbala y envíela.",
+                                )
+                            },
+                            action(),
+                        )
+                    } else {
+                        (
                             tr(
-                                "Saisissez une réponse pour le programme Windows, puis validez.",
-                                "Enter a response for the Windows program, then submit.",
-                                "Introduzca una respuesta para el programa Windows y envíela.",
-                            )
-                        } else {
-                            tr(
-                                "Le programme attend votre saisie : tapez-la puis validez.",
-                                "The program is waiting for input: type it, then submit.",
-                                "El programa espera una entrada: escríbala y envíela.",
-                            )
-                        })
-                        .color(action()),
-                    );
+                                "Le programme tourne : de quoi lui envoyer une entrée dès qu'il en aura besoin.",
+                                "The program is running: ready to send it input as soon as it needs one.",
+                                "El programa está en ejecución: listo para enviarle una entrada en cuanto la necesite.",
+                            ),
+                            hdr,
+                        )
+                    };
+                    ui.label(RichText::new(hint_msg).color(hint_col));
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("❯").monospace().color(action()));
                         let hint = tr(
@@ -2427,7 +2471,7 @@ impl App {
             .resizable(false)
             .default_width(360.0)
             .frame(
-                egui::Frame::window(&ctx.style())
+                egui::Frame::window(&ctx.style_of(ctx.theme()))
                     .corner_radius(egui::CornerRadius::same(12))
                     .stroke(egui::Stroke::new(1.0_f32, accent().linear_multiply(0.6))),
             )
@@ -2764,7 +2808,7 @@ mod about_tests {
             app.lang = lang;
             app.show_about = true;
             let ctx = egui::Context::default();
-            let _ = ctx.run(Default::default(), |ctx| app.about_window(ctx));
+            let _ = ctx.run_ui(Default::default(), |ui| app.about_window(ui.ctx()));
         }
     }
 }
@@ -2789,8 +2833,8 @@ mod update_tests {
     /// place — et ne peint donc rien qu'on puisse lire.
     fn painted(app: &mut App) -> Vec<String> {
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.update_window(ctx));
-        let out = ctx.run(Default::default(), |ctx| app.update_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.update_window(ui.ctx()));
+        let out = ctx.run_ui(Default::default(), |ui| app.update_window(ui.ctx()));
         collect_text(&out.shapes)
     }
 
@@ -2873,7 +2917,7 @@ mod breakpoint_condition_tests {
         app.source = "section .text\n_start:\n    mov rax, 1\n".to_string();
         app.open_breakpoint_condition(3);
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.breakpoint_condition_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.breakpoint_condition_window(ui.ctx()));
         assert_eq!(app.bp_cond_line, Some(3));
     }
 
@@ -2882,7 +2926,7 @@ mod breakpoint_condition_tests {
         let mut app = App::new();
         app.bp_cond_line = None;
         let ctx = egui::Context::default();
-        let out = ctx.run(Default::default(), |ctx| app.breakpoint_condition_window(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.breakpoint_condition_window(ui.ctx()));
         assert!(out.shapes.is_empty());
     }
 
@@ -2894,7 +2938,7 @@ mod breakpoint_condition_tests {
         app.source = "nop\n".to_string();
         app.open_breakpoint_condition(999);
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.breakpoint_condition_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.breakpoint_condition_window(ui.ctx()));
     }
 }
 
@@ -2911,13 +2955,13 @@ mod new_file_format_tests {
             app.lang = lang;
             app.new_file_prompt = true;
             let ctx = egui::Context::default();
-            let _ = ctx.run(Default::default(), |ctx| app.new_file_format_window(ctx));
+            let _ = ctx.run_ui(Default::default(), |ui| app.new_file_format_window(ui.ctx()));
             assert!(app.new_file_prompt, "elle reste ouverte tant qu'on n'a pas répondu");
         }
 
         let mut app = App::new();
         let ctx = egui::Context::default();
-        let out = ctx.run(Default::default(), |ctx| app.new_file_format_window(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.new_file_format_window(ui.ctx()));
         assert!(out.shapes.is_empty(), "rien à peindre sans question en cours");
     }
 
@@ -2947,7 +2991,7 @@ mod settings_tests {
             app.show_license_gate = true;
             app.license = license;
             let ctx = egui::Context::default();
-            let _ = ctx.run(Default::default(), |ctx| app.license_gate_window(ctx));
+            let _ = ctx.run_ui(Default::default(), |ui| app.license_gate_window(ui.ctx()));
             assert!(app.show_license_gate);
         }
     }
@@ -2960,7 +3004,7 @@ mod settings_tests {
         let mut app = App::new();
         app.show_license_nag = true;
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.license_nag_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.license_nag_window(ui.ctx()));
         assert!(app.show_license_nag, "reste ouverte tant qu'aucun bouton n'est cliqué");
         assert!(!app.show_license_gate, "ne doit pas ouvrir la boîte de collage toute seule");
     }
@@ -2974,7 +3018,7 @@ mod settings_tests {
         app.show_license_nag = true;
         app.exit_pending = true;
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.license_nag_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.license_nag_window(ui.ctx()));
         assert!(app.show_license_nag, "reste ouverte tant qu'aucun bouton n'est cliqué");
     }
 
@@ -2985,7 +3029,7 @@ mod settings_tests {
         let mut app = App::new();
         app.show_reg_history = true;
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.register_history_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.register_history_window(ui.ctx()));
         assert!(app.show_reg_history, "elle reste ouverte");
     }
 
@@ -2998,7 +3042,7 @@ mod settings_tests {
         app.show_reg_history = true;
         app.reg_history_idx = 999;
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.register_history_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.register_history_window(ui.ctx()));
     }
 
     /// Fermée, elle ne peint rien.
@@ -3007,7 +3051,7 @@ mod settings_tests {
         let mut app = App::new();
         app.show_reg_history = false;
         let ctx = egui::Context::default();
-        let out = ctx.run(Default::default(), |ctx| app.register_history_window(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.register_history_window(ui.ctx()));
         assert!(out.shapes.is_empty());
     }
 
@@ -3017,7 +3061,7 @@ mod settings_tests {
         let mut app = App::new();
         app.show_license_nag = false;
         let ctx = egui::Context::default();
-        let out = ctx.run(Default::default(), |ctx| app.license_nag_window(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.license_nag_window(ui.ctx()));
         assert!(out.shapes.is_empty());
     }
 
@@ -3026,13 +3070,14 @@ mod settings_tests {
     #[test]
     fn license_window_shows_the_embedded_license_not_mit() {
         const LICENSE: &str = include_str!("../../LICENSE.md");
-        assert!(LICENSE.contains("Personal Free License"), "licence attendue = ASFL");
+        assert!(LICENSE.contains("GNU General Public License"), "licence attendue = GPLv3 + Commons Clause");
+        assert!(LICENSE.contains("Commons Clause"), "la clause anti-revente doit rester présente");
         assert!(!LICENSE.to_uppercase().contains("MIT LICENSE"), "le MIT ne doit plus être la licence");
 
         let mut app = App::new();
         app.show_license = true;
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.license_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.license_window(ui.ctx()));
         assert!(app.show_license, "la fenêtre reste ouverte tant qu'on ne la ferme pas");
     }
 
@@ -3047,7 +3092,7 @@ mod settings_tests {
             app.show_program_output = true;
             app.program_output = out.to_string();
             let ctx = egui::Context::default();
-            let _ = ctx.run(Default::default(), |ctx| app.program_output_window(ctx));
+            let _ = ctx.run_ui(Default::default(), |ui| app.program_output_window(ui.ctx()));
             assert!(app.show_program_output, "la boîte reste ouverte sans geste de fermeture");
         }
     }
@@ -3058,7 +3103,7 @@ mod settings_tests {
         let mut app = App::new();
         app.program_output = "invisible".into();
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.program_output_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.program_output_window(ui.ctx()));
         assert!(!app.show_program_output);
     }
 
@@ -3071,7 +3116,7 @@ mod settings_tests {
             app.show_about = true;
             app.license = license;
             let ctx = egui::Context::default();
-            let _ = ctx.run(Default::default(), |ctx| app.about_window(ctx));
+            let _ = ctx.run_ui(Default::default(), |ui| app.about_window(ui.ctx()));
         }
     }
 
@@ -3085,7 +3130,7 @@ mod settings_tests {
         app.license = crate::license::valid_for_tests();
         app.confirm_license_reset = true;
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.license_reset_confirm_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.license_reset_confirm_window(ui.ctx()));
         assert!(
             app.confirm_license_reset,
             "reste ouverte tant qu'aucun bouton n'est cliqué"
@@ -3132,7 +3177,7 @@ mod settings_tests {
         let mut app = App::new();
         app.confirm_license_reset = false;
         let ctx = egui::Context::default();
-        let out = ctx.run(Default::default(), |ctx| app.license_reset_confirm_window(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.license_reset_confirm_window(ui.ctx()));
         assert!(out.shapes.is_empty());
     }
 
@@ -3147,7 +3192,7 @@ mod settings_tests {
             app.show_about = true;
             app.license = license;
             let ctx = egui::Context::default();
-            let _ = ctx.run(Default::default(), |ctx| app.about_window(ctx));
+            let _ = ctx.run_ui(Default::default(), |ui| app.about_window(ui.ctx()));
             assert!(
                 !app.confirm_license_reset,
                 "la confirmation ne doit s'ouvrir que sur clic explicite"
@@ -3161,7 +3206,7 @@ mod settings_tests {
         let mut app = App::new();
         app.show_license = false;
         let ctx = egui::Context::default();
-        let out = ctx.run(Default::default(), |ctx| app.license_window(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.license_window(ui.ctx()));
         assert!(out.shapes.is_empty() || !app.show_license);
     }
 
@@ -3182,7 +3227,7 @@ mod settings_tests {
                 )),
                 ..Default::default()
             };
-            let _ = ctx.run(input, |ctx| app.settings_window(ctx));
+            let _ = ctx.run_ui(input, |ui| app.settings_window(ui.ctx()));
             assert!(app.show_settings, "la fenêtre doit rester ouverte ({w}×{h})");
         }
     }
@@ -3199,7 +3244,7 @@ mod settings_tests {
 
         // Le rendu ne doit pas réinitialiser le réglage.
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.settings_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.settings_window(ui.ctx()));
         assert_ne!(app.pedagogy_anim, before, "le rendu ne doit rien réécrire");
     }
 
@@ -3209,7 +3254,7 @@ mod settings_tests {
         let mut app = App::new();
         app.show_settings = false;
         let ctx = egui::Context::default();
-        let out = ctx.run(Default::default(), |ctx| app.settings_window(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.settings_window(ui.ctx()));
         assert!(out.shapes.is_empty() || !app.show_settings);
     }
 
@@ -3220,7 +3265,7 @@ mod settings_tests {
         app.src_path = PathBuf::from("build/inexistant.asm");
         app.show_settings = true;
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.settings_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.settings_window(ui.ctx()));
         assert!(app.show_settings);
     }
 }
@@ -3257,7 +3302,7 @@ mod calculator_tests {
             app.calc_input = a.to_string();
             app.calc_input_b = b.to_string();
             app.calc_op = op;
-            let _ = ctx.run(Default::default(), |ctx| app.calculator_window(ctx));
+            let _ = ctx.run_ui(Default::default(), |ui| app.calculator_window(ui.ctx()));
             assert!(app.show_calculator, "la fenêtre reste ouverte ({a} {b:?})");
         }
 
@@ -3265,7 +3310,7 @@ mod calculator_tests {
         for base in [16, 2, 10, 8, super::super::CALC_BASE_ASCII] {
             app.calc_base = base;
             app.calc_input = "101".to_string();
-            let _ = ctx.run(Default::default(), |ctx| app.calculator_window(ctx));
+            let _ = ctx.run_ui(Default::default(), |ui| app.calculator_window(ui.ctx()));
         }
     }
 
@@ -3280,7 +3325,7 @@ mod calculator_tests {
         app.calc_input_b = "\\xDF".to_string();
         app.calc_op = super::super::CalcOp::And;
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.calculator_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.calculator_window(ui.ctx()));
 
         // Le filtre de saisie n'a pas mangé l'échappement.
         assert_eq!(app.calc_input_b, "\\xDF");
@@ -3310,7 +3355,7 @@ mod calculator_tests {
         let mut app = App::new();
         app.show_calculator = false;
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.calculator_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.calculator_window(ui.ctx()));
         assert!(!app.show_calculator);
     }
 }

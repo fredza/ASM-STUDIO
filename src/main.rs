@@ -32,7 +32,16 @@ fn main() -> eframe::Result {
         .with_title("ASM Studio")
         // app_id utilisé par Wayland/GNOME pour associer la fenêtre au .desktop :
         // ~/.local/share/applications/asm-studio.desktop  +  icône asm-studio.png
-        .with_app_id("asm-studio");
+        .with_app_id("asm-studio")
+        // Décorations natives coupées : sans ça, réduire/agrandir/fermer sont
+        // dessinés par le gestionnaire de fenêtres, à l'endroit — gauche ou
+        // droite — que dicte SON thème, hors du contrôle de l'appli. La barre
+        // de menu (`ui_chrome::menu_bar`) dessine désormais sa propre poignée
+        // de déplacement et ses propres boutons, toujours à droite ; les bords
+        // de la fenêtre gagnent leurs propres poignées de redimensionnement
+        // (`ui_chrome::window_resize_handles`), pour que couper les
+        // décorations ne rende pas la fenêtre plus figée qu'avant.
+        .with_decorations(false);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }

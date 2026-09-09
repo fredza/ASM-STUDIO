@@ -544,7 +544,11 @@ impl App {
         // `crate::theme::current()` sans avoir à recevoir le thème en argument.
         crate::theme::set_current(theme);
         let p = &theme.ui;
-        let mut style = (*ctx.style()).clone();
+        // Depuis egui 0.36, `Context` garde un style distinct par thème
+        // (clair/sombre) au lieu d'un style unique : il faut donc préciser
+        // lequel on lit et lequel on réécrit, plutôt que le style « courant ».
+        let egui_theme = if theme.dark { Theme::Dark } else { Theme::Light };
+        let mut style = (*ctx.style_of(egui_theme)).clone();
         // Le point de départ egui donne les dizaines de réglages qu'un thème
         // n'a pas à décrire (ombres, épaisseurs, expansions) ; ce qui suit
         // remplace ceux qui font l'identité visuelle.
@@ -598,12 +602,12 @@ impl App {
         style.text_styles.insert(TextStyle::Monospace, FontId::monospace(13.0));
         style.text_styles.insert(TextStyle::Heading, FontId::proportional(18.0));
         style.text_styles.insert(TextStyle::Small, FontId::proportional(11.0));
-        ctx.set_style(style);
+        ctx.set_style_of(egui_theme, style);
     }
 
     // ---------- Menu ----------
 
-    pub(super) fn menu_bar(&mut self, ctx: &egui::Context) {
+    pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
 
@@ -611,14 +615,30 @@ impl App {
         // Outils / Aide. « Build » et « Debug » n'étaient qu'un seul sujet —
         // faire tourner le programme — et se recoupaient (Lancer figurait dans
         // les deux). Les réglages quittent « Aide », où personne ne les cherche.
-        egui::TopBottomPanel::top("menubar")
+        egui::Panel::top("menubar")
             .frame(
                 egui::Frame::new()
                     .fill(crate::theme::current().ui.window)
                     .stroke(egui::Stroke::new(1.0_f32, crate::theme::current().ui.border.gamma_multiply(0.7)))
                     .inner_margin(egui::Margin::symmetric(10, 3)),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
+            // Poignée de déplacement de la fenêtre : posée AVANT la barre de
+            // menus, elle couvre toute la bande, mais les vrais boutons/menus
+            // dessinés ensuite par-dessus lui reprennent la main partout où
+            // ils se trouvent — seul l'espace resté vide (autour du sigle,
+            // entre les menus et les boutons de droite) déplace la fenêtre.
+            // Nécessaire depuis que les décorations natives sont coupées
+            // (`main.rs`) : plus aucune barre de titre système ne le ferait.
+            let bar_rect = ui.max_rect();
+            let drag = ui.interact(bar_rect, ui.id().with("titlebar_drag"), egui::Sense::click_and_drag());
+            if drag.drag_started() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            if drag.double_clicked() {
+                let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            }
             egui::MenuBar::new().ui(ui, |ui| {
                 // Une signature compacte : elle ancre la navigation et rend
                 // immédiatement identifiable la barre qui ne contient que les
@@ -882,8 +902,130 @@ impl App {
                         self.show_about = true;
                     }
                 });
+
+                // Réduire / Agrandir-Restaurer / Fermer — seuls boutons de
+                // fenêtre qui existent encore, les décorations natives étant
+                // coupées (voir `main.rs`). Ajoutés dans cet ordre à un
+                // layout droite-à-gauche : Fermer posé en premier finit le
+                // plus à droite, comme sur Windows et GNOME.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self
+                        .tip(ui.button("×"), tr("Fermer", "Close", "Cerrar"))
+                        .clicked()
+                    {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                    let (glyph, restore_tip) = if maximized {
+                        ("🗗", tr("Restaurer", "Restore", "Restaurar"))
+                    } else {
+                        ("🗖", tr("Agrandir", "Maximize", "Maximizar"))
+                    };
+                    if self.tip(ui.button(glyph), restore_tip).clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                    }
+                    if self
+                        .tip(ui.button("🗕"), tr("Réduire", "Minimize", "Minimizar"))
+                        .clicked()
+                    {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                });
             });
         });
+    }
+
+    /// Poignées de redimensionnement sur les quatre bords et les quatre coins
+    /// de la fenêtre.
+    ///
+    /// Nécessaires depuis que les décorations natives sont coupées (voir
+    /// `main.rs`, `with_decorations(false)`) : sans elles, plus aucun bord ne
+    /// répondrait à la souris pour agrandir ou rétrécir la fenêtre — couper
+    /// les décorations pour garder réduire/agrandir/fermer à droite aurait
+    /// alors rendu la fenêtre plus figée qu'avant, pas seulement redécorée.
+    ///
+    /// Absentes quand la fenêtre est agrandie ou en plein écran :
+    /// redimensionner une fenêtre qui occupe déjà tout l'écran n'a pas de
+    /// sens, et les zones invisibles traîneraient pour rien par-dessus le
+    /// contenu.
+    pub(super) fn window_resize_handles(&self, ctx: &egui::Context) {
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        if maximized || fullscreen {
+            return;
+        }
+        // Assez fin pour ne pas mordre sur le contenu, assez large pour que
+        // la souris trouve la poignée sans viser un pixel exact.
+        const BORDER: f32 = 6.0;
+        const CORNER: f32 = 12.0;
+        let rect = ctx.viewport_rect();
+
+        let handle = |id: &str, area_rect: egui::Rect, cursor: egui::CursorIcon, dir: egui::ResizeDirection| {
+            if area_rect.width() <= 0.0 || area_rect.height() <= 0.0 {
+                return;
+            }
+            let response = egui::Area::new(egui::Id::new(id))
+                .order(egui::Order::Foreground)
+                .fixed_pos(area_rect.min)
+                .interactable(true)
+                .show(ctx, |ui| ui.allocate_exact_size(area_rect.size(), egui::Sense::drag()).1)
+                .inner;
+            if response.hovered() || response.dragged() {
+                ctx.set_cursor_icon(cursor);
+            }
+            if response.drag_started() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+            }
+        };
+
+        use egui::{CursorIcon as C, ResizeDirection as D};
+        // Bords : toute la longueur du côté, en retrait des coins pour leur
+        // laisser la priorité sur le petit carré qu'ils partagent avec eux.
+        handle(
+            "resize_n",
+            egui::Rect::from_min_size(rect.min + egui::vec2(CORNER, 0.0), egui::vec2((rect.width() - 2.0 * CORNER).max(0.0), BORDER)),
+            C::ResizeNorth,
+            D::North,
+        );
+        handle(
+            "resize_s",
+            egui::Rect::from_min_size(egui::pos2(rect.min.x + CORNER, rect.max.y - BORDER), egui::vec2((rect.width() - 2.0 * CORNER).max(0.0), BORDER)),
+            C::ResizeSouth,
+            D::South,
+        );
+        handle(
+            "resize_w",
+            egui::Rect::from_min_size(rect.min + egui::vec2(0.0, CORNER), egui::vec2(BORDER, (rect.height() - 2.0 * CORNER).max(0.0))),
+            C::ResizeWest,
+            D::West,
+        );
+        handle(
+            "resize_e",
+            egui::Rect::from_min_size(egui::pos2(rect.max.x - BORDER, rect.min.y + CORNER), egui::vec2(BORDER, (rect.height() - 2.0 * CORNER).max(0.0))),
+            C::ResizeEast,
+            D::East,
+        );
+        // Coins : ajoutés après les bords, ils gagnent la zone qu'ils
+        // partagent avec eux (dernier posé = priorité, à surface égale).
+        handle("resize_nw", egui::Rect::from_min_size(rect.min, egui::vec2(CORNER, CORNER)), C::ResizeNorthWest, D::NorthWest);
+        handle(
+            "resize_ne",
+            egui::Rect::from_min_size(egui::pos2(rect.max.x - CORNER, rect.min.y), egui::vec2(CORNER, CORNER)),
+            C::ResizeNorthEast,
+            D::NorthEast,
+        );
+        handle(
+            "resize_sw",
+            egui::Rect::from_min_size(egui::pos2(rect.min.x, rect.max.y - CORNER), egui::vec2(CORNER, CORNER)),
+            C::ResizeSouthWest,
+            D::SouthWest,
+        );
+        handle(
+            "resize_se",
+            egui::Rect::from_min_size(rect.max - egui::vec2(CORNER, CORNER), egui::vec2(CORNER, CORNER)),
+            C::ResizeSouthEast,
+            D::SouthEast,
+        );
     }
 
     /// Sous-menu « Récents ». Grisé tant que rien n'a été ouvert : une entrée
@@ -1049,17 +1191,17 @@ impl App {
         }
     }
 
-    pub(super) fn toolbar(&mut self, ctx: &egui::Context) {
+    pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
         if !self.show_toolbar {
             return;
         }
-        egui::TopBottomPanel::top("toolbar")
+        egui::Panel::top("toolbar")
             .frame(
                 egui::Frame::new()
                     .fill(crate::theme::current().ui.bg)
                     .inner_margin(egui::Margin::symmetric(10, 6)),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
             egui::Frame::new()
                 .fill(ui.visuals().faint_bg_color)
                 .stroke(egui::Stroke::new(1.0_f32, crate::theme::current().ui.border.gamma_multiply(0.75)))
@@ -1152,6 +1294,30 @@ impl App {
                 {
                     self.build();
                 }
+                ui.separator();
+                // Sortie seule (sans les messages de l'IDE) : le même bouton
+                // existe déjà dans l'en-tête du panneau Console, mais ce
+                // panneau doit être ouvert et visible pour qu'on le voie. Il a
+                // sa place ici aussi, dans la barre d'outils principale,
+                // toujours accessible quelle que soit la disposition en cours.
+                if self
+                    .tip(
+                        icon_button(ui, None, &format!("{} {}", super::ui_panels::CONSOLE_OUTPUT_ICON, tr("Sortie", "Output", "Salida"))),
+                        tr(
+                            "Sortie du programme seule, sans les messages de l'IDE (bascule)",
+                            "Program output alone, without the IDE's messages (toggle)",
+                            "Salida del programa sola, sin los mensajes del IDE (alterna)",
+                        ),
+                    )
+                    .clicked()
+                {
+                    // Bascule, pas un simple ouvre : un bouton de barre
+                    // d'outils, contrairement à une entrée de menu, reste sous
+                    // les yeux en permanence — un second clic doit pouvoir
+                    // refermer ce que le premier a ouvert, sans chercher le
+                    // bouton « Fermer » de la fenêtre.
+                    self.show_program_output = !self.show_program_output;
+                }
                 // « Pause » et « Attach » n'existaient qu'en boutons grisés en
                 // permanence — des affordances mortes, déroutantes pour un
                 // débutant. Retirées : la barre ne montre que ce qui agit.
@@ -1170,7 +1336,7 @@ impl App {
     /// Bandeau d'accueil du mode apprentissage : un mot de bienvenue et deux
     /// portes d'entrée — le tutoriel, ou un exemple. Ne s'affiche qu'en mode
     /// apprentissage, et disparaît définitivement une fois écarté (persisté).
-    pub(super) fn welcome_banner(&mut self, ctx: &egui::Context) {
+    pub(super) fn welcome_banner(&mut self, ui: &mut egui::Ui) {
         if self.mode != super::UiMode::Learning || self.welcome_dismissed {
             return;
         }
@@ -1179,14 +1345,14 @@ impl App {
         let hdr = self.c_header();
         let (mut open_ex, mut start_tuto, mut dismiss) = (false, false, false);
 
-        egui::TopBottomPanel::top("welcome")
+        egui::Panel::top("welcome")
             .frame(
                 egui::Frame::new()
                     .fill(accent().linear_multiply(0.12))
                     .stroke(egui::Stroke::new(1.0_f32, accent().gamma_multiply(0.48)))
                     .inner_margin(egui::Margin::symmetric(14, 9)),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         RichText::new(tr(
@@ -1234,19 +1400,19 @@ impl App {
 
     // ---------- Barre d'état ----------
 
-    pub(super) fn status_bar(&mut self, ctx: &egui::Context) {
+    pub(super) fn status_bar(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let mut kill_requested = false;
         let mut switch_mode: Option<super::UiMode> = None;
-        egui::TopBottomPanel::bottom("statusbar")
+        egui::Panel::bottom("statusbar")
             .frame(
                 egui::Frame::new()
                     .fill(crate::theme::current().ui.window)
                     .stroke(egui::Stroke::new(1.0_f32, crate::theme::current().ui.border.gamma_multiply(0.68)))
                     .inner_margin(egui::Margin::symmetric(10, 4)),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
             ui.horizontal(|ui| {
                 match &self.dbg {
                     Some(d) if d.is_alive() => {
@@ -1454,30 +1620,49 @@ mod keyboard_tests {
     use std::path::PathBuf;
 
     /// Envoie une vraie touche à travers egui, comme le ferait le système.
+    ///
+    /// Envoie aussi `ModifiersChanged(NONE)` : depuis egui 0.36,
+    /// `InputState::modifiers` n'est plus recalculé à partir du champ
+    /// `modifiers` de chaque `Event::Key`, il ne bouge plus que sur cet
+    /// événement (ou reste tel quel sinon). Sans cette remise à zéro
+    /// explicite, un modificateur envoyé par [`key_mod`] plus tôt dans le même
+    /// `Context` de test resterait « collé » pour toutes les touches suivantes.
     fn key(k: egui::Key) -> egui::RawInput {
         egui::RawInput {
-            events: vec![egui::Event::Key {
-                key: k,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
+            events: vec![
+                egui::Event::ModifiersChanged(egui::Modifiers::NONE),
+                egui::Event::Key {
+                    key: k,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
             ..Default::default()
         }
     }
 
     /// Même chose avec des modificateurs (Ctrl, Maj).
+    ///
+    /// Depuis egui 0.36, `RawInput` n'a plus de champ `modifiers` global, et
+    /// `InputState::modifiers` (que lisent nos raccourcis, ex. `i.modifiers.ctrl`)
+    /// ne se met plus à jour depuis le champ `modifiers` de chaque `Event::Key` :
+    /// il ne bouge plus que sur un `Event::ModifiersChanged` explicite. Sans
+    /// lui, `i.modifiers.ctrl` resterait à `false` même avec un `Event::Key`
+    /// dont le `modifiers` porte `CTRL`.
     fn key_mod(k: egui::Key, modifiers: egui::Modifiers) -> egui::RawInput {
         egui::RawInput {
-            modifiers,
-            events: vec![egui::Event::Key {
-                key: k,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers,
-            }],
+            events: vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::Key {
+                    key: k,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                },
+            ],
             ..Default::default()
         }
     }
@@ -1505,9 +1690,10 @@ mod keyboard_tests {
 
     /// Une frame complète : raccourcis puis rendu, comme `App::update`.
     fn frame(app: &mut App, ctx: &egui::Context, input: egui::RawInput) {
-        let _ = ctx.run(input, |ctx| {
-            app.handle_shortcuts(ctx);
-            app.dock_ui(ctx);
+        let _ = ctx.run_ui(input, |ui| {
+            let ctx = ui.ctx().clone();
+            app.handle_shortcuts(&ctx);
+            app.dock_ui(ui);
         });
     }
 
@@ -1789,6 +1975,10 @@ mod keyboard_tests {
         assert_ne!(app.focused_panel(), before, "Ctrl+Tab : onglet suivant");
 
         // Ctrl+W ferme le panneau focalisé.
+        // La Console n'est plus ouverte par défaut (voir `dock::default_layout`) :
+        // `show_panel` l'ouvre d'abord, `focus_panel` ne fait que sélectionner
+        // un onglet déjà présent.
+        app.show_panel(Panel::Console);
         app.focus_panel(Panel::Console);
         frame(&mut app, &ctx, Default::default());
         assert!(app.panel_is_open(Panel::Console));
@@ -1923,7 +2113,7 @@ mod font_tests {
     fn fallback_font_is_registered_last_in_both_families() {
         let ctx = egui::Context::default();
         App::install_fallback_font(&ctx);
-        let _ = ctx.run(Default::default(), |_| {});
+        let _ = ctx.run_ui(Default::default(), |_| {});
 
         // Sur une machine sans aucune des polices candidates, l'installation est
         // un non-événement : le test n'a alors rien à vérifier.
@@ -1940,12 +2130,13 @@ mod font_tests {
         }
 
         ctx.fonts(|_| ()); // force l'initialisation
-        let families = ctx.style().text_styles.clone();
+        let families = ctx.style_of(ctx.theme()).text_styles.clone();
         assert!(!families.is_empty(), "les styles de texte doivent exister");
 
         // Le rendu doit fonctionner après installation.
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.label("✔ ✘ → ← ● ▲ ▼ ◀ ➤ ⌨ ⚠");
             });
         });
@@ -1958,8 +2149,9 @@ mod font_tests {
         let ctx = egui::Context::default();
         App::install_fallback_font(&ctx);
         App::install_fallback_font(&ctx);
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.label("→ ● ✘");
             });
         });
@@ -1976,7 +2168,7 @@ mod welcome_tests {
     fn welcome_banner_shows_only_in_learning_until_dismissed() {
         let ctx = egui::Context::default();
         let render = |app: &mut App| {
-            let _ = ctx.run(Default::default(), |ctx| app.welcome_banner(ctx));
+            let _ = ctx.run_ui(Default::default(), |ui| app.welcome_banner(ui));
         };
 
         let mut app = App::new();
@@ -2006,7 +2198,7 @@ mod menu_tests {
     fn the_learning_path_has_its_own_top_level_menu() {
         let ctx = egui::Context::default();
         let mut app = App::new();
-        let out = ctx.run(Default::default(), |ctx| app.menu_bar(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.menu_bar(ui));
         let texts = super::status_bar_tests::collect_text(&out.shapes);
 
         assert!(
@@ -2042,7 +2234,7 @@ pub(super) mod status_bar_tests {
             app.pe_enabled = true;
             app.set_target(target);
             let ctx = egui::Context::default();
-            let out = ctx.run(Default::default(), |ctx| app.status_bar(ctx));
+            let out = ctx.run_ui(Default::default(), |ui| app.status_bar(ui));
 
             let texts = collect_text(&out.shapes);
             assert!(texts.iter().any(|t| t == "NASM"), "l'assembleur reste affiché");
@@ -2063,7 +2255,7 @@ pub(super) mod status_bar_tests {
     fn the_status_bar_always_names_the_current_mode() {
         let ctx = egui::Context::default();
         let mut app = App::new();
-        let learning = ctx.run(Default::default(), |ctx| app.status_bar(ctx));
+        let learning = ctx.run_ui(Default::default(), |ui| app.status_bar(ui));
         assert!(
             collect_text(&learning.shapes).iter().any(|text| text == "Apprentissage"),
             "le mode Apprentissage se nomme"
@@ -2071,7 +2263,7 @@ pub(super) mod status_bar_tests {
         assert!(app.tutorial_enabled(), "et l'étiquette dit vrai : le parcours est offert");
 
         app.set_ui_mode(crate::app::UiMode::Full);
-        let full = ctx.run(Default::default(), |ctx| app.status_bar(ctx));
+        let full = ctx.run_ui(Default::default(), |ui| app.status_bar(ui));
         let texts = collect_text(&full.shapes);
         assert!(
             !texts.iter().any(|text| text == "Apprentissage"),
@@ -2104,14 +2296,14 @@ pub(super) mod status_bar_tests {
             pressed: false,
             modifiers: Default::default(),
         });
-        let _ = ctx.run(input, |ctx| app.status_bar(ctx));
+        let _ = ctx.run_ui(input, |ui| app.status_bar(ui));
         assert_eq!(app.mode, crate::app::UiMode::Editor, "un clic passe en mode éditeur seul");
     }
 
     /// Centre de l'étiquette de mode, telle qu'elle vient d'être peinte.
     fn mode_label_pos(ctx: &egui::Context, app: &mut App) -> Option<egui::Pos2> {
         let label = app.mode.label(app.lang);
-        let out = ctx.run(Default::default(), |ctx| app.status_bar(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.status_bar(ui));
         fn walk(shape: &egui::Shape, want: &str, out: &mut Option<egui::Pos2>) {
             match shape {
                 egui::Shape::Text(t) if t.galley.text() == want => {

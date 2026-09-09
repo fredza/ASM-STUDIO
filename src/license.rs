@@ -15,8 +15,9 @@
 //! licence est demandée — l'utilisateur le copie depuis « À propos » et le
 //! communique à l'auteur, qui le colle dans l'outil d'émission
 //! (`asm-studio-license-tool`). Un contrôle strict casserait l'usage
-//! légitime de quiconque recompile depuis les sources (autorisé par l'ASFL)
-//! ou reçoit un correctif sans changement de version : son build, donc son
+//! légitime de quiconque recompile depuis les sources (explicitement garanti
+//! par la GPLv3, voir `LICENSE.md`) ou reçoit un correctif sans changement de
+//! version : son build, donc son
 //! hash git, diffère forcément de celui au moment de l'émission. Seules la
 //! signature, la version et l'expiration (si présente) comptent côté
 //! client.

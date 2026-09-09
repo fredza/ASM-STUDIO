@@ -1,8 +1,9 @@
 [package]
 name = "asm_studio"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
-# Licence propre au projet, hors nomenclature SPDX : le fichier fait foi.
+# GPLv3 + clause Commons Clause (revente interdite) : ce montage composite
+# n'a pas d'identifiant SPDX standard, le fichier fait foi.
 license-file = "LICENSE.md"
 description = "IDE pédagogique pour apprendre l'assembleur NASM x86-64 (registres, flags, pile, mémoire, mode explication)"
 authors = ["Frederic Z"]
@@ -30,7 +31,20 @@ strip = true
 opt-level = "s"
 
 [dependencies]
-eframe = "0.33"
+# `wgpu` (Vulkan) est le rendu par défaut depuis eframe 0.36 — auparavant
+# c'était `glow` (OpenGL). On revient explicitement à `glow` : `wgpu` ajoute
+# ~7 Mo (shaders SPIR-V, tout le binding Vulkan y compris ray tracing et
+# mesh shaders, jamais utilisés ici) et exige `libvulkan.so.1` + un pilote
+# Vulkan fonctionnel, une machine sur laquelle un élève n'a pas forcément
+# mis les mains — quand OpenGL 2.0/3.2 (le minimum déjà documenté dans
+# DEPENDENCIES.md) est disponible sur pratiquement tout ce que Mesa pilote,
+# y compris en VM ou sur un portable ancien. Sans ce choix explicite, les
+# dépendances runtime documentées (`libEGL`, `libGL`) et vérifiées par
+# `install/install.sh` auraient cessé de correspondre à ce que le binaire
+# charge réellement.
+eframe = { version = "0.36", default-features = false, features = [
+    "accesskit", "default_fonts", "glow", "links", "wayland", "web_screen_reader", "x11",
+] }
 nix = { version = "0.31", features = ["ptrace", "process", "signal"] }
 libc = "0.2"
 # Une seule architecture : par défaut capstone compile les dix-huit qu'il
@@ -50,11 +64,11 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # Pilote le futur AsyncFileDialog sur un thread de fond (bloque ce thread, pas l'UI).
 pollster = "1"
 # Mise à jour automatique : client HTTP synchrone léger + parseur JSON minimal.
-ureq = { version = "3", features = ["json"] }
+ureq = { version = "3.4", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-egui_dock = "0.18"
-base64 = "0.22"
+egui_dock = "0.21"
+base64 = "0.23"
 # Lecture du presse-papiers (bouton « Coller » de la boîte d'activation). egui
 # sait écrire dans le presse-papiers mais pas le lire : il n'expose le collage
 # que par l'événement clavier, ce qui ne permet pas de le déclencher depuis un

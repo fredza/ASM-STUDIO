@@ -807,7 +807,7 @@ mod tests {
         app.flash_time = 0.0;
         // On rend la disposition COMPLÈTE : tous les panneaux passent par le
         // rendu, pas seulement le centre.
-        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.dock_ui(ui));
         assert!(app.dock.is_some(), "l'arbre doit être restitué après le rendu");
 
         // La vue mémoire reste un onglet joignable.
@@ -842,8 +842,9 @@ mod tests {
         // Pointe le vidage sur le sommet de pile : il contient la valeur poussée.
         app.mem_addr = app.snap().unwrap().regs.rsp;
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.endianness_ui(ui));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| app.endianness_ui(ui));
         });
 
         // Et les octets réellement en mémoire suivent bien l'ordre annoncé.

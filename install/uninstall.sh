@@ -38,8 +38,10 @@ Options :
   --prefix DIR   Préfixe utilisé à l'installation (défaut : \$HOME/.local)
   --system       Raccourci pour --prefix /usr/local (nécessite sudo)
   --purge        Supprime AUSSI les données personnelles :
-                   ~/.config/asm_studio  (réglages)
+                   ~/.config/asm_studio  (réglages, licence collée)
                    ~/.local/share/asm_studio  (exemples, artefacts de build)
+                   ~/.cache/asm_studio  (état interne)
+                   ~/.local/state/asm_studio  (état interne)
   -y, --yes      Ne pose aucune question (implique une confirmation)
   -h, --help     Affiche cette aide
 EOF
@@ -98,13 +100,19 @@ if [ "$found" -eq 0 ]; then
     dim "Si l'installation a utilisé un autre préfixe, passez --prefix."
 fi
 
-# Données personnelles.
+# Données personnelles. Quatre répertoires XDG, pas deux : au-delà des
+# réglages et des données visibles, l'application tient aussi un état interne
+# discret dans le cache et le state XDG (voir `src/app/paths.rs`,
+# `trial_marker_paths`) — les oublier laisserait un « --purge » incomplet,
+# malgré ce qu'il promet.
 readonly DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/asm_studio"
 readonly CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/asm_studio"
+readonly CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/asm_studio"
+readonly STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/asm_studio"
 
 if [ "${PURGE}" -eq 1 ]; then
     step "Données personnelles à supprimer (--purge)"
-    for d in "${CONF_DIR}" "${DATA_DIR}"; do
+    for d in "${CONF_DIR}" "${DATA_DIR}" "${CACHE_DIR}" "${STATE_DIR}"; do
         [ -e "$d" ] && info "  ${d}"
     done
     warn "Vos programmes .asm enregistrés dans ces dossiers seront perdus."
@@ -132,7 +140,7 @@ for f in "${targets[@]}"; do
 done
 
 if [ "${PURGE}" -eq 1 ]; then
-    for d in "${CONF_DIR}" "${DATA_DIR}"; do
+    for d in "${CONF_DIR}" "${DATA_DIR}" "${CACHE_DIR}" "${STATE_DIR}"; do
         if [ -d "$d" ]; then
             rm -rf -- "$d" && ok "${d}"
         fi

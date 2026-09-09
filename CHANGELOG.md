@@ -5,6 +5,93 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-09
+
+### Changed
+- **Custom title bar**, replacing the native window decorations
+  (`main.rs`, `with_decorations(false)`). Minimize / maximize-restore /
+  close now always sit on the right, regardless of what the desktop's own
+  window manager theme would otherwise draw them as (several put them on
+  the left). The title bar still drags to move the window and
+  double-clicks to maximize/restore; since cutting native decorations also
+  cuts the OS's own resize handles, the app now draws its own on all four
+  edges and corners — active only while the window isn't maximized or
+  fullscreen, where resizing wouldn't mean anything anyway.
+- **Console panel is no longer part of the default docked layout**, in
+  either Learning or Full mode. The "Sortie" (⏷) button — in the toolbar
+  and in the Console panel's own header — covers the same need now that
+  it toggles and stays interactive the whole time a program runs (see
+  Fixed below), so keeping the panel permanently docked stopped earning
+  its space. It remains one click away from the View menu whenever the
+  fuller Console — with the IDE's own log messages, not just the
+  program's output — is what's wanted.
+- **eframe 0.33 → 0.36, egui_dock 0.18 → 0.21**: the biggest dependency
+  bump this project has taken since it started. Adapted the whole UI layer
+  to egui's new API — `TopBottomPanel`/`SidePanel` merged into a single
+  `Panel` type shown against a `Ui` instead of a `Context`, `eframe::App`'s
+  `update(&Context)` renamed to `ui(&mut Ui)`, `egui_dock`'s tab/node
+  lookups returning named `TabPath`/`NodePath` structs instead of tuples,
+  per-theme styles (`style_of`/`set_style_of`) replacing the single
+  `ctx.style()`, and the text-cursor API now indexing by a `CharIndex`
+  newtype instead of a bare `usize`. One toolbar glyph (`⬆`, "parent
+  folder") no longer has a matching glyph in egui's default font and was
+  swapped for `⏶`. base64 0.22 → 0.23 and ureq 3.3 → 3.4 came along for
+  the ride (no code changes needed).
+
+  eframe 0.36 also switched its *default* rendering backend from `glow`
+  (OpenGL) to `wgpu` (Vulkan) — pinned back to `glow` explicitly in
+  `Cargo.toml`. Left on `wgpu`, the release binary linked `libvulkan.so.1`
+  and grew by close to 4 MB for a whole Vulkan binding (ray tracing and
+  mesh shaders included) this app has no use for, on a machine a learner
+  might not have a working Vulkan driver on. `glow` keeps the OpenGL
+  2.0/3.2 baseline this project has always targeted, and keeps
+  `install/install.sh` and `DEPENDENCIES.md` — which check for and
+  document `libEGL`/`libGL`, not Vulkan — actually accurate.
+- **License: GNU GPLv3 + Commons Clause**, replacing the ASM Studio
+  Personal Free License (ASFL) v1.0. Source stays open, modification and
+  redistribution under the same license are now explicitly protected by
+  the GPLv3's copyleft; the Commons Clause keeps the one restriction that
+  mattered — selling the software, original or modified, is still
+  prohibited. See `LICENSE.md` for the full text and an honest note on
+  why this combination isn't a "pure" GPLv3 in the FSF's sense.
+
+### Added
+- **"Program output" button in the main toolbar**, next to Build: shows the
+  program's raw output alone, without the IDE's own log messages — the same
+  view the Console panel's header button already opened, now reachable
+  without that panel being open or visible.
+- **Resuming the last file or project on launch**: the IDE used to always
+  reopen the `hello_world.asm` example at startup, even with a project
+  worked on for hours the day before — the recent-files list existed but
+  nothing used it for this. It now reopens the most recent file or project
+  automatically, and falls back to the usual welcome example when there is
+  none, or when it has vanished from disk since the last session.
+- **"Panneau Console…" link inside the "Sortie du programme" window**, to
+  reach the full Console panel — IDE log messages included — from there in
+  one click, now that the panel isn't docked by default.
+
+### Fixed
+- **`uninstall.sh --purge` left two of four data directories behind.** It
+  removed `~/.config/asm_studio` and `~/.local/share/asm_studio`, but not
+  `~/.cache/asm_studio` or `~/.local/state/asm_studio` — where the app also
+  keeps internal state (see `trial_marker_paths` in `src/app/paths.rs`). A
+  flag that promises to remove "personal data" left silent litter behind
+  in two of the four XDG locations it uses; `--purge` now clears all four.
+- **"Sortie du programme" window was effectively read-only** outside the
+  exact instant a running program was blocked on a `read` — its input
+  field only existed while that was true. It now stays available the
+  whole time a program is alive with an open stdin, matching what the
+  Console panel already did, so answering a prompt no longer means timing
+  the click to the blocking instant.
+- **Toolbar and console-header "Sortie" buttons only ever opened** the
+  program output window, never closed it. A second click now toggles it,
+  like every other panel button in the app.
+- **Microscope button in the Instruction panel could get painted on top
+  of a long instruction title** (e.g. "JNE — Jump if Not Equal / Not
+  Zero") instead of beside it, on a narrow panel. The button now reserves
+  its own space first; the title fills what's left and truncates with an
+  ellipsis instead of running under it.
+
 ## [0.5.0] - 2026-09-09
 
 First release out of beta: the version number goes back to plain semver, with

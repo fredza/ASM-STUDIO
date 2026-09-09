@@ -1248,11 +1248,12 @@ mod tests {
         // Mode complet : le test manipule des panneaux avancés.
         app.set_ui_mode(crate::app::UiMode::Full);
 
-        // Fermer puis rouvrir la console par la palette.
-        app.run_command(Command::TogglePanel(Panel::Console));
-        assert!(!app.panel_is_open(Panel::Console));
+        // Ouvrir puis refermer la console par la palette — elle ne l'est
+        // plus par défaut (voir `dock::default_layout`), d'où l'ordre.
         app.run_command(Command::TogglePanel(Panel::Console));
         assert!(app.panel_is_open(Panel::Console));
+        app.run_command(Command::TogglePanel(Panel::Console));
+        assert!(!app.panel_is_open(Panel::Console));
 
         // « Aller au panneau » sur un panneau FERMÉ doit l'ouvrir d'abord,
         // sinon la commande semblerait sans effet.
@@ -1373,12 +1374,12 @@ mod tests {
         assert!(app.palette_query.is_empty(), "la requête repart à zéro");
 
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.palette_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.palette_window(ui.ctx()));
         assert!(app.palette_open, "la palette reste ouverte sans action");
 
         // Une requête qui ne colle à rien ne doit pas paniquer au rendu.
         app.palette_query = "xyzzy-introuvable".into();
-        let _ = ctx.run(Default::default(), |ctx| app.palette_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.palette_window(ui.ctx()));
 
         // Exécuter une commande referme la palette.
         app.palette_query = "reglages".into();
@@ -1399,7 +1400,7 @@ mod tests {
 
         let ctx = egui::Context::default();
         app.palette_query = "reglages".into(); // ne laisse qu'une poignée d'entrées
-        let _ = ctx.run(Default::default(), |ctx| app.palette_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.palette_window(ui.ctx()));
 
         let n = filter(&app.palette_query, app.lang, true, true).len();
         assert!(app.palette_sel < n.max(1), "sélection {} hors de {n}", app.palette_sel);

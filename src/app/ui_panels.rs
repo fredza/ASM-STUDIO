@@ -19,8 +19,14 @@ use super::pedagogy::bit_diff_strip;
 /// Bouton « voir la sortie seule » de l'en-tête de console. Nommé plutôt
 /// qu'écrit sur place : un test vérifie que ce caractère précis a bien un
 /// glyphe, faute de quoi il s'afficherait en carré vide (le sort de `❯`, déjà
-/// absent des polices par défaut).
-const CONSOLE_OUTPUT_ICON: &str = "🖵";
+/// absent des polices par défaut). Une flèche vers le bas — « faire descendre
+/// la sortie du programme, débarrassée du reste » — plutôt qu'un pictogramme
+/// d'écran, moins immédiatement lisible au survol.
+///
+/// `pub(super)` : le même bouton existe aussi dans la barre d'outils
+/// principale (`ui_chrome::toolbar`), pour qu'on puisse voir la sortie brute
+/// sans passer par le panneau Console — voir [`super::ui_chrome`].
+pub(super) const CONSOLE_OUTPUT_ICON: &str = "⏷";
 
 impl App {
     // ---------- Bande basse ----------
@@ -342,7 +348,10 @@ impl App {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 if resp.clicked() {
-                    self.show_program_output = true;
+                    // Bascule, comme le bouton équivalent de la barre
+                    // d'outils : un second clic referme ce que le premier a
+                    // ouvert.
+                    self.show_program_output = !self.show_program_output;
                 }
             });
         });
@@ -361,9 +370,9 @@ impl App {
             // l'éditeur ni ouvrir la palette.
             let claim_focus = waiting && !self.stdin_focus_claimed;
             self.stdin_focus_claimed = waiting;
-            egui::TopBottomPanel::bottom("console_stdin")
+            egui::Panel::bottom("console_stdin")
                 .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(2, 4)))
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         // Le chevron passe à l'orange quand le programme est
                         // effectivement suspendu sur un `read` : c'est le seul
@@ -936,7 +945,13 @@ impl App {
                     .clicked();
                 go_up = self
                     .tip(
-                        ui.small_button("⬆"),
+                        // « ⏶ » (triangle plein, bloc Miscellaneous Technical)
+                        // plutôt que « ⬆ » (bloc Miscellaneous Symbols and
+                        // Arrows) : depuis la mise à jour d'egui vers 0.36, la
+                        // police par défaut ne porte plus aucune flèche — ni
+                        // « ⬆ » ni même la simple « ↑ » — mais couvre encore ce
+                        // triangle (voir `the_explorer_toolbar_buttons_have_real_glyphs`).
+                        ui.small_button("⏶"),
                         tr("Dossier parent comme racine", "Parent folder as root", "Carpeta padre como raíz"),
                     )
                     .clicked();
@@ -1827,7 +1842,7 @@ mod tests {
     #[test]
     fn the_console_output_button_has_a_real_glyph() {
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |_| {});
+        let _ = ctx.run_ui(Default::default(), |_| {});
         let has = ctx.fonts_mut(|f| {
             f.has_glyphs(&egui::FontId::proportional(15.0), CONSOLE_OUTPUT_ICON)
         });
@@ -1876,8 +1891,9 @@ _start:
         // Rendu headless dans une colonne étroite : c'est le cas où la barre
         // horizontale sert, et rien ne doit paniquer.
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.set_max_width(180.0);
                 app.syscalls_ui(ui);
             });
@@ -1922,8 +1938,9 @@ niveau2:
 
         // Rendu headless des DEUX panneaux dans une colonne étroite.
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.set_max_width(150.0);
                 app.callstack_ui(ui);
                 app.syscalls_ui(ui);
@@ -1944,8 +1961,9 @@ niveau2:
     /// Rend l'explorateur une image, en lui remettant les événements donnés.
     fn render_explorer(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
         let input = egui::RawInput { events, ..Default::default() };
-        let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(input, |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.set_max_width(240.0);
                 app.explorer_ui(ui);
             });
@@ -2047,8 +2065,9 @@ niveau2:
         ctx.memory_mut(|m| m.request_focus(elsewhere));
         let mut other = String::new();
         let input = egui::RawInput::default();
-        let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(input, |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| {
                 app.explorer_ui(ui);
                 ui.add(egui::TextEdit::singleline(&mut other).id(elsewhere));
             });
@@ -2187,8 +2206,8 @@ niveau2:
     #[test]
     fn the_explorer_toolbar_buttons_have_real_glyphs() {
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |_| {});
-        for icon in ["⬆", "✚", "🗀", "⊟"] {
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        for icon in ["⏶", "✚", "🗀", "⊟"] {
             let has =
                 ctx.fonts_mut(|f| f.has_glyphs(&egui::FontId::proportional(14.0), icon));
             assert!(has, "{icon} n'a pas de glyphe : il s'afficherait en tofu");
@@ -2235,8 +2254,9 @@ niveau2:
             ..Default::default()
         };
         let mut avail = egui::Rect::ZERO;
-        let out = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let out = ctx.run_ui(input, |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| {
                 avail = ui.max_rect();
                 app.explorer_ui(ui);
             });
@@ -2319,8 +2339,9 @@ niveau2:
                 events,
                 ..Default::default()
             };
-            let out = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            let out = ctx.run_ui(input, |ui| {
+                let _ctx = ui.ctx().clone();
+                egui::CentralPanel::default().show(ui, |ui| {
                     app.explorer_ui(ui);
                 });
             });
@@ -2344,6 +2365,9 @@ niveau2:
                     egui::Event::MouseWheel {
                         unit: egui::MouseWheelUnit::Point,
                         delta: egui::vec2(0.0, -400.0),
+                        // Phase inconnue ici (pas un vrai trackpad) : egui 0.36
+                        // documente `Move` comme la valeur par défaut correcte.
+                        phase: egui::TouchPhase::Move,
                         modifiers: egui::Modifiers::default(),
                     },
                 ],
@@ -2537,8 +2561,9 @@ niveau2:
         let mut app = App::new();
 
         // Sans programme lancé : le panneau doit le dire, pas paniquer.
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.simd_ui(ui));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| app.simd_ui(ui));
         });
 
         app.src_path = PathBuf::from("build/simd-ui/simd.asm");
@@ -2557,8 +2582,9 @@ niveau2:
             app.xmm_view = view;
             for hide in [true, false] {
                 app.simd_hide_zero = hide;
-                let _ = ctx.run(Default::default(), |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| app.simd_ui(ui));
+                let _ = ctx.run_ui(Default::default(), |ui| {
+                    let _ctx = ui.ctx().clone();
+                    egui::CentralPanel::default().show(ui, |ui| app.simd_ui(ui));
                 });
             }
         }
@@ -2572,8 +2598,9 @@ niveau2:
         let mut app = App::new();
 
         // Avant tout assemblage : une invite, pas un panneau vide.
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.format_ui(ui));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| app.format_ui(ui));
         });
 
         std::fs::create_dir_all("build/fmt-ui").expect("dossier");
@@ -2594,8 +2621,9 @@ niveau2:
             app.build();
             let info = app.format_info.as_ref().expect("le binaire doit être décrit");
             assert!(!info.sections.is_empty(), "{target:?} : sections attendues");
-            let _ = ctx.run(Default::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| app.format_ui(ui));
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                let _ctx = ui.ctx().clone();
+                egui::CentralPanel::default().show(ui, |ui| app.format_ui(ui));
             });
         }
     }

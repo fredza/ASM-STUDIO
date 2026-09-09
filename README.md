@@ -259,10 +259,12 @@ doc/                quick start guide (French)
 
 ## License
 
-Distributed under the **ASM Studio Personal Free License (ASFL) v1.0** —
-see [`LICENSE.md`](LICENSE.md). In short: free to use, source available and
-open to review, contributions via pull request are welcome; selling or
-commercially redistributing the software (original or modified) is
-prohibited without the author's prior written permission.
+Distributed under the **GNU General Public License v3.0 (GPLv3)**, with the
+added **Commons Clause** condition — see [`LICENSE.md`](LICENSE.md). In
+short: free to use, source code available and modifiable, redistribution
+(including modified versions) welcome under the same license; only
+**selling** the software, original or modified, is prohibited. This is a
+composite license specific to ASM Studio, not a plain GPLv3 recognized as
+such by the OSI/FSF — see `LICENSE.md` §0 for the full explanation.
 
 Copyright © 2026 Frédéric Zawalski.

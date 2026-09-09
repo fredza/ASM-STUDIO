@@ -495,7 +495,7 @@ impl App {
                 let out = editor_scroll.show(ui, |ui| {
                     let out = egui::TextEdit::multiline(&mut self.source)
                         .id(super::editor_id())
-                        .frame(false)
+                        .frame(egui::Frame::NONE)
                         .code_editor()
                         .desired_width(content_w.max(ui.available_width()))
                         .desired_rows(28)
@@ -511,20 +511,20 @@ impl App {
                     let hover_char = out
                         .response
                         .hover_pos()
-                        .map(|p| out.galley.cursor_from_pos(p - out.galley_pos).index);
+                        .map(|p| out.galley.cursor_from_pos(p - out.galley_pos).index.0);
                     // Position du curseur (Ln/Col) pour la barre d'état.
                     if let Some(range) = out.cursor_range {
                         // Le curseur ne donne plus qu'un index de caractère :
                         // on retrouve ligne et colonne en comptant les sauts de
                         // ligne avant lui.
-                        let idx = range.primary.index;
+                        let idx = range.primary.index.0;
                         let before: String = self.source.chars().take(idx).collect();
                         self.editor_ln = before.matches('\n').count() + 1;
                         self.editor_col = before.chars().rev().take_while(|&c| c != '\n').count() + 1;
                         self.editor_cursor_byte = before.len();
                         // Retenu pour les gestes d'édition, qui s'exécutent au
                         // clavier avant le prochain rendu (voir `edit_ops`).
-                        self.editor_sel = (idx, range.secondary.index);
+                        self.editor_sel = (idx, range.secondary.index.0);
                     }
                     // Position à l'écran du curseur, pour ancrer la liste
                     // d'autocomplétion juste dessous. Comme `hover_char`, elle
@@ -593,7 +593,7 @@ impl App {
         }
         // Exactement un caractère de plus, et c'est un `\n` juste avant le
         // curseur : la signature d'un Entrée, et de rien d'autre.
-        let char_idx = range.primary.index;
+        let char_idx = range.primary.index.0;
         if self.source.chars().count() != before.chars().count() + 1 || char_idx == 0 {
             return false;
         }
@@ -632,7 +632,7 @@ impl App {
         if range.primary != range.secondary {
             return; // une sélection est encore active : rien à faire.
         }
-        let char_idx = range.primary.index;
+        let char_idx = range.primary.index.0;
 
         // Un caractère vient de disparaître (Retour arrière/Suppr) : si c'est
         // un ouvrant dont le fermant le suit immédiatement à vide, il part avec.
@@ -770,9 +770,18 @@ impl App {
         let e = explain::explain(&insn.mnemonic, &insn.operands, flags, self.lang);
         let mnem_col = self.c_mnemonic();
 
-        // Ligne 1 : nom de l'instruction + bouton Microscope (aligné à droite).
+        // Ligne 1 : bouton Microscope (aligné à droite) + nom de l'instruction.
+        //
+        // Le bouton se pose D'ABORD dans le layout droite-à-gauche : il
+        // réserve ainsi sa largeur avant que le titre ne soit ajouté. Poser le
+        // titre en premier (comme avant) le laissait prendre toute la largeur
+        // du panneau sans se soucier du bouton — sur un panneau étroit, ou un
+        // titre long (« JNE — Jump if Not Equal / Not Zero »), le bouton
+        // finissait peint PAR-DESSUS la fin du texte plutôt qu'à côté. Le
+        // titre, ajouté ensuite dans ce même layout, n'a alors plus que la
+        // largeur restante — et `truncate()` la respecte avec un « … » plutôt
+        // que de déborder à nouveau dessous.
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&e.title).size(16.0).strong().color(mnem_col));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .button(tr("🔬 Microscope", "🔬 Microscope", "🔬 Microscopio"))
@@ -781,6 +790,10 @@ impl App {
                 {
                     self.microscope = Some(addr);
                 }
+                ui.add(
+                    egui::Label::new(RichText::new(&e.title).size(16.0).strong().color(mnem_col))
+                        .truncate(),
+                );
             });
         });
         // Ligne 2 : catégorie + repère (instruction courante / sélection) à droite.
@@ -1331,8 +1344,9 @@ _start:
 
         // Et le panneau se rend, dans une colonne étroite comme au réel.
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.set_max_width(240.0);
                 app.instruction_ui(ui);
             });
@@ -1413,8 +1427,9 @@ _start:
         };
         let sel = app.c_sel_row();
         let mut avail = egui::Rect::ZERO;
-        let out = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let out = ctx.run_ui(input, |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| {
                 avail = ui.max_rect();
                 app.disasm_ui(ui);
             });
@@ -1750,7 +1765,7 @@ _start:
         app.set_ui_mode(crate::app::UiMode::Full);
         app.folded_labels.insert("_start".to_string());
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.dock_ui(ui));
     }
 
     /// Replier le DERNIER label (corps jusqu'à la fin du fichier, sans ligne
@@ -1761,7 +1776,7 @@ _start:
         app.set_ui_mode(crate::app::UiMode::Full);
         app.folded_labels.insert("end".to_string());
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.dock_ui(ui));
     }
 
     /// Un nom de fichier sans retour à la ligne final ne doit pas non plus
@@ -1773,6 +1788,6 @@ _start:
         assert_eq!(compute_fold_ranges(&app.source).len(), 1);
         app.folded_labels.insert("_start".to_string());
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.dock_ui(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.dock_ui(ui));
     }
 }

@@ -692,10 +692,10 @@ mod tests {
         // L'éditeur doit avoir le curseur : la liste ne s'ouvre pas au-dessus
         // d'un panneau dont on a cliqué ailleurs.
         ctx.memory_mut(|m| m.request_focus(crate::app::editor_id()));
-        let _ = ctx.run(input(), |ctx| app.dock_ui(ctx));
+        let _ = ctx.run_ui(input(), |ui| app.dock_ui(ui));
         // Le premier rendu donne le focus ; le second voit la liste.
         app.editor_sel = (6, 6);
-        let _ = ctx.run(input(), |ctx| app.dock_ui(ctx));
+        let _ = ctx.run_ui(input(), |ui| app.dock_ui(ui));
         assert!(app.complete_open, "la liste devrait être ouverte sur « mo »");
 
         app.move_completion(true);
@@ -721,7 +721,7 @@ mod tests {
             );
             let col = crate::theme::by_id("dark").unwrap().syntax.register;
             assert!(
-                job.sections.iter().any(|s| s.format.color == col && src[s.byte_range.clone()] == **r),
+                job.sections.iter().any(|s| s.format.color == col && src[s.byte_range.start.0..s.byte_range.end.0] == **r),
                 "{r} n'est pas reconnu comme un registre"
             );
         }

@@ -390,7 +390,7 @@ mod tests {
             let mut app = dirty_app();
             app.unsaved_prompt = Some(action.clone());
             let ctx = egui::Context::default();
-            let _ = ctx.run(Default::default(), |ctx| app.unsaved_window(ctx));
+            let _ = ctx.run_ui(Default::default(), |ui| app.unsaved_window(ui.ctx()));
             assert_eq!(app.unsaved_prompt, Some(action), "aucun clic ⇒ rien ne bouge");
         }
     }
@@ -401,7 +401,7 @@ mod tests {
         let mut app = App::new();
         app.unsaved_prompt = None;
         let ctx = egui::Context::default();
-        let out = ctx.run(Default::default(), |ctx| app.unsaved_window(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.unsaved_window(ui.ctx()));
         assert!(out.shapes.is_empty());
     }
 

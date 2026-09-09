@@ -301,8 +301,9 @@ _start:
 
         // Rendu headless du panneau.
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| app.exercise_ui(ui));
         });
     }
 
@@ -362,16 +363,18 @@ _start:
         // Tutoriel actif, aucune leçon ouverte : sommaire + attentes.
         app.enter_learning();
         app.tutorial_current = None;
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| app.exercise_ui(ui));
         });
 
         // Leçon ouverte : son contenu ET ses attentes, au même endroit.
         let lesson = crate::tutorial::find("registres").expect("leçon présente");
         app.load_lesson(&lesson);
         assert!(app.has_exercise(), "la leçon arme ses attentes");
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| app.exercise_ui(ui));
         });
 
         // Mode complet : le parcours quitte l'écran avec le mode auquel il
@@ -385,8 +388,9 @@ _start:
             app.panel_is_open(Panel::Exercise),
             "un exercice ouvert en mode complet rouvre son panneau"
         );
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| app.exercise_ui(ui));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            let _ctx = ui.ctx().clone();
+            egui::CentralPanel::default().show(ui, |ui| app.exercise_ui(ui));
         });
     }
 

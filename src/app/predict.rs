@@ -671,7 +671,7 @@ mod tests {
 
         // La fenêtre flottante se rend sans paniquer, verdict affiché.
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.predict_window(ui.ctx()));
         assert!(app.pedagogy_predict, "la fenêtre reste ouverte");
     }
 
@@ -698,7 +698,7 @@ mod tests {
 
         // Désactivée : la fenêtre ne se rend pas du tout.
         app.pedagogy_predict = false;
-        let out = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
+        let out = ctx.run_ui(Default::default(), |ui| app.predict_window(ui.ctx()));
         assert!(
             !out.shapes.iter().any(|s| s.clip_rect.width() > 0.0 && !matches!(s.shape, egui::Shape::Noop)),
             "aucune forme ne doit être peinte quand l'option est désactivée"
@@ -707,7 +707,7 @@ mod tests {
 
         // Activée : elle se rend et l'état reste vrai.
         app.pedagogy_predict = true;
-        let _ = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.predict_window(ui.ctx()));
         assert!(app.pedagogy_predict, "la fenêtre ouverte garde l'option active");
     }
 
@@ -723,13 +723,13 @@ mod tests {
             ctx.memory(|m| m.area_rect(egui::Id::new("predict_window")).map(|r| r.min))
         };
 
-        let _ = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.predict_window(ui.ctx()));
         let first = pos_of(&ctx);
         assert!(first.is_some(), "la fenêtre doit être enregistrée sous son Id explicite");
 
         // Le score change → le titre change.
         app.pred_score = Score { right: 3, total: 4 };
-        let _ = ctx.run(Default::default(), |ctx| app.predict_window(ctx));
+        let _ = ctx.run_ui(Default::default(), |ui| app.predict_window(ui.ctx()));
         assert_eq!(pos_of(&ctx), first, "la position doit survivre au changement de titre");
     }
 
