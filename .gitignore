@@ -5,6 +5,13 @@
 /examples
 
 /.claude/worktrees
+# État local de l'outillage, jamais du projet : les permissions accordées à
+# Claude Code sur cette machine, et les onglets que l'IDE réécrit à chaque
+# changement de focus. `.claude/settings.json` — le réglage partagé — resterait
+# suivi s'il apparaissait un jour : seule la variante `.local` est ignorée.
+/.claude/settings.local.json
+/.idea/claudeCodeEditorTabs.xml
+/.idea/claudeCodeTabState.xml
 # Archives de distribution produites par install/package.sh
 /dist
 # Notes de travail sur le système de licence : documents internes, que le
