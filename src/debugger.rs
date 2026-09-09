@@ -476,6 +476,51 @@ struct Io {
     outgoing: Vec<u8>,
 }
 
+/// Une adresse surveillée : le débogueur s'arrête dès que son contenu change.
+///
+/// Implémentée par comparaison à chaque pas, et non par les registres de
+/// débogage DR0–DR3 du processeur. Ceux-ci servent à *éviter* le pas-à-pas —
+/// or ce débogueur ne connaît que `PTRACE_SINGLESTEP` : il s'arrête déjà à
+/// chaque instruction, et DR7/DR6 n'auraient rien fait gagner. Ils auraient
+/// en revanche coûté une limite dure de quatre adresses, des tailles
+/// contraintes à 1, 2, 4 ou 8 octets, et l'impossibilité de dire quelle
+/// valeur il y avait *avant* — qui est justement ce qu'on veut lire quand on
+/// cherche qui a écrasé quoi.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Watchpoint {
+    pub addr: u64,
+    /// Nombre d'octets surveillés (1 à 8 en pratique, non contraint ici).
+    pub len: usize,
+    /// Dernier contenu vu, qui sert de référence à la comparaison suivante.
+    pub last: Vec<u8>,
+}
+
+/// Un déclenchement : ce que l'adresse valait, ce qu'elle vaut, et où.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WatchHit {
+    pub addr: u64,
+    pub before: Vec<u8>,
+    pub after: Vec<u8>,
+    /// Index dans l'historique du pas qui a produit le changement — c'est
+    /// l'instruction *qui vient de s'exécuter* qui est coupable, et la
+    /// timeline y renvoie directement.
+    pub step: usize,
+}
+
+impl WatchHit {
+    /// Les deux valeurs en entiers non signés, pour l'affichage courant.
+    /// Au-delà de huit octets, seuls les huit premiers sont convertis.
+    pub fn values(&self) -> (u64, u64) {
+        let lire = |v: &[u8]| {
+            let mut buf = [0u8; 8];
+            let n = v.len().min(8);
+            buf[..n].copy_from_slice(&v[..n]);
+            u64::from_le_bytes(buf)
+        };
+        (lire(&self.before), lire(&self.after))
+    }
+}
+
 pub struct Debugger {
     child: Pid,
     pub state: RunState,
@@ -489,6 +534,16 @@ pub struct Debugger {
     /// Tuyaux stdin/stdout/stderr, ou `None` si la redirection a échoué (le
     /// programme écrit alors dans le terminal parent, comme avant).
     io: Option<Io>,
+    /// Adresses surveillées. Relues après chaque pas, dans l'ordre où elles
+    /// ont été posées.
+    watchpoints: Vec<Watchpoint>,
+    /// Dernier déclenchement non encore réclamé par l'interface.
+    ///
+    /// Gardé plutôt que signalé par un retour de `step` : un pas peut être
+    /// lancé depuis trois endroits (pas à pas, `run_until`, reprise après un
+    /// appel système bloquant), et l'interface ne lit le résultat qu'une fois
+    /// la main rendue.
+    watch_hit: Option<WatchHit>,
 }
 
 impl Debugger {
@@ -520,6 +575,26 @@ impl Debugger {
                         libc::dup2(child_out, 1);
                         libc::dup2(child_out, 2);
                     }
+                }
+                // Adresses reproductibles d'une exécution à l'autre, comme le
+                // fait gdb (`set disable-randomization on`, actif par défaut
+                // chez lui aussi).
+                //
+                // Sans cela, la pile change de place à chaque lancement : une
+                // adresse relevée dans le panneau mémoire ne veut plus rien
+                // dire au lancement suivant, « Reprendre ici » rejoue le
+                // programme à d'autres adresses que celles de la timeline
+                // qu'il est censé retrouver, et une adresse surveillée ne peut
+                // pas être réarmée puisqu'elle ne désigne plus rien. Pour qui
+                // apprend, c'est pire encore : deux exécutions du même
+                // programme affichent des nombres différents sans que rien
+                // dans le code ne l'explique.
+                //
+                // Un échec est sans gravité — on retombe sur l'ancien
+                // comportement — et `_exit` serait une réponse disproportionnée
+                // à un noyau qui refuse ce réglage.
+                unsafe {
+                    libc::personality(libc::ADDR_NO_RANDOMIZE as libc::c_ulong);
                 }
                 // Sans PTRACE_TRACEME, execve réussit mais le parent ne reçoit
                 // jamais le SIGTRAP attendu. Ne pas présenter ce refus de
@@ -561,6 +636,8 @@ impl Debugger {
                     history: vec![snap],
                     mem,
                     io,
+                    watchpoints: Vec::new(),
+                    watch_hit: None,
                 })
             }
         }
@@ -670,6 +747,10 @@ impl Debugger {
                 let snap = self.capture(&regs);
                 self.history.push(snap);
                 self.state = RunState::Stopped;
+                // Après l'enregistrement du snapshot : l'index du pas rapporté
+                // par un déclenchement doit désigner l'état d'*après*
+                // l'instruction coupable, celui que la timeline affichera.
+                self.check_watchpoints();
             }
         }
         Ok(())
@@ -802,11 +883,88 @@ impl Debugger {
             if !self.is_ready() {
                 return Ok(done); // terminé, tué ou en faute
             }
-            if stop(self.regs()) {
+            // Un changement surveillé arrête l'exécution aussi sûrement qu'un
+            // point d'arrêt : c'est tout l'intérêt de le surveiller.
+            if self.has_watch_hit() || stop(self.regs()) {
                 return Ok(done);
             }
         }
         Ok(done)
+    }
+
+    /// Surveille `len` octets à partir de `addr`.
+    ///
+    /// La valeur courante est lue tout de suite : sans référence de départ, le
+    /// premier pas signalerait un changement qui n'a pas eu lieu. Surveiller
+    /// deux fois la même adresse remplace la surveillance précédente plutôt
+    /// que d'en empiler une seconde, qui s'annoncerait en double.
+    pub fn watch(&mut self, addr: u64, len: usize) -> DbgResult<()> {
+        let last = self.read_mem(addr, len)?;
+        self.watchpoints.retain(|w| w.addr != addr);
+        self.watchpoints.push(Watchpoint { addr, len, last });
+        Ok(())
+    }
+
+    /// Cesse de surveiller `addr`. Une adresse non surveillée n'est pas une
+    /// erreur : le résultat visé est atteint dans les deux cas.
+    pub fn unwatch(&mut self, addr: u64) {
+        self.watchpoints.retain(|w| w.addr != addr);
+        if self.watch_hit.as_ref().is_some_and(|h| h.addr == addr) {
+            self.watch_hit = None;
+        }
+    }
+
+    pub fn watchpoints(&self) -> &[Watchpoint] {
+        &self.watchpoints
+    }
+
+    /// Le déclenchement en attente, consommé au passage : l'interface l'annonce
+    /// une fois, pas à chaque image.
+    pub fn take_watch_hit(&mut self) -> Option<WatchHit> {
+        self.watch_hit.take()
+    }
+
+    /// Vrai tant qu'un déclenchement n'a pas été réclamé — ce qui doit
+    /// interrompre `run_until` sans lui faire perdre le hit.
+    pub fn has_watch_hit(&self) -> bool {
+        self.watch_hit.is_some()
+    }
+
+    /// Relit les adresses surveillées et retient le premier changement.
+    ///
+    /// Appelée après chaque pas réussi. Une lecture par adresse et par
+    /// instruction : c'est l'ordre de grandeur de ce que le débogueur fait
+    /// déjà pour la fenêtre de pile de chaque snapshot, et personne ne
+    /// surveille cent adresses à la fois.
+    ///
+    /// Une adresse devenue illisible (pile dépilée, `munmap`, processus
+    /// terminé) est ignorée sans bruit plutôt que de faire échouer le pas :
+    /// l'exécution reste la priorité, et le contenu d'une adresse qui n'existe
+    /// plus n'a rien à dire.
+    fn check_watchpoints(&mut self) {
+        if self.watchpoints.is_empty() {
+            return;
+        }
+        let step = self.history.len().saturating_sub(1);
+        let mut hit = None;
+        for i in 0..self.watchpoints.len() {
+            let (addr, len) = (self.watchpoints[i].addr, self.watchpoints[i].len);
+            let Ok(now) = self.read_mem(addr, len) else { continue };
+            if now != self.watchpoints[i].last {
+                let before = std::mem::replace(&mut self.watchpoints[i].last, now.clone());
+                // Le premier changement seulement : deux adresses touchées par
+                // la même instruction sont rarissimes, et n'annoncer que l'une
+                // vaut mieux qu'écraser l'annonce précédente. Les autres
+                // valeurs sont mises à jour quand même, sinon elles se
+                // re-signaleraient au pas suivant sans avoir bougé.
+                if hit.is_none() {
+                    hit = Some(WatchHit { addr, before, after: now, step });
+                }
+            }
+        }
+        if hit.is_some() {
+            self.watch_hit = hit;
+        }
     }
 
     /// Faute matérielle en cours, si l'exécution s'est arrêtée dessus.
@@ -1532,7 +1690,111 @@ mod tests {
         );
     }
 
-    /// Les registres XMM sont bien lus, et bien lus *dans le bon ordre* : un
+    /// Deux lancements du même binaire doivent voir la même pile : c'est ce
+    /// que garantit `ADDR_NO_RANDOMIZE`, et ce dont dépendent le réarmement
+    /// des surveillances, la fidélité de « Reprendre ici », et la simple
+    /// possibilité de relever une adresse et de la retrouver.
+    #[test]
+    fn two_launches_see_the_same_stack_address() {
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/test.asm"),
+            Path::new("build/aslr-lab"),
+            &[],
+        )
+        .expect("assemblage");
+        let a = Debugger::launch(&out.binary).expect("launch 1").regs().rsp;
+        let b = Debugger::launch(&out.binary).expect("launch 2").regs().rsp;
+        assert_eq!(a, b, "0x{a:X} puis 0x{b:X}");
+    }
+
+    /// Le contrat d'un watchpoint : l'exécution s'arrête au pas qui a modifié
+    /// l'adresse, et dit ce qu'elle valait avant.
+    #[test]
+    fn a_watchpoint_reports_the_step_that_changed_the_address() {
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/test.asm"),
+            Path::new("build/watch-lab"),
+            &[],
+        )
+        .expect("assemblage");
+        let mut dbg = Debugger::launch(&out.binary).expect("launch");
+
+        // Une adresse de la pile, écrite à la main : le programme d'exemple n'a
+        // pas à contenir quoi que ce soit de particulier pour ce test.
+        let addr = dbg.regs().rsp;
+        dbg.write_mem(addr, &0u64.to_le_bytes()).expect("mise à zéro");
+        dbg.watch(addr, 8).expect("watch");
+        assert_eq!(dbg.watchpoints().len(), 1);
+
+        // Rien n'a bougé : aucun pas ne doit déclencher quoi que ce soit tant
+        // que le contenu reste le même.
+        dbg.step().expect("un pas");
+        assert!(
+            !dbg.has_watch_hit(),
+            "une adresse inchangée ne doit rien signaler"
+        );
+
+        // On l'écrase depuis l'extérieur, puis un pas de plus : la comparaison
+        // se fait après le pas, le changement doit être vu à ce moment-là.
+        dbg.write_mem(addr, &0xABCDu64.to_le_bytes()).expect("écrasement");
+        dbg.step().expect("un pas de plus");
+        let hit = dbg.take_watch_hit().expect("le changement doit être signalé");
+        assert_eq!(hit.addr, addr);
+        let (avant, apres) = hit.values();
+        assert_eq!(avant, 0, "la valeur d'avant doit être rapportée");
+        assert_eq!(apres, 0xABCD, "et celle d'après aussi");
+        assert!(
+            dbg.take_watch_hit().is_none(),
+            "un déclenchement ne se réclame qu'une fois"
+        );
+    }
+
+    /// Surveiller deux fois la même adresse ne l'empile pas : sinon un
+    /// changement s'annoncerait en double, et le retrait n'en enlèverait qu'un.
+    #[test]
+    fn watching_the_same_address_twice_replaces_it() {
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/test.asm"),
+            Path::new("build/watch-lab2"),
+            &[],
+        )
+        .expect("assemblage");
+        let mut dbg = Debugger::launch(&out.binary).expect("launch");
+        let addr = dbg.regs().rsp;
+
+        dbg.watch(addr, 8).expect("watch");
+        dbg.watch(addr, 8).expect("re-watch");
+        assert_eq!(dbg.watchpoints().len(), 1, "une seule surveillance");
+
+        dbg.unwatch(addr);
+        assert!(dbg.watchpoints().is_empty(), "le retrait doit tout enlever");
+        dbg.unwatch(addr); // une adresse non surveillée n'est pas une erreur
+    }
+
+    /// `run_until` doit rendre la main sur un changement surveillé, même si sa
+    /// condition d'arrêt n'est pas remplie : sinon le watchpoint ne servirait
+    /// qu'au pas à pas, c'est-à-dire nulle part.
+    #[test]
+    fn run_until_gives_back_control_on_a_watch_hit() {
+        let out = assemble::assemble_with_includes(
+            Path::new("examples/test.asm"),
+            Path::new("build/watch-lab3"),
+            &[],
+        )
+        .expect("assemblage");
+        let mut dbg = Debugger::launch(&out.binary).expect("launch");
+        let addr = dbg.regs().rsp;
+        dbg.write_mem(addr, &0u64.to_le_bytes()).expect("mise à zéro");
+        dbg.watch(addr, 8).expect("watch");
+        dbg.write_mem(addr, &7u64.to_le_bytes()).expect("écrasement");
+
+        // Condition d'arrêt impossible : seul le watchpoint peut interrompre.
+        let faits = dbg.run_until(50, |_| false).expect("run_until");
+        assert!(dbg.has_watch_hit(), "le changement doit arrêter run_until");
+        assert_eq!(faits, 1, "il doit s'arrêter au premier pas, pas au bout");
+    }
+
+    /// Les registres XMM sont bien lus, et bien lus *dans le bon ordre* : un    /// Les registres XMM sont bien lus, et bien lus *dans le bon ordre* : un
     /// `addsd` écrit dans les 64 bits bas, un `paddd` dans les quatre cases de
     /// 32 bits. Se tromper d'ordre passerait inaperçu à l'œil (des chiffres
     /// s'affichent quand même) mais enseignerait le contraire de la vérité.

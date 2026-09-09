@@ -104,6 +104,7 @@ pub(crate) enum Command {
     About,
     License,
     ActivateLicense,
+    RegisterHistory,
     CheckUpdates,
     // Préférences : les mêmes bascules que la fenêtre Réglages, à portée de
     // frappe. Elles y restent aussi — la palette n'est pas le seul chemin.
@@ -295,6 +296,12 @@ impl Command {
             Command::Settings => t("Réglages…", "Settings…", "Configuración…").into(),
             Command::Shortcuts => t("Raccourcis clavier…", "Keyboard shortcuts…", "Atajos de teclado…").into(),
             Command::About => t("À propos", "About", "Acerca de").into(),
+            Command::RegisterHistory => t(
+                "Évolution d'un registre au fil de l'exécution…",
+                "Register over time…",
+                "Evolución de un registro…",
+            )
+            .into(),
             Command::License => t("Afficher la licence…", "Show the license…", "Mostrar la licencia…").into(),
             Command::ActivateLicense => t("Activer une licence…", "Activate a license…", "Activar una licencia…").into(),
             Command::CheckUpdates => t("Vérifier les mises à jour", "Check for updates", "Buscar actualizaciones").into(),
@@ -499,6 +506,7 @@ impl Command {
             Command::ResetTutorial,
             Command::ProgramOutput,
             Command::Calculator,
+            Command::RegisterHistory,
             Command::Settings,
             Command::Shortcuts,
             Command::CheckUpdates,
@@ -778,6 +786,7 @@ impl App {
             Command::Settings => self.show_settings = true,
             Command::Shortcuts => self.show_shortcuts = true,
             Command::About => self.show_about = true,
+            Command::RegisterHistory => self.show_reg_history = true,
             Command::License => self.show_license = true,
             Command::ActivateLicense => self.show_license_gate = true,
             Command::CheckUpdates => self.updater.check(),

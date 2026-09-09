@@ -299,6 +299,7 @@ impl App {
                 self.status = format!("{} 0x{:X}", i18n::tr(self.lang, "Lancé — RIP @", "Started — RIP @"), dbg.regs().rip);
                 self.log("Running...");
                 self.dbg = Some(dbg);
+                self.reapply_watches();
             }
             Err(e) => {
                 let msg = e.message(self.lang);
@@ -557,6 +558,94 @@ impl App {
 
     /// Clôt le pas en cours si le débogueur n'attend plus : journal, trace,
     /// prédiction, barre d'état. Sans effet tant que le pas est suspendu.
+    /// Repose sur le débogueur courant les adresses surveillées.
+    ///
+    /// Appelée après chaque lancement : le débogueur est neuf, il ne sait rien
+    /// des surveillances demandées avant lui. Une adresse devenue illisible
+    /// (une pile qui n'est pas encore descendue jusque-là) est abandonnée
+    /// silencieusement plutôt que d'interrompre le lancement.
+    pub(super) fn reapply_watches(&mut self) {
+        let watches = self.watches.clone();
+        if let Some(d) = self.dbg.as_mut() {
+            for (addr, len) in watches {
+                let _ = d.watch(addr, len);
+            }
+        }
+    }
+
+    /// Surveille l'adresse, ou cesse de la surveiller si elle l'était déjà.
+    pub(super) fn toggle_watch(&mut self, addr: u64, len: usize) {
+        let lang = self.lang;
+        if let Some(i) = self.watches.iter().position(|(a, _)| *a == addr) {
+            self.watches.remove(i);
+            if let Some(d) = self.dbg.as_mut() {
+                d.unwatch(addr);
+            }
+            self.status = format!(
+                "{} 0x{addr:X}",
+                i18n::tr3(lang, "Surveillance retirée @", "Watch removed @", "Vigilancia retirada @")
+            );
+            return;
+        }
+        self.watches.push((addr, len));
+        let pose = match self.dbg.as_mut() {
+            Some(d) => d.watch(addr, len),
+            None => Ok(()), // sera posée au prochain lancement
+        };
+        match pose {
+            Ok(()) => {
+                self.status = format!(
+                    "{} 0x{addr:X} ({len} {})",
+                    i18n::tr3(lang, "Surveillance posée @", "Watching @", "Vigilando @"),
+                    i18n::tr3(lang, "octets", "bytes", "bytes")
+                );
+            }
+            Err(e) => {
+                // L'adresse reste dans la liste : elle deviendra peut-être
+                // lisible au prochain lancement, et la retirer en silence
+                // donnerait l'impression d'un clic sans effet.
+                let msg = e.message(lang);
+                self.log(&msg);
+            }
+        }
+    }
+
+    pub(super) fn is_watched(&self, addr: u64) -> bool {
+        self.watches.iter().any(|(a, _)| *a == addr)
+    }
+
+    /// Annonce un changement surveillé, s'il y en a un en attente.
+    ///
+    /// Le message dit l'ancienne et la nouvelle valeur, et l'instruction
+    /// responsable — c'est-à-dire celle qui vient de s'exécuter, pas celle où
+    /// RIP pointe maintenant. Sans elle, « la valeur a changé » laisse
+    /// l'essentiel du travail à faire.
+    fn report_watch_hit(&mut self) {
+        let Some(hit) = self.dbg.as_mut().and_then(|d| d.take_watch_hit()) else {
+            return;
+        };
+        let (avant, apres) = hit.values();
+        let ligne = hit
+            .step
+            .checked_sub(1)
+            .and_then(|i| self.dbg.as_ref().and_then(|d| d.history.get(i)))
+            .map(|s| s.regs.rip)
+            .and_then(|rip| self.src_map.get(&rip).copied());
+        let lang = self.lang;
+        let ou = match ligne {
+            Some(l) => format!(" ({} {l})", i18n::tr3(lang, "ligne", "line", "línea")),
+            None => String::new(),
+        };
+        let msg = format!(
+            "👁 0x{:X} : 0x{avant:X} → 0x{apres:X}{ou}",
+            hit.addr
+        );
+        self.log(&msg);
+        self.status = msg;
+        // Une exécution continue s'arrête là : c'est ce qu'on lui demandait.
+        self.run_pending = None;
+    }
+
     fn finish_step_if_done(&mut self) {
         let Some(state) = self.dbg.as_ref().map(|d| d.state) else {
             self.step_in_flight = false;
@@ -582,6 +671,7 @@ impl App {
             self.view_index = d.history.len() - 1;
         }
         self.pending_flash = true; // déclenche l'animation « CPU vivant »
+        self.report_watch_hit();
         // Le nouvel état est en place : la prédiction en attente peut être jugée.
         self.resolve_prediction();
 
@@ -849,6 +939,7 @@ impl App {
                 };
                 self.selected = None;
                 self.dbg = Some(d);
+                self.reapply_watches(); // le débogueur est neuf : il ne sait rien des surveillances
                 self.rebuild_trace(); // resynchronise call stack + syscalls
             }
             Err(e) => {

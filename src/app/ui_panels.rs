@@ -234,6 +234,67 @@ impl App {
                 }
             }
         });
+
+        // Surveillance : le débogueur s'arrête dès que ces octets changent.
+        // Posée « @ base » comme l'écriture juste au-dessus, parce que c'est
+        // l'adresse que le panneau montre déjà et que l'on vient de choisir.
+        ui.horizontal(|ui| {
+            let base = self.mem_addr;
+            let deja = self.is_watched(base);
+            let libelle = if deja {
+                tr("👁 ne plus surveiller la base", "👁 stop watching base", "👁 dejar de vigilar la base")
+            } else {
+                tr("👁 surveiller @ base (8 o)", "👁 watch @ base (8 B)", "👁 vigilar @ base (8 B)")
+            };
+            if ui
+                .button(RichText::new(libelle).small())
+                .on_hover_text(tr(
+                    "L'exécution s'arrête dès que ces huit octets changent, en disant ce qu'ils valaient.",
+                    "Execution stops as soon as these eight bytes change, and says what they held before.",
+                    "La ejecución se detiene en cuanto estos ocho bytes cambian, e indica su valor anterior.",
+                ))
+                .clicked()
+            {
+                self.toggle_watch(base, 8);
+            }
+            // La liste vit à côté du bouton : une adresse surveillée qu'on ne
+            // voit nulle part est une adresse qu'on oublie, et qui arrête
+            // ensuite l'exécution sans raison apparente.
+            let surveillees = self.watches.clone();
+            // Ce qui est *réellement* armé dans le débogueur, qui n'est pas
+            // toujours ce qui a été demandé : une adresse encore illisible au
+            // lancement reste dans la liste en attendant de le devenir. La
+            // montrer comme active alors qu'elle ne surveille rien serait le
+            // pire des deux mondes.
+            let armees: Vec<u64> = self
+                .dbg
+                .as_ref()
+                .map(|d| d.watchpoints().iter().map(|w| w.addr).collect())
+                .unwrap_or_default();
+            let mut retirer: Option<u64> = None;
+            for (addr, _) in &surveillees {
+                let active = armees.contains(addr);
+                let mut texte = RichText::new(format!("0x{addr:X} ✕")).monospace();
+                if !active {
+                    texte = texte.weak();
+                }
+                let bulle = if active {
+                    tr("Cliquer pour ne plus surveiller", "Click to stop watching", "Clic para dejar de vigilar")
+                } else {
+                    tr(
+                        "Pas encore armée (adresse illisible pour l'instant) — cliquer pour l'oublier",
+                        "Not armed yet (address unreadable for now) — click to forget it",
+                        "Aún no activa (dirección ilegible por ahora) — clic para olvidarla",
+                    )
+                };
+                if ui.small_button(texte).on_hover_text(bulle).clicked() {
+                    retirer = Some(*addr);
+                }
+            }
+            if let Some(addr) = retirer {
+                self.toggle_watch(addr, 8);
+            }
+        });
         ui.separator();
 
         // Explication du petit-boutisme, repliée : elle éclaire le vidage juste
@@ -442,7 +503,24 @@ impl App {
         } else {
             tr("édition à la dernière étape (revenez en fin de timeline)", "editing only at the last step (go to the end of the timeline)", "edición solo en el último paso (vaya al final de la línea de tiempo)")
         };
-        ui.label(RichText::new(hint).small().weak());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(hint).small().weak());
+            // La trajectoire d'un registre s'ouvre depuis le panneau qui en
+            // montre l'état : c'est là qu'on se pose la question, et une
+            // commande de palette seule ne se découvre pas.
+            if ui
+                .small_button("📈")
+                .on_hover_text(tr(
+                    "Évolution de ce registre au fil de l'exécution",
+                    "This register over time",
+                    "Evolución de este registro",
+                ))
+                .clicked()
+            {
+                self.reg_history_idx = self.reg_sel;
+                self.show_reg_history = true;
+            }
+        });
         let flash = self.flash_progress(ui); // pulsation « CPU vivant »
         let scroll_here = self.take_scroll_request(super::dock::Panel::Registers);
         let blink = self.blink_intensity(ui); // clignotement pédagogique (0 si désactivé)
@@ -2208,6 +2286,98 @@ niveau2:
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Reproduction : arrivé au bout de la liste, l'affichage doit se figer.
+    ///
+    /// Signalé de visu — l'arbre « tremble » quand on descend jusqu'au dernier
+    /// élément. Un panneau qui oscille sans que rien n'arrive est le symptôme
+    /// d'une géométrie qui ne converge pas : la hauteur du contenu décide de
+    /// l'offset, qui décide de la hauteur, et les deux se poursuivent d'image
+    /// en image. On rend donc plusieurs images de suite *sans le moindre
+    /// événement* et on exige que la bande de sélection ne bouge plus d'un
+    /// pixel.
+    #[test]
+    fn scrolling_to_the_last_entry_settles_instead_of_oscillating() {
+        let _theme = crate::theme::lock_for_test();
+        let dir = explorer_sandbox("tremblement");
+        for i in 0..60 {
+            std::fs::write(dir.join(format!("f{i:02}.asm")), "").unwrap();
+        }
+        let mut app = App::new();
+        app.explorer_dir = dir.clone();
+        app.explorer_selected = Some(dir.join("f59.asm"));
+        let sel = app.c_sel_row();
+
+        let ctx = egui::Context::default();
+        let bande = |ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(260.0, 320.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.explorer_ui(ui);
+                });
+            });
+            out.shapes.iter().find_map(|cs| match &cs.shape {
+                egui::Shape::Rect(r) if r.fill == sel => Some(r.rect),
+                _ => None,
+            })
+        };
+
+        // Le pointeur doit être DANS la zone : egui adresse la molette à ce
+        // qui est survolé, et sans cela rien ne défile.
+        let curseur = egui::Event::PointerMoved(egui::pos2(130.0, 200.0));
+        // Descendre franchement au-delà du bas : la molette est bornée par la
+        // zone elle-même, c'est le comportement qu'on veut éprouver.
+        for _ in 0..12 {
+            let _ = bande(
+                &ctx,
+                &mut app,
+                vec![
+                    curseur.clone(),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -400.0),
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+            );
+        }
+
+        // Trois images au repos : plus rien ne doit bouger.
+        let a = bande(&ctx, &mut app, vec![curseur.clone()]);
+        let b = bande(&ctx, &mut app, vec![curseur.clone()]);
+        let c = bande(&ctx, &mut app, vec![curseur]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let (a, b, c) = (
+            a.expect("la sélection doit être peinte"),
+            b.expect("la sélection doit être peinte"),
+            c.expect("la sélection doit être peinte"),
+        );
+        assert!(
+            (a.top() - b.top()).abs() < 0.01 && (b.top() - c.top()).abs() < 0.01,
+            "l'arbre oscille verticalement au repos : {} puis {} puis {}",
+            a.top(),
+            b.top(),
+            c.top()
+        );
+        // Le tremblement observé était horizontal : la barre de défilement
+        // apparaissait et disparaissait d'une image à l'autre, et comme le
+        // style du projet la veut « solide » (elle réserve sa largeur), tout
+        // le contenu se décalait de sa largeur à chaque bascule.
+        assert!(
+            (a.right() - b.right()).abs() < 0.01 && (b.right() - c.right()).abs() < 0.01,
+            "l'arbre oscille horizontalement au repos : {} puis {} puis {}",
+            a.right(),
+            b.right(),
+            c.right()
+        );
     }
 
     /// L'explorateur se parcourt au clavier et s'arrête aux bornes, comme le

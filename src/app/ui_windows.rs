@@ -1756,6 +1756,156 @@ impl App {
         }
     }
 
+    /// Évolution d'un registre au fil de l'exécution : une courbe, et la liste
+    /// des étapes où sa valeur a changé.
+    ///
+    /// Les panneaux montrent l'état à un instant donné ; celui-ci montre la
+    /// trajectoire — ce qu'on cherche réellement à comprendre dans une boucle,
+    /// et que la lecture pas à pas ne donne qu'au prix de la mémoire de celui
+    /// qui regarde. Tout sort de l'historique que le débogueur enregistre
+    /// déjà : rien n'est réexécuté, l'information était là depuis toujours.
+    pub(super) fn register_history_window(&mut self, ctx: &egui::Context) {
+        if !self.show_reg_history {
+            return;
+        }
+        let lang = self.lang;
+        let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
+        let noms: [&'static str; 18] = crate::debugger::Registers::default().named().map(|(n, _)| n);
+        let idx = self.reg_history_idx.min(noms.len() - 1);
+
+        // Série et changements relevés avant le rendu : l'interface emprunte
+        // ensuite `self`, et un clic dans la liste doit pouvoir déplacer la
+        // timeline une fois cet emprunt rendu.
+        let serie: Vec<u64> = match self.dbg.as_ref() {
+            Some(d) => d.history.iter().map(|s| s.regs.named()[idx].1).collect(),
+            None => Vec::new(),
+        };
+        // (étape, valeur avant, valeur après) — seuls les pas où ça bouge.
+        // Une boucle de mille tours qui n'écrit RBX qu'une fois tient ainsi en
+        // une ligne, au lieu de mille lignes identiques à faire défiler.
+        let changements: Vec<(usize, u64, u64)> = serie
+            .windows(2)
+            .enumerate()
+            .filter(|(_, p)| p[0] != p[1])
+            .map(|(i, p)| (i + 1, p[0], p[1]))
+            .collect();
+        let vue = self.view_index;
+        let hdr = self.c_header();
+        let mnem = self.c_mnemonic();
+
+        let mut choisi: Option<usize> = None;
+        let mut aller_a: Option<usize> = None;
+        let mut open = true;
+        dialog_window(ctx, tr("Évolution d'un registre", "Register over time", "Evolución de un registro"))
+            .resizable(true)
+            .default_width(560.0)
+            .min_width(420.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tr("Registre", "Register", "Registro")).color(hdr));
+                    egui::ComboBox::from_id_salt("reg_history_choix")
+                        .selected_text(RichText::new(noms[idx]).monospace())
+                        .show_ui(ui, |ui| {
+                            for (i, nom) in noms.iter().enumerate() {
+                                if ui.selectable_label(i == idx, RichText::new(*nom).monospace()).clicked() {
+                                    choisi = Some(i);
+                                }
+                            }
+                        });
+                    if serie.is_empty() {
+                        ui.label(
+                            RichText::new(tr(
+                                "— aucun programme lancé",
+                                "— no program running",
+                                "— ningún programa en ejecución",
+                            ))
+                            .weak(),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new(match lang {
+                                crate::i18n::Lang::Fr => format!(
+                                    "{} pas, {} changement(s)",
+                                    serie.len(),
+                                    changements.len()
+                                ),
+                                crate::i18n::Lang::En => format!(
+                                    "{} steps, {} change(s)",
+                                    serie.len(),
+                                    changements.len()
+                                ),
+                                crate::i18n::Lang::Es => format!(
+                                    "{} pasos, {} cambio(s)",
+                                    serie.len(),
+                                    changements.len()
+                                ),
+                            })
+                            .weak(),
+                        );
+                    }
+                });
+                ui.separator();
+                if serie.is_empty() {
+                    ui.label(tr(
+                        "Lancez le programme, puis avancez : la courbe se remplit au fil des pas.",
+                        "Run the program, then step: the curve fills in as it goes.",
+                        "Ejecute el programa y avance: la curva se llena paso a paso.",
+                    ));
+                    return;
+                }
+                courbe_registre(ui, &serie, vue);
+                ui.add_space(6.0);
+                if changements.is_empty() {
+                    ui.label(
+                        RichText::new(tr(
+                            "Ce registre n'a pas changé une seule fois de toute l'exécution.",
+                            "This register never changed once during the whole run.",
+                            "Este registro no cambió ni una vez durante toda la ejecución.",
+                        ))
+                        .weak(),
+                    );
+                    return;
+                }
+                ui.label(
+                    RichText::new(tr(
+                        "Changements (cliquer pour y aller)",
+                        "Changes (click to jump there)",
+                        "Cambios (clic para ir allí)",
+                    ))
+                    .color(hdr),
+                );
+                egui::ScrollArea::vertical()
+                    .id_salt("reg_history_liste")
+                    .max_height(220.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (etape, avant, apres) in &changements {
+                            let courant = *etape == vue;
+                            let texte = format!("#{etape:<6} {avant:#018x} → {apres:#018x}");
+                            let mut label = RichText::new(texte).monospace();
+                            if courant {
+                                label = label.color(accent()).strong();
+                            } else {
+                                label = label.color(mnem);
+                            }
+                            if ui.selectable_label(courant, label).clicked() {
+                                aller_a = Some(*etape);
+                            }
+                        }
+                    });
+            });
+        if let Some(i) = choisi {
+            self.reg_history_idx = i;
+        }
+        if let Some(etape) = aller_a {
+            self.set_view(etape as i64);
+        }
+        if !open {
+            self.show_reg_history = false;
+        }
+    }
+
     pub(super) fn calculator_window(&mut self, ctx: &egui::Context) {
         if !self.show_calculator {
             return;
@@ -2512,6 +2662,77 @@ impl App {
     }
 }
 
+/// Courbe d'un registre sur toute l'exécution enregistrée.
+///
+/// Dessinée à la main plutôt qu'avec une bibliothèque de graphiques : une
+/// seule série, aucun axe à graduer — une valeur 64 bits n'a pas d'échelle
+/// lisible — et une dépendance de plus coûterait plus cher que ces quelques
+/// lignes.
+///
+/// Normalisée entre le minimum et le maximum : c'est la *forme* qui renseigne
+/// — un compteur qui décroît, une adresse qui saute d'un coup, un registre
+/// resté plat — pas la valeur, que la liste en dessous donne exactement.
+///
+/// Sous-échantillonnée à un point par pixel : l'historique peut compter des
+/// centaines de milliers de pas, et en demander autant de segments à egui
+/// figerait l'interface pour dessiner cent fois le même pixel.
+fn courbe_registre(ui: &mut egui::Ui, serie: &[u64], vue: usize) {
+    let largeur = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(largeur, 90.0), egui::Sense::hover());
+    let fond = ui.visuals().extreme_bg_color;
+    let faible = ui.visuals().weak_text_color();
+    let painter = ui.painter();
+    painter.rect_filled(rect, 4.0, fond);
+    if serie.is_empty() {
+        return;
+    }
+
+    let (min, max) = serie
+        .iter()
+        .fold((u64::MAX, 0u64), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+    let interieur = rect.shrink(6.0);
+    // Une série constante n'a pas d'amplitude : la tracer normalisée
+    // donnerait une courbe au ras du bord, qu'on lirait comme un minimum
+    // alors que la valeur n'a jamais bougé. Elle va au milieu.
+    let y_pour = |v: u64| {
+        if max == min {
+            interieur.center().y
+        } else {
+            let t = (v - min) as f64 / (max - min) as f64;
+            interieur.bottom() - t as f32 * interieur.height()
+        }
+    };
+
+    let points_max = (interieur.width() as usize).max(2);
+    let n = serie.len();
+    let points: Vec<egui::Pos2> = (0..points_max.min(n))
+        .map(|k| {
+            // Index réparti sur toute la série : le dernier point tombe
+            // toujours sur le dernier pas, sans quoi la courbe s'arrêterait
+            // avant la fin de l'exécution.
+            let i = if points_max.min(n) == 1 {
+                0
+            } else {
+                k * (n - 1) / (points_max.min(n) - 1)
+            };
+            let x = interieur.left() + interieur.width() * k as f32 / (points_max.min(n) - 1).max(1) as f32;
+            egui::pos2(x, y_pour(serie[i]))
+        })
+        .collect();
+    painter.add(egui::Shape::line(points, egui::Stroke::new(1.6_f32, accent())));
+
+    // Où l'on se trouve dans la timeline : sans ce repère, la courbe et les
+    // panneaux parlent de deux moments différents sans le dire.
+    if n > 1 && vue < n {
+        let x = interieur.left() + interieur.width() * vue as f32 / (n - 1) as f32;
+        painter.line_segment(
+            [egui::pos2(x, interieur.top()), egui::pos2(x, interieur.bottom())],
+            egui::Stroke::new(1.0_f32, faible),
+        );
+    }
+}
+
+
 #[cfg(test)]
 mod about_tests {
     use super::*;
@@ -2755,6 +2976,39 @@ mod settings_tests {
         let ctx = egui::Context::default();
         let _ = ctx.run(Default::default(), |ctx| app.license_nag_window(ctx));
         assert!(app.show_license_nag, "reste ouverte tant qu'aucun bouton n'est cliqué");
+    }
+
+    /// Sans programme lancé, la fenêtre d'évolution doit se rendre et dire
+    /// quoi faire, plutôt que de paniquer sur un historique absent.
+    #[test]
+    fn register_history_window_renders_without_a_debugger() {
+        let mut app = App::new();
+        app.show_reg_history = true;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.register_history_window(ctx));
+        assert!(app.show_reg_history, "elle reste ouverte");
+    }
+
+    /// Le sélecteur ne doit jamais sortir des dix-huit registres, même si
+    /// l'index stocké est aberrant — un réglage relu d'une version future,
+    /// par exemple, indexerait hors du tableau et paniquerait.
+    #[test]
+    fn an_out_of_range_register_index_is_clamped() {
+        let mut app = App::new();
+        app.show_reg_history = true;
+        app.reg_history_idx = 999;
+        let ctx = egui::Context::default();
+        let _ = ctx.run(Default::default(), |ctx| app.register_history_window(ctx));
+    }
+
+    /// Fermée, elle ne peint rien.
+    #[test]
+    fn closed_register_history_window_paints_nothing() {
+        let mut app = App::new();
+        app.show_reg_history = false;
+        let ctx = egui::Context::default();
+        let out = ctx.run(Default::default(), |ctx| app.register_history_window(ctx));
+        assert!(out.shapes.is_empty());
     }
 
     /// Fermée, elle ne peint rien.

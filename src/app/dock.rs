@@ -283,6 +283,29 @@ impl TabViewer for Viewer<'_> {
         }
     }
 
+    /// Aucune barre de défilement autour du contenu d'un onglet.
+    ///
+    /// `egui_dock` enveloppe chaque onglet dans une `ScrollArea` à lui, avec
+    /// ses deux barres actives par défaut. Or tous les panneaux d'ici gèrent
+    /// déjà leur propre défilement et occupent toute la place qu'on leur
+    /// donne : cette zone extérieure n'avait rien à faire défiler, mais elle
+    /// décidait quand même, à chaque image, s'il lui fallait une barre.
+    ///
+    /// Le résultat était visible à l'œil nu, et filmé le 2026-09-09 : arrivé
+    /// au bas de l'explorateur, l'arbre tremblait. La barre du dock
+    /// apparaissait et disparaissait d'une image sur deux ; comme le style du
+    /// projet les veut solides (`ScrollStyle::solid`, elles réservent leur
+    /// largeur), tout le contenu du panneau se décalait de ses onze points à
+    /// chaque bascule — l'onglet et le cadre, eux, ne bougeaient pas d'un
+    /// pixel, ce qui désignait précisément cette zone-là.
+    ///
+    /// Elle ne servait rien d'autre : un panneau qui déborderait sans propre
+    /// zone de défilement serait un défaut à corriger dans ce panneau, pas à
+    /// rattraper ici par une barre qui double celles des panneaux.
+    fn scroll_bars(&self, _tab: &Panel) -> [bool; 2] {
+        [false, false]
+    }
+
     /// Tout panneau peut être fermé : on le rouvre depuis le menu Affichage.
     fn closeable(&mut self, _tab: &mut Panel) -> bool {
         true

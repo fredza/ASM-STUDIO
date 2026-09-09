@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-09
+
+First release out of beta: the version number goes back to plain semver, with
+no prerelease suffix.
+
+### Added
+- **Memory watchpoints**: Breakpoints answer "stop at this line". They never
+  answered the question a learner actually asks — *who overwrote my variable?*
+  A buffer that runs past its end, an unbalanced `rsp`, an index one step too
+  far: the only recourse was to scatter ten breakpoints and watch. The MEMORY
+  panel now offers **👁 watch @ base**, and execution stops as soon as those
+  eight bytes change, naming what they held, what they hold now, and the line
+  responsible — `👁 0x7FFF… : 0x0 → 0x2A (line 14)`.
+
+  Implemented by comparing the watched bytes after each step, not with the
+  processor's DR0–DR3 debug registers. Those exist to avoid single-stepping,
+  and this debugger single-steps by design: they would have bought nothing,
+  while imposing four addresses at most, sizes limited to 1/2/4/8 bytes, and
+  no way to report the *previous* value — which is the one that explains the
+  bug. Watches survive "Resume here" and every relaunch.
+- **Execution heat map in the gutter**: How many times each line actually ran,
+  as a blue tint behind the line numbers, with `▶ ×N` on hover. A nested loop
+  stops being a guess. The scale is logarithmic on purpose: with a linear one,
+  a body run ten thousand times would make everything else invisible, when a
+  line run three times is exactly what one needs to see. The count is
+  accumulated step by step — a frame where nothing moved costs one integer
+  comparison, and there are sixty of them per second.
+- **A register over time**: The panels show the state at one instant; this
+  window shows the trajectory — which is what one is really trying to follow
+  inside a loop. A curve over the whole run, the list of steps where the value
+  changed, and a click to jump straight there in the timeline. Reached by the
+  📈 button in the REGISTERS panel or from the command palette. Everything
+  comes from the history the debugger already records: nothing is re-executed.
+
+### Fixed
+- **Panels no longer shiver at the end of a scroll**: Scrolling the file
+  explorer down to its last entry made the whole tree jitter. `egui_dock` wraps
+  every tab's content in a `ScrollArea` of its own, scroll bars enabled by
+  default — a zone with nothing to scroll, since each panel handles its own
+  scrolling and fills the space it is given. It still decided, frame after
+  frame, whether it needed a bar, and changed its mind: the bar appeared and
+  vanished on alternate frames, shifting the panel's whole content by the
+  eleven points a solid scroll bar reserves. The tab and the frame around it
+  never moved, which is what pointed at that zone. The outer bars are now
+  turned off, for every panel — the explorer was merely where it showed.
+
+### Changed
+- **Addresses no longer move between runs**: The debugged program was started
+  with address space randomisation on, so the stack landed somewhere else at
+  every launch — `0x7FFF38F69380`, then `0x7FFF58E867C0`. An address written
+  down in the MEMORY panel meant nothing the next time, "Resume here" replayed
+  the program at addresses the timeline no longer recognised, and a watched
+  address could not be re-armed because it no longer pointed anywhere. Worse
+  for a learner: the same program printed different numbers twice in a row,
+  with nothing in the code to explain it. The child process now starts with
+  `ADDR_NO_RANDOMIZE`, exactly as gdb does by default.
+
 ## [0.5.0-beta.5] - 2026-09-09
 
 ### Changed

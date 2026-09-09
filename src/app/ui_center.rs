@@ -10,6 +10,7 @@ use crate::syscall;
 
 use super::{
     App, accent, action, breakpoint_col, changed_col, flag_on, flag_off, false_col, gutter_col,
+    warn_col,
     badge, card, syscall_details, syscall_labels, SyscallSkin,
 };
 
@@ -467,6 +468,11 @@ impl App {
             })
             .collect();
 
+        // Carte de chaleur : combien de fois l'exécution est passée par chaque
+        // ligne. Résolue ici, avant le rendu, comme les points d'arrêt — le
+        // layouter de coloration emprunte `self` pendant tout le reste.
+        let heat = self.line_heat();
+
         // `layouter` emprunte `self.find_query` via `find_highlight` : tant
         // qu'il est capturé par les fermetures ci-dessous, `self` ne peut pas
         // être remprunté en `&mut` — l'auto-fermeture des paires doit donc
@@ -475,7 +481,7 @@ impl App {
             .horizontal_top(|ui| {
                 // Gouttière : défilement vertical synchronisé, sans barre ni scroll direct.
                 let (click, right_click) =
-                    gutter_ui(ui, gutter_job, line_count, gutter_scroll, &bp_marks);
+                    gutter_ui(ui, gutter_job, line_count, gutter_scroll, &bp_marks, &heat);
                 gutter_click = click;
                 gutter_right_click = right_click;
                 ui.separator();
@@ -1013,6 +1019,7 @@ fn gutter_ui(
     line_count: usize,
     scroll_y: f32,
     bp_marks: &[(usize, bool, Option<String>)],
+    heat: &[(usize, u32, f32)],
 ) -> (Option<usize>, Option<usize>) {
     let (mut click, mut right_click) = (None, None);
     egui::ScrollArea::vertical()
@@ -1024,11 +1031,32 @@ fn gutter_ui(
         .show(ui, |ui| {
             let galley = ui.fonts_mut(|f| f.layout_job(job));
             let row_h = galley.size().y / line_count.max(1) as f32;
+            // Place réservée pour le fond de la carte de chaleur : elle doit
+            // être peinte *sous* les numéros, or leur rectangle n'est connu
+            // qu'une fois le label posé. On réserve donc la forme ici et on la
+            // remplit plus bas — un bandeau peint par-dessus, si transparent
+            // soit-il, ternirait les chiffres qu'il est censé mettre en valeur.
+            let fond_chaleur = ui.painter().add(egui::Shape::Noop);
             let resp = ui.add(
                 egui::Label::new(galley)
                     .selectable(false)
                     .sense(egui::Sense::click()),
             );
+            if !heat.is_empty() {
+                let bandes: Vec<egui::Shape> = heat
+                    .iter()
+                    .filter(|(line, _, _)| *line >= 1 && *line <= line_count)
+                    .map(|(line, _, intensite)| {
+                        let haut = resp.rect.top() + (*line as f32 - 1.0) * row_h;
+                        let bande = egui::Rect::from_min_size(
+                            egui::pos2(resp.rect.left(), haut),
+                            egui::vec2(resp.rect.width(), row_h),
+                        );
+                        egui::Shape::rect_filled(bande, 2.0, couleur_chaleur(*intensite))
+                    })
+                    .collect();
+                ui.painter().set(fond_chaleur, egui::Shape::Vec(bandes));
+            }
             // Ligne sous le pointeur, pour l'infobulle comme pour
             // les clics : la gouttière est un seul widget, c'est la
             // hauteur de rangée qui dit de quelle ligne il s'agit.
@@ -1078,23 +1106,66 @@ fn gutter_ui(
                 // Ce que la ligne survolée fera, dit noir sur blanc :
                 // une pastille à trou n'explique pas d'elle-même
                 // quelle condition la retient.
-                if let Some(line) = ui.ctx().pointer_latest_pos().and_then(line_at)
-                    && let Some((_, _, Some(cond))) =
-                        bp_marks.iter().find(|(l, _, _)| *l == line)
-                {
-                    egui::Tooltip::always_open(
-                        ui.ctx().clone(),
-                        ui.layer_id(),
-                        egui::Id::new("bp_cond_tip"),
-                        egui::PopupAnchor::Pointer,
-                    )
-                    .show(|ui| {
-                        ui.label(RichText::new(format!("⏸ {cond}")).monospace());
-                    });
+                if let Some(line) = ui.ctx().pointer_latest_pos().and_then(line_at) {
+                    let cond = bp_marks
+                        .iter()
+                        .find(|(l, _, _)| *l == line)
+                        .and_then(|(_, _, c)| c.clone());
+                    // Le compte de passages, en chiffres : la teinte dit
+                    // « souvent », elle ne dit pas combien, et c'est le
+                    // combien qui explique une boucle.
+                    let passages = heat.iter().find(|(l, _, _)| *l == line).map(|(_, n, _)| *n);
+                    if cond.is_some() || passages.is_some() {
+                        egui::Tooltip::always_open(
+                            ui.ctx().clone(),
+                            ui.layer_id(),
+                            egui::Id::new("gutter_tip"),
+                            egui::PopupAnchor::Pointer,
+                        )
+                        .show(|ui| {
+                            if let Some(cond) = &cond {
+                                ui.label(RichText::new(format!("⏸ {cond}")).monospace());
+                            }
+                            if let Some(n) = passages {
+                                ui.label(RichText::new(format!("▶ ×{n}")).monospace());
+                            }
+                        });
+                    }
                 }
             }
         });
     (click, right_click)
+}
+
+/// Couleur d'une ligne de la carte de chaleur, du froid au chaud.
+///
+/// Une seule teinte dont seule l'opacité varie ne se lit pas : la première
+/// version peignait toutes les lignes exécutées du même bleu, à peine plus ou
+/// moins soutenu, et l'ensemble passait pour une sélection multiple plutôt que
+/// pour une mesure. Une carte de chaleur se lit à la *couleur* — c'est ce que
+/// le mot annonce, et ce que l'œil sait comparer sans référence.
+///
+/// L'échelle emprunte les trois couleurs du thème actif plutôt que des
+/// valeurs fixes : l'accent pour le froid, l'avertissement pour le tiède,
+/// l'erreur pour le chaud. Elle suit donc les vingt thèmes du catalogue sans
+/// qu'aucun n'ait à la connaître, et reste lisible en clair comme en sombre.
+fn couleur_chaleur(intensite: f32) -> egui::Color32 {
+    let t = intensite.clamp(0.0, 1.0);
+    let melange = |a: egui::Color32, b: egui::Color32, k: f32| {
+        let c = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * k) as u8;
+        (c(a.r(), b.r()), c(a.g(), b.g()), c(a.b(), b.b()))
+    };
+    let (r, g, b) = if t < 0.5 {
+        melange(accent(), warn_col(), t * 2.0)
+    } else {
+        melange(warn_col(), false_col(), (t - 0.5) * 2.0)
+    };
+    // Le fond est peint SOUS les numéros : l'opacité peut monter sans les
+    // effacer. Le plancher garde visible la ligne passée une seule fois, qui
+    // renseigne autant que le point chaud — c'est le contraste entre les deux
+    // qui informe.
+    let alpha = (40.0 + t * 105.0) as u8;
+    egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)
 }
 
 /// Fermant attendu pour un caractère ouvrant de paire, sinon `None`.
@@ -1177,6 +1248,31 @@ mod tests {
     use super::*;
     use crate::app::dock::Panel;
     use crate::disasm::Insn;
+
+    /// Le défaut de la première version : toutes les lignes exécutées
+    /// peignaient le même bleu, plus ou moins opaque, et l'ensemble passait
+    /// pour une sélection multiple. Une carte de chaleur doit changer de
+    /// *teinte*, pas seulement d'opacité — c'est ce que l'œil compare.
+    #[test]
+    fn the_heat_map_changes_hue_and_not_only_opacity() {
+        let froid = couleur_chaleur(0.0);
+        let tiede = couleur_chaleur(0.5);
+        let chaud = couleur_chaleur(1.0);
+        let rvb = |c: egui::Color32| (c.r(), c.g(), c.b());
+        assert_ne!(rvb(froid), rvb(chaud), "le froid et le chaud doivent différer");
+        assert_ne!(rvb(froid), rvb(tiede), "et le tiède se distinguer du froid");
+        assert!(chaud.a() > froid.a(), "le chaud est aussi plus soutenu");
+        assert!(froid.a() > 0, "le froid reste visible");
+    }
+
+    /// Une intensité aberrante ne doit pas déborder des bornes de couleur :
+    /// `line_heat` la calcule, mais rien n'empêcherait un futur appelant de
+    /// passer autre chose.
+    #[test]
+    fn an_out_of_range_intensity_is_clamped() {
+        assert_eq!(couleur_chaleur(-5.0), couleur_chaleur(0.0));
+        assert_eq!(couleur_chaleur(9.0), couleur_chaleur(1.0));
+    }
 
     fn insn(addr: u64) -> Insn {
         Insn {

@@ -494,6 +494,30 @@ pub struct App {
     /// Registre retenu au clavier dans le panneau REGISTERS (index dans
     /// `Registers::named`), surligné et éditable par Entrée.
     pub(super) reg_sel: usize,
+    /// Nombre de passages de l'exécution par chaque ligne source (1-based),
+    /// pour la carte de chaleur de la gouttière.
+    ///
+    /// Cumulé au fil des pas plutôt que recalculé : l'historique peut compter
+    /// des centaines de milliers de snapshots, et le relire à chaque image
+    /// coûterait plus cher que tout le reste du rendu réuni.
+    pub(super) line_hits: HashMap<usize, u32>,
+    /// Combien de snapshots `line_hits` a déjà comptés. Ce qui suit dans
+    /// l'historique reste à compter ; un historique devenu plus court que ce
+    /// nombre signale un débogueur reparti de zéro (`resume_here` en
+    /// reconstruit un neuf), et le compte recommence.
+    pub(super) line_hits_counted: usize,
+    /// Adresses surveillées, telles que l'utilisateur les a demandées
+    /// (adresse, longueur en octets).
+    ///
+    /// Gardées ici et non dans le seul débogueur : `resume_here` et chaque
+    /// relance en construisent un neuf, et une surveillance qui disparaîtrait
+    /// au premier retour en arrière ne servirait pas au moment où l'on
+    /// cherche précisément qui écrase quoi.
+    pub(super) watches: Vec<(u64, usize)>,
+    /// Fenêtre « évolution d'un registre » ouverte.
+    pub(super) show_reg_history: bool,
+    /// Registre suivi par cette fenêtre — index dans `Registers::named`.
+    pub(super) reg_history_idx: usize,
     /// Nombre de colonnes de registres réellement affichées au dernier rendu
     /// (adapté à la largeur du panneau). ↑/↓ sautent d'autant de registres pour
     /// suivre ce que l'œil voit dans la grille.
@@ -873,6 +897,11 @@ impl App {
             mem_poke: String::new(),
             reg_sel: 0,
             reg_cols: 2,
+            line_hits: HashMap::new(),
+            line_hits_counted: 0,
+            watches: Vec::new(),
+            show_reg_history: false,
+            reg_history_idx: 0,
             // Deux `double` par défaut : c'est la forme des premiers pas en
             // flottant (`addsd`, `cvtsi2sd`), avant tout calcul vectoriel.
             xmm_view: crate::simd::XmmView::F64,
@@ -1175,6 +1204,79 @@ impl App {
         self.src_map.get(&rip).map(|l| l.saturating_sub(1))
     }
 
+    /// Met à jour le compte de passages par ligne à partir de l'historique.
+    ///
+    /// Incrémental et non recalculé : seuls les snapshots apparus depuis le
+    /// dernier appel sont lus. Une image où rien n'a bougé ne coûte donc
+    /// qu'une comparaison d'entiers — et il en passe soixante par seconde.
+    ///
+    /// Un historique plus court que ce qui a déjà été compté ne peut venir que
+    /// d'un débogueur reconstruit (`resume_here`, ou un nouveau lancement) :
+    /// le compte repart alors de zéro, sans quoi les passages de l'exécution
+    /// précédente s'ajouteraient à ceux de la nouvelle.
+    pub(super) fn refresh_line_hits(&mut self) {
+        let Some(dbg) = self.dbg.as_ref() else {
+            self.line_hits.clear();
+            self.line_hits_counted = 0;
+            return;
+        };
+        if dbg.history.len() < self.line_hits_counted {
+            self.line_hits.clear();
+            self.line_hits_counted = 0;
+        }
+        if dbg.history.len() == self.line_hits_counted {
+            return;
+        }
+        for snap in &dbg.history[self.line_hits_counted..] {
+            if let Some(line) = self.src_map.get(&snap.regs.rip) {
+                *self.line_hits.entry(*line).or_insert(0) += 1;
+            }
+        }
+        self.line_hits_counted = dbg.history.len();
+    }
+
+    /// Carte de chaleur de la gouttière : par ligne (1-based), le nombre de
+    /// passages et sa position de 0 à 1 sur l'échelle de couleur.
+    ///
+    /// Le compte brut voyage avec la position parce que l'infobulle le donne
+    /// en toutes lettres : une teinte dit « souvent », elle ne dit pas
+    /// « 4 096 fois », qui est le chiffre dont on a besoin pour comprendre.
+    ///
+    /// La position vient du **rang** de la ligne parmi les comptes distincts,
+    /// et non de son compte rapporté au maximum. Une échelle absolue,
+    /// logarithme compris, s'écrase dès qu'une boucle un peu longue existe :
+    /// avec un maximum de mille passages, une ligne parcourue une seule fois
+    /// tombe à un dixième de l'échelle, et tout le programme reste de la
+    /// couleur froide sauf un point. C'est exactement ce qu'on a observé. Au
+    /// rang, la ligne la moins parcourue est froide, la plus parcourue est
+    /// chaude, et les autres se répartissent entre les deux — quel que soit
+    /// l'écart des valeurs, qui peut aller de un à des centaines de milliers.
+    ///
+    /// Le prix de ce choix : deux lignes de comptes très différents mais
+    /// voisines au classement reçoivent des couleurs voisines. C'est assumé —
+    /// la carte sert à repérer où l'exécution s'attarde, et le chiffre exact
+    /// reste à un survol de distance.
+    pub(super) fn line_heat(&self) -> Vec<(usize, u32, f32)> {
+        let mut distincts: Vec<u32> = self.line_hits.values().copied().collect();
+        distincts.sort_unstable();
+        distincts.dedup();
+        // Un seul compte distinct : toutes les lignes se valent, et les
+        // peindre du même ton n'apprendrait rien tout en salissant la
+        // gouttière. C'est le cas d'un programme sans boucle, où chaque ligne
+        // passe exactement une fois.
+        if distincts.len() < 2 {
+            return Vec::new();
+        }
+        let dernier = (distincts.len() - 1) as f32;
+        self.line_hits
+            .iter()
+            .map(|(line, hits)| {
+                let rang = distincts.partition_point(|v| v < hits) as f32;
+                (*line, *hits, rang / dernier)
+            })
+            .collect()
+    }
+
     /// États (avant, après) de l'exécution de l'instruction à `addr`, retrouvés
     /// dans l'historique. `after` est `None` si l'instruction n'a pas encore été
     /// exécutée (ou est la dernière étape). Utilisé par le mode microscope.
@@ -1399,11 +1501,13 @@ impl eframe::App for App {
         self.breakpoint_condition_window(ctx);
         self.goto_line_window(ctx);
         self.calculator_window(ctx);
+        self.register_history_window(ctx);
         self.program_output_window(ctx);
         self.palette_window(ctx);
         self.predict_window(ctx);
         self.diagnosis_window(ctx);
         self.update_window(ctx);
+        self.refresh_line_hits();
         self.check_license_nag(ctx);
         self.check_close_request(ctx);
         self.unsaved_window(ctx);
@@ -2059,5 +2163,192 @@ mod tests {
         let _ = ctx.run(Default::default(), |ctx| app.check_close_request(ctx));
         assert!(!app.show_license_nag);
         assert!(!app.exit_pending);
+    }
+
+    // ---------- Carte de chaleur de la gouttière ----------
+
+    /// Un programme dont chaque ligne n'est passée qu'une fois n'a pas de
+    /// point chaud : colorer la gouttière entière n'apprendrait rien et
+    /// rendrait les numéros moins lisibles pour rien.
+    #[test]
+    fn a_run_without_any_repeated_line_paints_nothing() {
+        let mut app = App::new();
+        for line in 1..=5 {
+            app.line_hits.insert(line, 1);
+        }
+        assert!(app.line_heat().is_empty());
+    }
+
+    /// Le défaut constaté à l'écran : avec une boucle de mille tours, une
+    /// échelle absolue — logarithme compris — écrasait tout le reste du
+    /// programme dans la couleur froide. Au rang, les deux bouts de l'échelle
+    /// sont toujours occupés.
+    #[test]
+    fn the_heat_scale_spreads_across_the_whole_range() {
+        let mut app = App::new();
+        app.line_hits.insert(1, 1000);
+        app.line_hits.insert(2, 3);
+        app.line_hits.insert(3, 1);
+        let heat = app.line_heat();
+        let position = |ligne: usize| heat.iter().find(|(l, _, _)| *l == ligne).unwrap().2;
+        assert!((position(1) - 1.0).abs() < 1e-6, "la plus chaude occupe le haut");
+        assert!((position(3) - 0.0).abs() < 1e-6, "la plus froide occupe le bas");
+        assert!(
+            position(3) < position(2) && position(2) < position(1),
+            "et l'intermédiaire se place entre les deux : {} / {} / {}",
+            position(3),
+            position(2),
+            position(1)
+        );
+    }
+
+    /// Des comptes très différents ne doivent plus se tasser d'un seul côté :
+    /// c'est tout l'objet du classement par rang.
+    #[test]
+    fn a_hot_loop_no_longer_flattens_every_other_line() {
+        let mut app = App::new();
+        app.line_hits.insert(1, 100_000); // le corps de la boucle
+        for ligne in 2..=5 {
+            app.line_hits.insert(ligne, 1); // le reste du programme
+        }
+        app.line_hits.insert(6, 7); // une ligne intermédiaire
+        let heat = app.line_heat();
+        let position = |ligne: usize| heat.iter().find(|(l, _, _)| *l == ligne).unwrap().2;
+        assert!((position(2) - 0.0).abs() < 1e-6, "les lignes froides au plancher");
+        assert!(
+            (position(6) - 0.5).abs() < 1e-6,
+            "l'intermédiaire au milieu, pas écrasée en bas : {}",
+            position(6)
+        );
+        assert!((position(1) - 1.0).abs() < 1e-6, "la boucle au sommet");
+    }
+
+    /// Toutes les lignes au même compte : rien à comparer, donc rien à
+    /// peindre. Un programme sans boucle ne doit pas voir sa gouttière
+    /// barbouillée d'une couleur qui ne distingue rien.
+    #[test]
+    fn a_single_distinct_count_paints_nothing() {
+        let mut app = App::new();
+        for ligne in 1..=6 {
+            app.line_hits.insert(ligne, 4);
+        }
+        assert!(app.line_heat().is_empty());
+    }
+
+    /// Le compte brut voyage avec l'intensité : c'est lui que l'infobulle
+    /// affiche, et le recalculer ailleurs ouvrirait la porte à deux vérités.
+    #[test]
+    fn heat_carries_the_raw_count() {
+        let mut app = App::new();
+        app.line_hits.insert(7, 42);
+        app.line_hits.insert(8, 1);
+        let heat = app.line_heat();
+        let (_, passages, _) = heat.iter().find(|(l, _, _)| *l == 7).unwrap();
+        assert_eq!(*passages, 42);
+    }
+
+    /// Le vrai contrat, sur un programme réellement assemblé et exécuté : le
+    /// corps d'une boucle de trois tours est compté trois fois, une par
+    /// passage — pas une, comme le ferait une lecture du seul code source.
+    #[test]
+    fn a_loop_body_is_counted_once_per_pass() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/heat-test.asm");
+        app.out_dir = PathBuf::from("build/heat");
+        app.source = "section .text\n global _start\n_start:\n mov rcx, 3\nboucle:\n dec rcx\n jnz boucle\n mov rax, 60\n xor rdi, rdi\n syscall\n"
+            .to_string();
+
+        app.launch();
+        assert!(app.dbg.is_some(), "le programme doit être lancé");
+        for _ in 0..30 {
+            app.step();
+        }
+        app.refresh_line_hits();
+
+        let max = app.line_hits.values().copied().max().unwrap_or(0);
+        assert_eq!(max, 3, "le corps de boucle passe trois fois, compté {max}");
+        let total: u32 = app.line_hits.values().sum();
+
+        // Incrémental : recompter sans nouveau pas ne doit rien ajouter. Un
+        // `refresh` par image, soixante fois par seconde, doublerait sinon les
+        // compteurs en une seconde de programme à l'arrêt.
+        app.refresh_line_hits();
+        assert_eq!(
+            app.line_hits.values().sum::<u32>(),
+            total,
+            "une image sans nouveau pas ne doit rien recompter"
+        );
+
+        // Rejouer depuis le début reconstruit un débogueur neuf : les passages
+        // de l'exécution précédente ne doivent pas s'ajouter aux nouveaux.
+        app.set_view(1);
+        app.resume_here();
+        app.refresh_line_hits();
+        assert!(
+            app.line_hits.values().sum::<u32>() < total,
+            "après « reprendre ici » au début, le compte doit repartir de zéro"
+        );
+    }
+
+    // ---------- Surveillance d'adresses ----------
+
+    /// Une surveillance se pose et se retire par le même geste, et vit dans
+    /// l'application avant même qu'un programme tourne : on désigne une
+    /// adresse quand on y pense, pas quand le débogueur veut bien.
+    #[test]
+    fn toggling_a_watch_adds_then_removes_it_without_a_debugger() {
+        let mut app = App::new();
+        assert!(!app.is_watched(0x0040_2000));
+        app.toggle_watch(0x0040_2000, 8);
+        assert!(app.is_watched(0x0040_2000), "posée");
+        app.toggle_watch(0x0040_2000, 8);
+        assert!(!app.is_watched(0x0040_2000), "retirée par le même geste");
+    }
+
+    /// Le vrai contrat : une surveillance survit à « Reprendre ici », qui
+    /// reconstruit un débogueur neuf. C'est précisément pendant ces
+    /// allers-retours qu'on cherche qui écrase une valeur — une surveillance
+    /// qui disparaîtrait là ne servirait à rien.
+    #[test]
+    fn a_watch_is_rearmed_after_resume_here() {
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/watch-app.asm");
+        app.out_dir = PathBuf::from("build/watch-app");
+        app.source = "section .text\n global _start\n_start:\n push rax\n mov qword [rsp], 7\n mov rax, 60\n xor rdi, rdi\n syscall\n"
+            .to_string();
+
+        app.launch();
+        assert!(app.dbg.is_some(), "le programme doit être lancé");
+        let rsp = app.dbg.as_ref().unwrap().regs().rsp;
+        app.toggle_watch(rsp, 8);
+        assert_eq!(
+            app.dbg.as_ref().unwrap().watchpoints().len(),
+            1,
+            "armée sur le débogueur courant"
+        );
+
+        for _ in 0..4 {
+            app.step();
+        }
+        app.set_view(1);
+        app.resume_here();
+        assert!(app.is_watched(rsp), "la demande survit");
+        assert_eq!(
+            app.dbg.as_ref().unwrap().watchpoints().len(),
+            1,
+            "et elle est réarmée sur le débogueur reconstruit"
+        );
+    }
+
+    /// Sans débogueur, le compte se vide : les passages de l'exécution
+    /// précédente ne doivent pas teinter la gouttière du programme suivant.
+    #[test]
+    fn losing_the_debugger_clears_the_count() {
+        let mut app = App::new();
+        app.line_hits.insert(3, 12);
+        app.line_hits_counted = 12;
+        app.refresh_line_hits();
+        assert!(app.line_hits.is_empty());
+        assert_eq!(app.line_hits_counted, 0);
     }
 }
