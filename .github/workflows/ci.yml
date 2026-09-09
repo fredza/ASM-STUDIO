@@ -35,7 +35,12 @@ jobs:
     # sa première ligne.
     runs-on: ${{ fromJSON(vars.CI_RUNNER || '"ubuntu-latest"') }}
     steps:
-      - uses: actions/checkout@v4
+      # v5 plutôt que v4 : la v4 cible Node 20, que les runners forcent déjà
+      # sur Node 24 en annonçant la dépréciation à chaque exécution. Le jour
+      # où ils cesseront de le faire, la v4 s'arrête net. La v5 demande un
+      # runner 2.327 ou plus récent — celui de la maison est en 2.337, et les
+      # runners de GitHub se mettent à jour tout seuls.
+      - uses: actions/checkout@v5
         with:
           # build.rs lit le hash du commit courant : sans l'historique, la
           # fenêtre « À propos » afficherait « inconnu ».
