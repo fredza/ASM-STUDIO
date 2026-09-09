@@ -55,7 +55,8 @@ Options :
 Fichiers installés :
   PREFIX/bin/${BIN_NAME}
   PREFIX/share/applications/${DESKTOP_NAME}
-  PREFIX/share/icons/hicolor/256x256/apps/${ICON_NAME}.png
+  PREFIX/share/icons/hicolor/<taille>/apps/${ICON_NAME}.png   (16 à 512 px)
+  PREFIX/share/icons/hicolor/scalable/apps/${ICON_NAME}.svg
   XDG_DATA_HOME/asm_studio/examples/win_*.asm  (les 4 exemples PE64 essentiels)
 
 Désinstallation : ./uninstall.sh (mêmes options de préfixe)
@@ -83,7 +84,13 @@ done
 readonly PREFIX SKIP_CHECKS
 readonly BIN_DIR="${PREFIX}/bin"
 readonly APP_DIR="${PREFIX}/share/applications"
-readonly ICON_DIR="${PREFIX}/share/icons/hicolor/256x256/apps"
+readonly ICON_ROOT="${PREFIX}/share/icons/hicolor"
+# Une image dessinée pour chaque taille, plutôt qu'un seul 256×256 que le
+# thème réduirait lui-même. Sous 128 px le dessin est simplifié — ni trame de
+# bits, ni pattes de puce, ni ombre portée (`assets/icon-small.svg`) — parce
+# que ces détails, rééchantillonnés, ne donnent pas une icône plus riche mais
+# une lettre sale. Au-delà, c'est le dessin complet (`assets/icon.svg`).
+readonly -a ICON_SIZES=(16 24 32 48 64 128 256 512)
 
 # Répertoire du script : les fichiers à installer sont à côté.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -240,7 +247,7 @@ fi
 step "3/5  Installation dans ${PREFIX}"
 
 # Droits d'écriture : message clair plutôt qu'un « permission denied » brut.
-for d in "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}"; do
+for d in "${BIN_DIR}" "${APP_DIR}" "${ICON_ROOT}"; do
     parent="$d"
     while [ ! -d "$parent" ] && [ "$parent" != "/" ]; do
         parent="$(dirname -- "$parent")"
@@ -252,13 +259,35 @@ for d in "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}"; do
     fi
 done
 
-install -d "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}"
+install -d "${BIN_DIR}" "${APP_DIR}"
 
 install -m 755 "${BINARY}" "${BIN_DIR}/${BIN_NAME}"
 ok "${BIN_DIR}/${BIN_NAME}"
 
-install -m 644 "${ICON_SRC}" "${ICON_DIR}/${ICON_NAME}.png"
-ok "${ICON_DIR}/${ICON_NAME}.png"
+posees=0
+for taille in "${ICON_SIZES[@]}"; do
+    src="$(find_asset "icon-${taille}.png")" || continue
+    install -d "${ICON_ROOT}/${taille}x${taille}/apps"
+    install -m 644 "${src}" "${ICON_ROOT}/${taille}x${taille}/apps/${ICON_NAME}.png"
+    posees=$((posees + 1))
+done
+if [ "${posees}" -gt 0 ]; then
+    ok "${posees} tailles d'icône dans ${ICON_ROOT}"
+else
+    # Repli : une archive antérieure aux tailles multiples ne porte que
+    # `icon.png`. Mieux vaut l'ancien comportement qu'aucune icône du tout.
+    install -d "${ICON_ROOT}/256x256/apps"
+    install -m 644 "${ICON_SRC}" "${ICON_ROOT}/256x256/apps/${ICON_NAME}.png"
+    ok "${ICON_ROOT}/256x256/apps/${ICON_NAME}.png  (seule taille disponible)"
+fi
+
+# Le SVG en prime : les bureaux qui savent le lire s'en servent à n'importe
+# quelle échelle, y compris celles qu'aucun PNG ne couvre (écrans HiDPI).
+if SVG_SRC="$(find_asset "icon.svg")"; then
+    install -d "${ICON_ROOT}/scalable/apps"
+    install -m 644 "${SVG_SRC}" "${ICON_ROOT}/scalable/apps/${ICON_NAME}.svg"
+    ok "${ICON_ROOT}/scalable/apps/${ICON_NAME}.svg"
+fi
 
 # Le .desktop porte un marqueur Exec= à remplacer par le chemin réel : sans
 # chemin absolu, le lanceur ne trouve pas le binaire hors du PATH du shell.

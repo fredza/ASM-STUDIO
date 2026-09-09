@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Variante pour 16, 24 et 32 px. Tout ce qui ne survit pas à cette taille
+       est retiré — trame de bits, pattes de puce, ombre portée — et la lettre
+       gagne le contraste que ces détails lui prenaient. C'est la même icône
+       à distance de bras : mêmes couleurs, même lettre, même silhouette. -->
+  <defs>
+    <linearGradient id="fond" x1="0.1" y1="0" x2="0.85" y2="1">
+      <stop offset="0"    stop-color="#27406A"/>
+      <stop offset="0.5"  stop-color="#132038"/>
+      <stop offset="1"    stop-color="#070C16"/>
+    </linearGradient>
+    <linearGradient id="lettre" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0"    stop-color="#D6ECFF"/>
+      <stop offset="0.45" stop-color="#6DB6F7"/>
+      <stop offset="1"    stop-color="#2E7BDD"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="58" fill="url(#fond)"/>
+  <g transform="translate(128 128) scale(1.07) translate(-128 -128)">
+    <path d="M128 58 L204 198 L167 198 L128 102 L89 198 L52 198 Z" fill="url(#lettre)"/>
+    <path d="M95 148 H161 V171 H95 Z" fill="url(#lettre)"/>
+  </g>
+</svg>

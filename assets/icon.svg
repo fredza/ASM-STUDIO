@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- Fond : bleu nuit, éclairé en haut à gauche comme une surface réelle. -->
+    <linearGradient id="fond" x1="0.1" y1="0" x2="0.85" y2="1">
+      <stop offset="0"    stop-color="#24395E"/>
+      <stop offset="0.45" stop-color="#132038"/>
+      <stop offset="1"    stop-color="#080D18"/>
+    </linearGradient>
+    <!-- Lumière rasante du haut : ce qui empêche un aplat de paraître mort. -->
+    <linearGradient id="lumiere" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#FFFFFF" stop-opacity="0.10"/>
+      <stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <!-- Le fondu qui rend la trame « subtile » : présente en haut à gauche,
+         évanouie sous la lettre, pour ne jamais concurrencer le A. -->
+    <linearGradient id="fondu" x1="0.05" y1="0" x2="0.95" y2="1">
+      <stop offset="0"    stop-color="#FFFFFF" stop-opacity="0.85"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="1"    stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <mask id="masqueTrame"><rect width="256" height="256" fill="url(#fondu)"/></mask>
+    <linearGradient id="lettre" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0"    stop-color="#CFE9FF"/>
+      <stop offset="0.42" stop-color="#63B0F5"/>
+      <stop offset="1"    stop-color="#1B62C6"/>
+    </linearGradient>
+    <filter id="ombreLettre" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#000814" flood-opacity="0.55"/>
+    </filter>
+    <clipPath id="cadre"><rect width="256" height="256" rx="58"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#cadre)">
+    <rect width="256" height="256" fill="url(#fond)"/>
+
+    <!-- Trame de bits, héritée de la piste « registre » : rangées de mots de
+         8 bits, certains allumés. Masquée par le fondu, elle se lit de près
+         et disparaît à 32 px sans laisser de bruit. -->
+    <g mask="url(#masqueTrame)" fill="#6FB4F0">
+      <g opacity="0.16">
+        <rect x="16"  y="20"  width="15" height="15" rx="4"/>
+        <rect x="52"  y="20"  width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="88"  y="20"  width="15" height="15" rx="4"/>
+        <rect x="124" y="20"  width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="160" y="20"  width="15" height="15" rx="4"/>
+        <rect x="196" y="20"  width="15" height="15" rx="4"/>
+        <rect x="232" y="20"  width="15" height="15" rx="4" opacity="0.35"/>
+
+        <rect x="16"  y="56"  width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="52"  y="56"  width="15" height="15" rx="4"/>
+        <rect x="88"  y="56"  width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="124" y="56"  width="15" height="15" rx="4"/>
+        <rect x="160" y="56"  width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="196" y="56"  width="15" height="15" rx="4"/>
+        <rect x="232" y="56"  width="15" height="15" rx="4"/>
+
+        <rect x="16"  y="92"  width="15" height="15" rx="4"/>
+        <rect x="52"  y="92"  width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="88"  y="92"  width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="124" y="92"  width="15" height="15" rx="4"/>
+        <rect x="160" y="92"  width="15" height="15" rx="4"/>
+        <rect x="196" y="92"  width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="232" y="92"  width="15" height="15" rx="4"/>
+
+        <rect x="16"  y="128" width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="52"  y="128" width="15" height="15" rx="4"/>
+        <rect x="88"  y="128" width="15" height="15" rx="4"/>
+        <rect x="124" y="128" width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="160" y="128" width="15" height="15" rx="4"/>
+        <rect x="196" y="128" width="15" height="15" rx="4"/>
+        <rect x="232" y="128" width="15" height="15" rx="4" opacity="0.35"/>
+
+        <rect x="16"  y="164" width="15" height="15" rx="4"/>
+        <rect x="52"  y="164" width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="88"  y="164" width="15" height="15" rx="4"/>
+        <rect x="124" y="164" width="15" height="15" rx="4"/>
+        <rect x="160" y="164" width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="196" y="164" width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="232" y="164" width="15" height="15" rx="4"/>
+
+        <rect x="16"  y="200" width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="52"  y="200" width="15" height="15" rx="4"/>
+        <rect x="88"  y="200" width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="124" y="200" width="15" height="15" rx="4"/>
+        <rect x="160" y="200" width="15" height="15" rx="4"/>
+        <rect x="196" y="200" width="15" height="15" rx="4" opacity="0.35"/>
+        <rect x="232" y="200" width="15" height="15" rx="4" opacity="0.35"/>
+      </g>
+    </g>
+
+    <!-- Pattes de la puce : l'identité « matériel » de l'icône d'origine,
+         gardée dans les marges latérales où elle ne dispute rien à la lettre. -->
+    <g stroke="#4E7CB8" stroke-width="6" stroke-linecap="round" opacity="0.30">
+      <path d="M0 90h22M0 128h22M0 166h22M234 90h22M234 128h22M234 166h22"/>
+    </g>
+
+    <rect width="256" height="256" fill="url(#lumiere)"/>
+  </g>
+
+  <!-- Le A : plein cadre utile, détaché du fond par son ombre seule — pas de
+       liseré, qui à 32 px se transforme en halo sale. -->
+  <g filter="url(#ombreLettre)">
+    <path d="M128 58 L204 198 L167 198 L128 102 L89 198 L52 198 Z" fill="url(#lettre)"/>
+    <path d="M95 148 H161 V171 H95 Z" fill="url(#lettre)"/>
+  </g>
+</svg>

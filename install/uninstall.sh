@@ -66,7 +66,11 @@ done
 readonly PREFIX PURGE ASSUME_YES
 readonly BIN_DIR="${PREFIX}/bin"
 readonly APP_DIR="${PREFIX}/share/applications"
-readonly ICON_DIR="${PREFIX}/share/icons/hicolor/256x256/apps"
+readonly ICON_ROOT="${PREFIX}/share/icons/hicolor"
+# Les mêmes tailles qu'`install.sh` pose, plus le 256×256 qu'installaient les
+# versions antérieures : une désinstallation qui n'en retire qu'une laisse le
+# thème afficher l'ancienne icône, longtemps, sans que rien ne l'explique.
+readonly -a ICON_SIZES=(16 24 32 48 64 128 256 512)
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -75,8 +79,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 targets=(
     "${BIN_DIR}/${BIN_NAME}"
     "${APP_DIR}/${DESKTOP_NAME}"
-    "${ICON_DIR}/${ICON_NAME}.png"
+    "${ICON_ROOT}/scalable/apps/${ICON_NAME}.svg"
 )
+for taille in "${ICON_SIZES[@]}"; do
+    targets+=("${ICON_ROOT}/${taille}x${taille}/apps/${ICON_NAME}.png")
+done
 
 step "Fichiers à retirer"
 found=0

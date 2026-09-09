@@ -106,8 +106,15 @@ done
 ok "documentation"
 
 install -m 644 assets/asm-studio.desktop "${STAGE}/assets/"
-install -m 644 assets/icon.png           "${STAGE}/assets/"
-ok "ressources (.desktop, icône)"
+# Toutes les tailles d'icône, plus les deux SVG sources : `install.sh` pose
+# chacune dans son dossier `hicolor`, et se rabat sur le seul `icon.png` s'il
+# ne trouve rien d'autre. Une archive qui ne porterait que le 256×256
+# déclencherait ce repli sans rien dire, et l'icône serait laide en 32 px.
+install -m 644 assets/icon.png assets/icon.svg assets/icon-small.svg "${STAGE}/assets/"
+for taille in 16 24 32 48 64 128 256 512; do
+    install -m 644 "assets/icon-${taille}.png" "${STAGE}/assets/"
+done
+ok "ressources (.desktop, icône en 8 tailles + SVG)"
 
 for example in "${WINDOWS_EXAMPLES[@]}"; do
     if [ ! -f "examples_seed/${example}" ]; then
