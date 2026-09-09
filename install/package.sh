@@ -137,14 +137,44 @@ awk -v want="## [${VERSION}]" '
     index($0, want) == 1 { inside = 1; next }
     inside && /^## \[/   { exit }
     inside               { print }
-' CHANGELOG.md > "${NOTES}"
-if [ -s "${NOTES}" ]; then
+' CHANGELOG.md > "${DIST}/.changelog-extract"
+
+# Quel fichier prendre, dit avant le changelog. Une release expose quatre
+# assets et GitHub les affiche sans un mot : le binaire nu vient en premier,
+# c'est celui qu'on télécharge, et c'est le seul qui ne s'installe pas. HTTP
+# ne transporte pas le bit d'exécution — arrivé sur le bureau il n'est plus
+# exécutable, et le gestionnaire de fichiers répond « aucune application
+# n'est installée pour les fichiers Executable », ce qui ne désigne pas le
+# vrai problème. C'est arrivé à l'auteur sur sa propre 0.5.0-beta.5 ; ça
+# arrivera à tout le monde. Le binaire nu est là pour la mise à jour
+# automatique, qui pose le bit elle-même après avoir vérifié la signature.
+#
+# Le test porte sur l'extrait, pas sur les notes finies : celles-ci ne sont
+# jamais vides puisqu'elles commencent par ce bloc, et une section de
+# changelog manquante passerait donc inaperçue.
+if [ -s "${DIST}/.changelog-extract" ]; then
+    {
+        printf '### Installation\n\n'
+        printf 'Téléchargez **`%s.tar.gz`**, puis :\n\n' "${PKG}"
+        printf '```\n'
+        printf 'tar xzf %s.tar.gz\n' "${PKG}"
+        printf 'cd %s\n' "${PKG}"
+        printf './install.sh\n'
+        printf '```\n\n'
+        printf "L'application rejoint le menu, avec son icône, et \`asm-studio\` le PATH.\n\n"
+        printf 'Les deux autres fichiers ne servent pas à une installation manuelle :\n'
+        printf '`%s` (sans extension) est le binaire que la mise à jour automatique\n' "${PKG}"
+        printf 'télécharge, et `%s.sig` sa signature. Téléchargé à la main, ce binaire\n' "${PKG}"
+        printf "arrive sans son bit d'exécution — \`chmod +x\` le rend lançable.\n\n"
+        cat "${DIST}/.changelog-extract"
+    } > "${NOTES}"
     ok "dist/RELEASE-NOTES-${VERSION}.md"
 else
     rm -f -- "${NOTES}"
     err "aucune section « ## [${VERSION}] » dans CHANGELOG.md"
     dim "La release peut se publier sans, mais elle n'aura pas de notes."
 fi
+rm -f -- "${DIST}/.changelog-extract"
 
 echo
 dim "Contenu :"
