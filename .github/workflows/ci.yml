@@ -71,6 +71,18 @@ jobs:
       # propres enfants, ce que Yama refuse au-delà de 1. C'est un réglage de
       # la machine, pas du dépôt, et il ne se voit dans aucun message d'échec
       # de cargo.
+      #
+      # Les bibliothèques, elles, sont listées sans faire échouer le travail.
+      # Elles l'ont fait une fois, le 2026-09-09, sur une machine qui compile
+      # et passe ses tests sans elles : `xi`, `xcursor`, `xrandr`,
+      # `xkbcommon` et `gl` n'ont pas leur `.pc` sur cette Fedora, et rien ne
+      # les réclame — winit et glutin chargent X11 et GL par `dlopen` au
+      # lancement, pas à l'édition de liens. Le job échouait donc en une
+      # seconde, en accusant une machine parfaitement capable, juste après
+      # que le runner eut été remis en place. Ce qui manque vraiment se voit
+      # à la compilation, qui suit de peu ; cette liste garde son intérêt le
+      # jour où c'est bien une bibliothèque qui manque, à condition de ne pas
+      # décider toute seule que le travail est perdu.
       - name: Vérifier ce que la machine fournit
         if: runner.environment == 'self-hosted'
         run: |
@@ -87,8 +99,7 @@ jobs:
             if pkg-config --exists "$lib"; then
               printf '  %-14s %s\n' "$lib" "$(pkg-config --modversion "$lib")"
             else
-              printf '  %-14s ABSENT\n' "$lib"
-              manque=1
+              printf '  %-14s absent (pas réclamé par la compilation)\n' "$lib"
             fi
           done
           scope="$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0)"
