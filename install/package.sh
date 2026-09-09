@@ -187,16 +187,34 @@ echo
 dim "Contenu :"
 tar -tzf "${DIST}/${PKG}.tar.gz" | sed 's/^/    /'
 echo
-# Publier ou compléter : une release déjà créée (tag poussé plus tôt, notes
-# rédigées à la main) refuse `gh release create` avec « already exists ». Le
-# script regarde donc laquelle des deux commandes s'applique, plutôt que d'en
-# proposer une qui échouera une fois sur deux.
+# Depuis .github/workflows/release.yml, pousser le tag suffit : la CI
+# recompile, retteste, empaquette, SIGNE (secret UPDATE_SIGNING_KEY — voir
+# src/bin/release_sign.rs) et publie elle-même les quatre assets, y compris
+# le binaire nu et sa signature que ce script, lui, ne produit pas. C'est
+# désormais le chemin normal ; ce que ce script vient de construire dans
+# dist/ ne sert plus qu'à vérifier localement, avant de pousser, que
+# l'archive s'assemble bien.
 readonly TAG="v${VERSION}"
+if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+    echo
+    dim "Pour publier : poussez le tag, la CI se charge du reste (build, tests,"
+    dim "signature, publication GitHub) —"
+    dim "  git tag -a ${TAG} -m \"ASM Studio ${VERSION}\""
+    dim "  git -c credential.helper='!gh auth git-credential' \\"
+    dim "      push https://github.com/fredza/ASM-STUDIO.git ${TAG}"
+    dim "Suivre la publication :  gh run watch"
+else
+    dim "Le tag ${TAG} existe déjà — poussez-le s'il ne l'est pas encore, ou"
+    dim "rejouez la publication depuis l'onglet Actions (workflow_dispatch)."
+fi
+
+echo
+dim "Publication manuelle depuis cette machine (sans passer par la CI, donc"
+dim "SANS le binaire signé ni sa .sig — la mise à jour automatique ne verra"
+dim "pas cette release tant qu'ils ne sont pas ajoutés à la main) :"
 if gh release view "${TAG}" >/dev/null 2>&1; then
-    dim "La release ${TAG} existe déjà — pour y joindre l'archive :"
     dim "  gh release upload ${TAG} dist/${PKG}.tar.gz dist/${PKG}.tar.gz.sha256 --clobber"
 else
-    dim "Pour publier une release GitHub :"
     PRERELEASE=""
     case "${VERSION}" in *-*) PRERELEASE=" --prerelease" ;; esac
     dim "  gh release create ${TAG}${PRERELEASE} dist/${PKG}.tar.gz dist/${PKG}.tar.gz.sha256 \\"
@@ -205,22 +223,8 @@ else
     else
         dim "     --title \"ASM Studio ${VERSION}\" --notes \"…\""
     fi
-    case "${VERSION}" in
-        *-*) dim "  (--prerelease est déjà là : sans lui, la mise à jour automatique"
-             dim "   proposerait cette bêta à tous les utilisateurs stables.)" ;;
-    esac
 fi
 
-# Pousser le tag depuis cette machine : l'agent SSH accepte la clé puis ne rend
-# jamais la main sur la signature. Le jeton de `gh` passe, et `-c` ne modifie
-# pas la configuration (`origin` reste en SSH).
-if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-    echo
-    dim "Le tag ${TAG} n'existe pas encore :"
-    dim "  git tag -a ${TAG} -m \"ASM Studio ${VERSION}\""
-    dim "  git -c credential.helper='!gh auth git-credential' \\"
-    dim "      push https://github.com/fredza/ASM-STUDIO.git ${TAG}"
-fi
 echo
 dim "Rappel : le dépôt interrogé par la mise à jour automatique est défini par"
 dim "GITHUB_REPO dans src/updater.rs — actuellement :"

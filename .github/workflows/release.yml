@@ -1,0 +1,172 @@
+name: Release
+
+# Se déclenche sur un tag `vX.Y.Z` poussé (voir install/package.sh, qui
+# imprime la commande `git tag` + `git push` pour ça), ou à la main depuis
+# l'onglet Actions pour rejouer une publication sans repousser de tag.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag à publier (ex. v0.6.0) — doit déjà exister"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+# `contents: write` : sans lui, le jeton par défaut de l'exécution ne peut ni
+# créer de release ni y déposer d'assets.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Construire, signer et publier
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # build.rs lit le hash du commit courant : sans l'historique, la
+          # fenêtre « À propos » du binaire publié afficherait « inconnu ».
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      # Même liste que ci.yml : nasm/ld pour les tests qui assemblent et
+      # exécutent réellement un binaire, les bibliothèques X11/Wayland pour
+      # que glutin (rendu `glow`, voir Cargo.toml) se compile.
+      - name: Dépendances système
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nasm binutils \
+            libxkbcommon-dev libwayland-dev \
+            libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
+            libgl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Version
+        id: version
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          cargo_version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$cargo_version" != "$version" ]; then
+            echo "::error::Cargo.toml porte la version ${cargo_version}, le tag dit ${version} — mettez les deux d'accord avant de publier"
+            exit 1
+          fi
+
+      - name: Compilation (release)
+        run: cargo build --release --bin asm_studio --bin release_sign
+
+      # Le garde-fou anti-clé-de-test de src/license.rs se déclenche à la
+      # compilation (voir ci-dessus) ; les tests, eux, exercent tout le
+      # reste — y compris la vérification de signature de mise à jour.
+      - name: Tests
+        run: cargo test --release
+
+      - name: Assembler l'archive de distribution
+        id: package
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          pkg="asm-studio-${version}-linux-x86_64"
+          stage="dist/${pkg}"
+          rm -rf dist
+          mkdir -p "${stage}/assets" "${stage}/examples"
+
+          install -m 755 target/release/asm_studio "${stage}/asm-studio"
+          install -m 755 install/install.sh "${stage}/install.sh"
+          install -m 755 install/uninstall.sh "${stage}/uninstall.sh"
+          install -m 644 install/INSTALL.md "${stage}/INSTALL.md"
+          install -m 644 DEPENDENCIES.md "${stage}/DEPENDENCIES.md"
+          install -m 644 LICENSE.md "${stage}/LICENSE.md"
+          for r in README.md README.fr.md README.es.md; do
+            [ -f "$r" ] && install -m 644 "$r" "${stage}/${r}"
+          done
+
+          install -m 644 assets/asm-studio.desktop "${stage}/assets/"
+          install -m 644 assets/icon.png assets/icon.svg assets/icon-small.svg "${stage}/assets/"
+          for taille in 16 24 32 48 64 128 256 512; do
+            install -m 644 "assets/icon-${taille}.png" "${stage}/assets/"
+          done
+
+          for ex in win_hello_world win_arithmetic win_boucle win_lire_ecrire; do
+            install -m 644 "examples_seed/${ex}.asm" "${stage}/examples/${ex}.asm"
+          done
+
+          tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
+          rm -rf "${stage}"
+          ( cd dist && sha256sum "${pkg}.tar.gz" > "${pkg}.tar.gz.sha256" )
+
+          # Le binaire nu, sans extension : celui que la mise à jour
+          # automatique télécharge et vérifie (voir src/updater.rs,
+          # `linux_update_asset`) — distinct de l'archive, qui ne s'installe
+          # qu'à la main.
+          cp target/release/asm_studio "dist/${pkg}"
+
+          echo "pkg=${pkg}" >> "$GITHUB_OUTPUT"
+
+      # La clé privée ne transite que par cette variable d'environnement, le
+      # temps de cette étape ; elle ne touche jamais le disque en dehors du
+      # secret chiffré que GitHub gère lui-même.
+      - name: Signer le binaire de mise à jour
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${UPDATE_SIGNING_KEY}" ]; then
+            echo "::error::secret UPDATE_SIGNING_KEY absent — Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          ./target/release/release_sign sign "${UPDATE_SIGNING_KEY}" "dist/${{ steps.package.outputs.pkg }}"
+
+      - name: Notes de version depuis CHANGELOG.md
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          awk -v want="## [${version}]" '
+              index($0, want) == 1 { inside = 1; next }
+              inside && /^## \[/   { exit }
+              inside               { print }
+          ' CHANGELOG.md > dist/notes.md
+          if [ ! -s dist/notes.md ]; then
+            echo "::warning::aucune section « ## [${version}] » dans CHANGELOG.md"
+            echo "ASM Studio ${version}." > dist/notes.md
+          fi
+
+      # `gh release upload --clobber` plutôt que `create` si la release
+      # existe déjà : rejouer ce travail (workflow_dispatch, ou un tag
+      # repoussé après une publication manuelle) doit compléter les assets,
+      # pas échouer sur « already exists ».
+      - name: Publier la release GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          version="${{ steps.version.outputs.version }}"
+          pkg="${{ steps.package.outputs.pkg }}"
+          assets=(
+            "dist/${pkg}.tar.gz"
+            "dist/${pkg}.tar.gz.sha256"
+            "dist/${pkg}"
+            "dist/${pkg}.sig"
+          )
+          prerelease=()
+          case "$version" in *-*) prerelease=(--prerelease) ;; esac
+
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --repo "${{ github.repository }}" \
+              --title "ASM Studio ${version}" \
+              --notes-file dist/notes.md \
+              "${prerelease[@]}"
+          fi

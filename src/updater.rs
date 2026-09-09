@@ -23,11 +23,24 @@ const GITHUB_REPO: &str = "fredza/ASM-STUDIO";
 /// licences : une compromission de l'un des processus ne donne pas
 /// automatiquement le contrôle de l'autre.
 ///
-/// La clé privée correspondante reste hors de ce dépôt ; chaque release publie
-/// une signature Base64 dans un asset `<binaire>.sig`.
+/// La clé privée correspondante n'existe dans aucun fichier de ce dépôt, ni
+/// d'aucun autre : elle ne vit que dans le secret GitHub Actions
+/// `UPDATE_SIGNING_KEY` du dépôt `fredza/ASM-STUDIO`, injecté en variable
+/// d'environnement au moment de signer (voir
+/// `.github/workflows/release.yml` et `src/bin/release_sign.rs`, l'outil qui
+/// signe). Chaque release publie la signature Base64 qui en résulte dans un
+/// asset `<binaire>.sig`.
+///
+/// Régénérée le 2026-09-09 : la clé privée correspondant à l'ancienne
+/// valeur n'était accessible sur aucun outil ni dépôt de cette machine, et
+/// aucune release publiée n'avait de signature vérifiable avec elle — ce
+/// remplacement ne casse donc aucune installation existante. Si l'ancienne
+/// clé privée existe ailleurs (poste de travail distinct, gestionnaire de
+/// secrets), les deux resteront valides tant que rien ne signe plus avec
+/// l'ancienne.
 const UPDATE_PUBLIC_KEY: [u8; 32] = [
-    0xDF, 0xDA, 0xC3, 0x0E, 0x0B, 0xB2, 0xFB, 0x98, 0x8F, 0x58, 0x13, 0xE6, 0x30, 0xDD, 0x39, 0xC9,
-    0x27, 0x44, 0x91, 0x7C, 0x75, 0x04, 0x7C, 0xD7, 0x0C, 0x44, 0x4D, 0xF0, 0xAC, 0x6D, 0x58, 0x39,
+    0x8D, 0x15, 0x38, 0x4A, 0x8A, 0x94, 0x9E, 0xB1, 0xB9, 0xA3, 0x1D, 0x4E, 0x7F, 0xB8, 0x4E, 0x86,
+    0x8E, 0x27, 0x97, 0x3C, 0xBE, 0x59, 0xDC, 0xA1, 0xB3, 0x42, 0x7F, 0x72, 0xEE, 0xF1, 0xD5, 0xC5,
 ];
 
 /// URL de l'API GitHub Releases.
