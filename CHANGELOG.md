@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-09-09
+
+### Changed
+- **Releases are now built, signed and published automatically** by
+  `.github/workflows/release.yml` on every `vX.Y.Z` tag push: build,
+  `cargo test`, package the archive, sign the raw update binary, and
+  upload all four assets to the GitHub release — the same steps
+  `install/package.sh` already documented as manual commands, now run by
+  CI instead. The signing key lives only in the repository's
+  `UPDATE_SIGNING_KEY` Actions secret; it was never written to any file in
+  this repository. `src/bin/release_sign.rs` is the small maintainer tool
+  that generates that key pair and performs the signing — not part of the
+  distributed app.
+- **New Ed25519 update-signing key pair**, replacing the previous
+  `UPDATE_PUBLIC_KEY`: no private key matching the old value was available
+  on the machine or in any tool used to publish releases, so no published
+  release had ever actually been signed with it. Verified end to end
+  before publishing — a real signed v0.6.0 binary was checked against the
+  real embedded public key, not just a test key pair.
+
 ## [0.6.0] - 2026-09-09
 
 ### Changed
