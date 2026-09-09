@@ -452,11 +452,22 @@ impl App {
                             );
                             if ui
                                 .small_button("📋")
-                                .on_hover_text(tr(
-                                    "Copier (à communiquer pour la licence)",
-                                    "Copy (needed when requesting a license)",
-                                    "Copiar (necesario para solicitar una licencia)",
-                                ))
+                                // Le motif « pour la licence » n'a plus cours
+                                // quand le système est neutralisé, mais copier
+                                // version + build reste utile (rapport de bug).
+                                .on_hover_text(if crate::license::LICENSING_ENABLED {
+                                    tr(
+                                        "Copier (à communiquer pour la licence)",
+                                        "Copy (needed when requesting a license)",
+                                        "Copiar (necesario para solicitar una licencia)",
+                                    )
+                                } else {
+                                    tr(
+                                        "Copier la version et le build",
+                                        "Copy the version and build",
+                                        "Copiar la versión y el build",
+                                    )
+                                })
                                 .clicked()
                             {
                                 ctx.copy_text(crate::license::version_build_tag());
@@ -480,75 +491,80 @@ impl App {
                             "Abre el repositorio GitHub del proyecto en el navegador.",
                         ));
                         ui.end_row();
-                        ui.label(tr("Activation", "Activation", "Activación"));
-                        match &self.license {
-                            crate::license::LicenseState::Valid(p) => {
-                                let suffix = match &p.expires_at {
-                                    Some(date) => format!(
-                                        " ({} {date})",
-                                        tr("valable jusqu'au", "valid until", "válida hasta")
-                                    ),
-                                    None => String::new(),
-                                };
-                                let label = format!(
-                                    "✔ {} — {}{suffix}",
-                                    tr("Activée", "Activated", "Activada"),
-                                    p.name
-                                );
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(flag_on(), label);
-                                    if ui
-                                        .link(tr("Désactiver…", "Deactivate…", "Desactivar…"))
-                                        .on_hover_text(tr(
-                                            "Supprime la licence installée sur cette machine.",
-                                            "Removes the license installed on this machine.",
-                                            "Elimina la licencia instalada en esta máquina.",
-                                        ))
-                                        .clicked()
-                                    {
-                                        self.confirm_license_reset = true;
-                                    }
-                                });
-                            }
-                            crate::license::LicenseState::Invalid(_) | crate::license::LicenseState::Missing
-                                if crate::trial::is_active() =>
-                            {
-                                ui.horizontal(|ui| {
-                                    let days = crate::trial::days_left();
-                                    let remaining = match lang {
-                                        crate::i18n::Lang::Fr => format!("encore {days} jour(s)"),
-                                        crate::i18n::Lang::En => format!("{days} day(s) left"),
-                                        crate::i18n::Lang::Es => format!("quedan {days} día(s)"),
+                        // Ligne masquée quand le système de licence est
+                        // neutralisé (`LICENSING_ENABLED`) : il n'y a alors
+                        // ni titulaire à nommer, ni rien à activer.
+                        if crate::license::LICENSING_ENABLED {
+                            ui.label(tr("Activation", "Activation", "Activación"));
+                            match &self.license {
+                                crate::license::LicenseState::Valid(p) => {
+                                    let suffix = match &p.expires_at {
+                                        Some(date) => format!(
+                                            " ({} {date})",
+                                            tr("valable jusqu'au", "valid until", "válida hasta")
+                                        ),
+                                        None => String::new(),
                                     };
-                                    ui.colored_label(
-                                        accent(),
-                                        format!(
-                                            "🕐 {} — {remaining}",
-                                            tr("Avant inscription gratuite", "Before free registration", "Antes del registro gratuito")
-                                        ),
+                                    let label = format!(
+                                        "✔ {} — {}{suffix}",
+                                        tr("Activée", "Activated", "Activada"),
+                                        p.name
                                     );
-                                    if ui.link(tr("Activer…", "Activate…", "Activar…")).clicked() {
-                                        self.show_license_gate = true;
-                                    }
-                                });
+                                    ui.horizontal(|ui| {
+                                        ui.colored_label(flag_on(), label);
+                                        if ui
+                                            .link(tr("Désactiver…", "Deactivate…", "Desactivar…"))
+                                            .on_hover_text(tr(
+                                                "Supprime la licence installée sur cette machine.",
+                                                "Removes the license installed on this machine.",
+                                                "Elimina la licencia instalada en esta máquina.",
+                                            ))
+                                            .clicked()
+                                        {
+                                            self.confirm_license_reset = true;
+                                        }
+                                    });
+                                }
+                                crate::license::LicenseState::Invalid(_) | crate::license::LicenseState::Missing
+                                    if crate::trial::is_active() =>
+                                {
+                                    ui.horizontal(|ui| {
+                                        let days = crate::trial::days_left();
+                                        let remaining = match lang {
+                                            crate::i18n::Lang::Fr => format!("encore {days} jour(s)"),
+                                            crate::i18n::Lang::En => format!("{days} day(s) left"),
+                                            crate::i18n::Lang::Es => format!("quedan {days} día(s)"),
+                                        };
+                                        ui.colored_label(
+                                            accent(),
+                                            format!(
+                                                "🕐 {} — {remaining}",
+                                                tr("Avant inscription gratuite", "Before free registration", "Antes del registro gratuito")
+                                            ),
+                                        );
+                                        if ui.link(tr("Activer…", "Activate…", "Activar…")).clicked() {
+                                            self.show_license_gate = true;
+                                        }
+                                    });
+                                }
+                                crate::license::LicenseState::Invalid(_) | crate::license::LicenseState::Missing => {
+                                    ui.horizontal(|ui| {
+                                        ui.colored_label(
+                                            false_col(),
+                                            tr(
+                                                "✘ Délai d'inscription dépassé",
+                                                "✘ Registration period over",
+                                                "✘ Periodo de registro terminado",
+                                            ),
+                                        );
+                                        if ui.link(tr("Activer…", "Activate…", "Activar…")).clicked() {
+                                            self.show_license_gate = true;
+                                        }
+                                    });
+                                }
                             }
-                            crate::license::LicenseState::Invalid(_) | crate::license::LicenseState::Missing => {
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(
-                                        false_col(),
-                                        tr(
-                                            "✘ Délai d'inscription dépassé",
-                                            "✘ Registration period over",
-                                            "✘ Periodo de registro terminado",
-                                        ),
-                                    );
-                                    if ui.link(tr("Activer…", "Activate…", "Activar…")).clicked() {
-                                        self.show_license_gate = true;
-                                    }
-                                });
-                            }
+                            ui.end_row();
                         }
-                        ui.end_row();
                         ui.label(tr("Licence", "License", "Licencia"));
                         if ui
                             .link(RichText::new("ASFL v1.0").strong())

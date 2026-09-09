@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0-beta.5] - 2026-09-09
+
+### Changed
+- **The license system is off**: Disassembly, registers/flags, the timeline and
+  the SIMD panel are no longer reserved — they open for everyone, with no
+  license and no registration delay. The periodic reminder is gone, closing the
+  window is never intercepted again, and *Help → Activate a license…*, the
+  *Activation* row of the *About* window and the palette command that went with
+  them have disappeared along with it. Nothing is read or written on disk any
+  more, neither `license.txt` nor the trial markers.
+
+  The mechanism itself — Ed25519 verification, the free-registration delay — is
+  still compiled and covered by its tests, simply no longer consulted: a single
+  constant, `license::LICENSING_ENABLED`, turns it back on exactly as it was.
+
 ## [0.5.0-beta.4] - 2026-08-30
 
 ### Added

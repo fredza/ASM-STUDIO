@@ -527,6 +527,12 @@ impl Command {
             // flèches.
             Command::Quit,
         ]);
+        // Rien à activer quand le système de licence est neutralisé : la
+        // commande resterait dans la palette alors qu'aucune autre entrée de
+        // l'interface n'y mène plus (voir `crate::license::LICENSING_ENABLED`).
+        if !crate::license::LICENSING_ENABLED {
+            v.retain(|c| !matches!(c, Command::ActivateLicense));
+        }
         v
     }
 }

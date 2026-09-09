@@ -36,6 +36,26 @@ use serde::Deserialize;
 
 use crate::app::paths::license_path;
 
+/// Interrupteur global du système de licence.
+///
+/// `false` : le système est neutralisé. [`load`] sert alors directement une
+/// licence de complaisance ([`unrestricted`]), si bien que tout ce qui en
+/// dépend suit sans autre modification — panneaux avancés déverrouillés
+/// (`is_unlocked`), aucun rappel (`check_license_nag`), aucune interception
+/// de la fermeture (`check_close_request`), entrée « Activer une licence… »
+/// absente du menu Aide. Restent explicitement conditionnés à cette
+/// constante, faute de passer par l'état de licence : la ligne
+/// « Activation » de la fenêtre « À propos » et la commande
+/// `ActivateLicense` de la palette.
+///
+/// Le mécanisme lui-même (vérification Ed25519, délai avant inscription de
+/// `crate::trial`) reste compilé et couvert par ses tests, simplement plus
+/// consulté : remettre `true` le réactive tel quel, sans autre changement.
+/// Aucun fichier n'est plus lu ni écrit tant que c'est `false` — ni
+/// `license.txt`, ni les marqueurs d'essai, qui ne sont créés que sur
+/// demande de `crate::trial`.
+pub(crate) const LICENSING_ENABLED: bool = false;
+
 /// Clé publique de l'outil de génération de licences (dépôt privé séparé).
 ///
 /// Doit correspondre exactement à la `private.key` chargée dans
@@ -220,12 +240,32 @@ pub(crate) fn load() -> LicenseState {
     if cfg!(test) {
         return LicenseState::Missing;
     }
+    if !LICENSING_ENABLED {
+        return unrestricted();
+    }
     let Some(path) = license_path() else { return LicenseState::Missing };
     let Ok(raw) = std::fs::read_to_string(&path) else { return LicenseState::Missing };
     match verify(&raw) {
         Ok(payload) => LicenseState::Valid(payload),
         Err(reason) => LicenseState::Invalid(reason),
     }
+}
+
+/// État servi quand [`LICENSING_ENABLED`] est `false` : une licence valide
+/// sans titulaire ni expiration, qui déverrouille tout sans rien lire sur
+/// disque. Les champs restent vides parce qu'ils ne désignent personne — la
+/// fenêtre « À propos » masque d'ailleurs sa ligne « Activation » dans ce
+/// cas plutôt que d'afficher un nom vide.
+fn unrestricted() -> LicenseState {
+    LicenseState::Valid(LicensePayload {
+        name: String::new(),
+        email: String::new(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        release_sha3_512: String::new(),
+        issued_at: String::new(),
+        build: None,
+        expires_at: None,
+    })
 }
 
 /// Sauvegarde la chaîne collée telle quelle (pas de reparsing/réencodage : le
