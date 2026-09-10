@@ -222,6 +222,34 @@ else
     dim "L'application reste utilisable via l'explorateur intégré."
 fi
 
+# Wine, s'il est déjà installé : un « bureau virtuel » actif
+# (HKCU\Software\Wine\Explorer\Desktop) fait apparaître une fenêtre « Wine
+# Desktop » plein écran chaque fois que la dernière fenêtre d'une session Wine
+# se ferme — un réglage qu'une manipulation antérieure peut avoir laissé
+# actif, sans rapport avec ASM Studio lui-même. Corrigé une seule fois ici,
+# pas à chaque lancement : un bureau virtuel que l'utilisateur activerait
+# lui-même via winecfg *après* l'installation doit rester son choix.
+if have wine; then
+    wine_as_examples_owner() {
+        if [ -n "${EXAMPLES_OWNER}" ]; then
+            sudo -u "${EXAMPLES_OWNER}" wine "$@"
+        else
+            wine "$@"
+        fi
+    }
+    if wine_as_examples_owner reg query "HKCU\Software\Wine\Explorer" /v Desktop \
+        >/dev/null 2>&1; then
+        wine_as_examples_owner reg delete "HKCU\Software\Wine\Explorer" /v Desktop /f \
+            >/dev/null 2>&1
+        ok "Wine : bureau virtuel désactivé (fenêtre plein écran parasite)"
+    else
+        ok "Wine : configuration déjà adaptée"
+    fi
+else
+    dim "Wine absent : sans lui, la cible Windows (PE64) reste indisponible,"
+    dim "mais l'IDE fonctionne normalement pour la cible Linux (ELF64)."
+fi
+
 if [ ${#missing_required[@]} -gt 0 ]; then
     echo
     warn "Paquets manquants : ${missing_required[*]}"
