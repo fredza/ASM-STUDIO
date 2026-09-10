@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.7.0] - 2026-09-10
+
+### Added
+- **Experimental single-stepping for the Windows (PE64) target**, from the
+  Run menu or the toolbar's Next/Continue buttons (`winedbg --gdb` under
+  Wine). Its own small window shows general registers, flags, and RIP's
+  source line, and honours the breakpoints set in the editor's gutter. Runs
+  alongside, not instead of, the existing "Run" button (direct Wine
+  execution, with real output) — the new window has no program output, no
+  exercise checking, and no prediction game: `winedbg` gives none of those
+  today. Off entirely, with the usual message, when Wine or `winedbg` isn't
+  installed.
+
+### Changed
+- **Close / Minimize / Maximize now sit on the left** of the title bar,
+  macOS-style, instead of the right — a direct preference, not a platform
+  convention this time.
+- **Right-click the title bar for "Always on top"**, toggled and
+  remembered across sessions. Wired through `ViewportCommand::WindowLevel`;
+  unavailable under Wayland (checkbox shown disabled, with an explanation
+  on hover) — no standard Wayland protocol lets an ordinary window force
+  itself above others, and `winit`'s Wayland backend does not even attempt
+  it. Works normally under X11, Windows, and macOS.
+
+### Fixed
+- **The three title-bar buttons had no real accessibility label** — a
+  screen reader would have announced their glyph ("×", a generic square)
+  rather than "Close", "Minimize", "Maximize", since `egui::Button` fills
+  its AccessKit node from the visible text by default. Each button now
+  carries an explicit label via `Context::accesskit_node_builder`,
+  independent of what glyph happens to render.
+
 ## [0.6.1] - 2026-09-09
 
 ### Changed

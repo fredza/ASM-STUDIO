@@ -1,7 +1,7 @@
 # ASM Studio — Guide de démarrage rapide
 
 > IDE pédagogique pour l'assembleur **NASM x86-64** sous Linux.
-> Version 0.4.7 · interface en français / anglais / espagnol.
+> Version 0.7.0 · interface en français / anglais / espagnol.
 
 ASM Studio n'est pas un simulateur : votre programme est **réellement assemblé**
 (`nasm`), **lié** (`ld`) et **exécuté par le vrai noyau Linux** sous `ptrace`.
@@ -28,6 +28,7 @@ du processus, pas une approximation.
 14. [Où sont mes fichiers ?](#14-où-sont-mes-fichiers)
 15. [Réglages](#15-réglages)
 16. [Dépannage](#16-dépannage)
+17. [Mise à jour et licence](#17-mise-à-jour-et-licence)
 
 ---
 
@@ -67,10 +68,22 @@ par les menus.
 
 De haut en bas :
 
+- **Barre de titre** — ASM Studio dessine la sienne, sans dépendre du thème du
+  bureau : **Fermer / Réduire / Agrandir-Restaurer** à gauche (`×` `🗕` `🗖`),
+  puis le sigle et les menus. On la fait glisser pour déplacer la fenêtre, un
+  double-clic l'agrandit ou la restaure. Un **clic droit** dessus propose
+  **Toujours au premier plan** — pratique pour garder l'IDE visible pendant
+  qu'on consulte une autre fenêtre. *(Sous certains environnements Wayland, le
+  bureau peut refuser cette demande ; c'est une limite de la plateforme, pas
+  un bouton cassé.)* Quand la fenêtre n'est pas agrandie, ses quatre bords et
+  ses quatre coins se redimensionnent normalement à la souris.
 - **Barre de menus** — Fichier · Exécution · Apprendre · Affichage · Outils · Aide.
 - **Barre d'outils** — les actions les plus fréquentes, sous forme de boutons :
-  **Lancer** · **Suivant** · **Arrêter** · **Relancer** · | · **Assembler**.
-  Le bouton s'illumine (accent) quand l'action est disponible, se grise sinon.
+  **Lancer** · **Suivant** · **Par-dessus** · **Continuer** · **Arrêter** ·
+  **Relancer** · | · **Assembler** · **⏷ Sortie**. Le bouton s'illumine
+  (accent) quand l'action est disponible, se grise sinon. **⏷ Sortie** est une
+  bascule : un premier clic ouvre la sortie du programme seule (sans les
+  messages de l'IDE), un second la referme.
 - **Zone centrale** — un ensemble de **panneaux ancrables** (onglets). Glissez un
   onglet pour le **déplacer, l'empiler ou le détacher** en fenêtre flottante.
 - **Barre d'état** (en bas) — état du programme :
@@ -187,7 +200,7 @@ panneaux « Avancé » sont regroupés à part.
 | **Vue mémoire**      | Vue unifiée : relie les registres aux zones mémoire qu'ils pointent.        |
 | **Désassemblage**    | Le binaire réel décodé (adresses, octets, mnémoniques).                     |
 | **Timeline**         | La frise des instants enregistrés ; cliquez pour vous y déplacer.          |
-| **Console**          | Sortie du programme, messages de `nasm`/`ld`, journal.                      |
+| **Console**          | Sortie du programme, messages de `nasm`/`ld`, journal. Plus ouverte par défaut — voir le bouton **⏷ Sortie** au §3, ou cochez-la dans Affichage → Panneaux. |
 | **Pile d'appels**    | La chaîne des `call` en cours (fonctions imbriquées).                       |
 | **Appels système**   | Les `syscall` interceptés, avec numéro, nom et arguments décodés.           |
 | **Exercice**         | Les attentes de l'exercice ouvert et si elles sont satisfaites.            |
@@ -474,6 +487,24 @@ vous enregistrez votre travail.
 | Le programme se fige au démarrage           | Une lecture bloquante sur l'entrée standard ; utilisez un fichier ou un tube. |
 | L'exécution pas-à-pas ne démarre pas        | Assemblez d'abord (`Ctrl+B`) ; corrigez les erreurs de la Console. |
 | Tout est en désordre après des glissers     | **Affichage → Réinitialiser la disposition**.                    |
+| La fenêtre ne reste pas au premier plan malgré la case cochée | Certains bureaux Wayland refusent cette demande aux applications ordinaires — limite de la plateforme. |
+
+---
+
+## 17. Mise à jour et licence
+
+ASM Studio vérifie discrètement, au lancement, si une version plus récente
+existe sur GitHub Releases — il ne se manifeste que si c'est le cas (jamais
+pour dire « rien de neuf » ou « pas de réseau »). **Outils → Vérifier les
+mises à jour** le fait à la demande. Chaque mise à jour est **vérifiée par
+signature** avant d'être installée : une signature invalide annule
+l'installation plutôt que de l'imposer.
+
+Le logiciel est distribué sous licence **GNU GPLv3 + clause Commons Clause** :
+usage libre et gratuit, code source consultable et modifiable, redistribution
+bienvenue sous la même licence — seule la **vente** du logiciel, original ou
+modifié, est interdite. Le texte complet est accessible dans l'application
+(**Aide → À propos**) et dans le fichier `LICENSE.md` du dépôt.
 
 ---
 

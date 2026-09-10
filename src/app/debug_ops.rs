@@ -19,12 +19,16 @@ use super::{App, SyscallLog};
 const RUN_BUDGET: usize = 100_000;
 
 /// Adresses d'arrêt et condition à y vérifier (`None` : arrêt inconditionnel).
-type StopMap = std::collections::HashMap<u64, Option<crate::breakpoint::Condition>>;
+///
+/// `pub(super)` : réutilisé tel quel par `win_debug_ops`, qui vérifie les
+/// mêmes conditions sur les mêmes registres — seule la façon d'atteindre
+/// l'arrêt physique (pas à pas ici, point d'arrêt matériel là-bas) diffère.
+pub(super) type StopMap = std::collections::HashMap<u64, Option<crate::breakpoint::Condition>>;
 
 /// Faut-il s'arrêter dans cet état ? Une condition posée sur une ligne n'est
 /// évaluée que lorsque l'exécution y arrive : rien ne sert de la vérifier
 /// ailleurs, et c'est ce qui garde le pas à une dizaine de microsecondes.
-fn stops_here(stops: &StopMap, regs: &crate::debugger::Registers) -> bool {
+pub(super) fn stops_here(stops: &StopMap, regs: &crate::debugger::Registers) -> bool {
     match stops.get(&regs.rip) {
         None => false,
         Some(None) => true,
@@ -317,6 +321,10 @@ impl App {
         if let Some(mut run) = self.wine.take() {
             run.kill();
         }
+        // Idem pour une session de pas-à-pas Windows : `Drop` de `WinDebugger`
+        // tue déjà `winedbg` (et, par ses règles, le débogué avec lui) — il
+        // suffit de la relâcher.
+        self.win_dbg = None;
         // Une consigne d'exécution en attente ne doit pas survivre au
         // programme qu'elle pilotait.
         self.run_pending = None;
@@ -770,7 +778,7 @@ impl App {
     /// Les conditions sont copiées ici plutôt que consultées à travers `self` :
     /// la fermeture d'arrêt est passée au débogueur, qui est lui-même emprunté
     /// en `&mut` sur `self` pendant tout l'enchaînement.
-    fn stop_addresses(&self, extra: Option<u64>) -> StopMap {
+    pub(super) fn stop_addresses(&self, extra: Option<u64>) -> StopMap {
         let mut stops: StopMap = self
             .src_map
             .iter()

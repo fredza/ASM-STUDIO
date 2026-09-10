@@ -24,6 +24,7 @@ mod trial;
 mod tutorial;
 mod updater;
 mod version;
+mod win_debugger;
 mod winerun;
 
 fn main() -> eframe::Result {

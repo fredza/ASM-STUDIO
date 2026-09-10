@@ -703,6 +703,27 @@ pub(super) fn icon_button(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>,
     }
 }
 
+/// Un [`icon_button`] dont le fond se teinte de `changed_col()` proportionnellement
+/// à `flash` (0 = normal, 1 = pleinement allumé) — l'appelant fait varier `flash`
+/// dans le temps pour obtenir un clignotement, plutôt qu'une teinte figée.
+pub(super) fn flashing_icon_button(
+    ui: &mut egui::Ui,
+    icon: Option<&egui::TextureHandle>,
+    label: &str,
+    flash: f32,
+) -> egui::Response {
+    if flash <= 0.0 {
+        return icon_button(ui, icon, label);
+    }
+    let tint = super::changed_col().gamma_multiply(flash.clamp(0.0, 1.0));
+    let btn = match btn_icon(icon) {
+        Some(img) => egui::Button::image_and_text(img, label),
+        None => egui::Button::new(label),
+    }
+    .fill(tint);
+    ui.add(btn)
+}
+
 /// Onglet sélectionnable avec l'icône DANS le bouton (respecte le padding).
 /// Remplace `icon_img(...) + selectable_label(...)` où l'icône débordait.
 pub(super) fn icon_tab(

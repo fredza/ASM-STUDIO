@@ -276,10 +276,35 @@ impl App {
         // elle ne doit pas cacher la réponse de `write` ou l'écho d'un `read`.
         if !s.is_empty() {
             self.show_program_output = true;
+            self.output_flash_at = Some(std::time::Instant::now());
         }
         let lang = self.lang;
         push_bounded(&mut self.program_output, s, lang);
         push_bounded(&mut self.console, s, lang);
+    }
+
+    /// Intensité du clignotement du bouton « Sortie » de la barre d'outils :
+    /// 0 = éteint, jusqu'à 1 = pleinement allumé.
+    ///
+    /// Un sinus amorti plutôt qu'un aller-retour figé : l'œil accroche mieux
+    /// un signal qui pulse plusieurs fois puis s'éteint qu'un plateau constant,
+    /// et un plateau resterait allumé même sans dire à l'élève que le
+    /// signal, lui, est bien retombé. Une écriture continue (boucle qui
+    /// imprime) repousse `output_flash_at` à chaque appel — voir
+    /// [`Self::program_out_push`] — et prolonge donc le clignotement sans le
+    /// figer allumé indéfiniment : il reprend son décompte à chaque ligne.
+    pub(super) fn output_flash_intensity(&self) -> f32 {
+        const DURATION: f32 = 2.5;
+        const HZ: f32 = 4.0;
+        let Some(at) = self.output_flash_at else {
+            return 0.0;
+        };
+        let t = at.elapsed().as_secs_f32();
+        if t >= DURATION {
+            return 0.0;
+        }
+        let pulse = (t * HZ * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+        pulse * (1.0 - t / DURATION)
     }
 
     /// Pointe l'explorateur INTERNE de l'IDE sur le dossier où sont écrits les

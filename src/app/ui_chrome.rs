@@ -5,7 +5,7 @@ use crate::debugger::RunState;
 
 use super::{
     App, accent, flag_on, flag_off, false_col, warn_col, changed_col,
-    accent_button, bordered_button, icon_button,
+    accent_button, bordered_button, icon_button, flashing_icon_button,
 };
 
 impl App {
@@ -284,7 +284,7 @@ impl App {
             self.step_over();
         }
         if cont {
-            self.cont();
+            self.cont_any();
         }
         if toggle_bp {
             let line = self.editor_ln;
@@ -347,7 +347,7 @@ impl App {
             self.cycle_tab(tab_prev);
         }
         if step {
-            self.step();
+            self.step_any();
         }
         // F1 bascule, comme toutes les touches qui montrent quelque chose : le
         // deuxième appui referme. Ouvrir sans pouvoir refermer par la même
@@ -639,7 +639,77 @@ impl App {
                 let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
             }
+            // Clic droit sur la barre de titre : la seule option qui a sa
+            // place ici plutôt que dans un menu de l'appli — elle porte sur
+            // la fenêtre elle-même, pas sur son contenu. Sans décorations
+            // natives (`main.rs`), c'est aussi le seul endroit où la trouver :
+            // aucun menu système ne l'offre plus.
+            drag.context_menu(|ui| {
+                let supported = super::always_on_top_supported();
+                let mut on_top = self.always_on_top;
+                let cb = egui::Checkbox::new(&mut on_top, tr("Toujours au premier plan", "Always on top", "Siempre encima"));
+                let resp = ui.add_enabled(supported, cb);
+                // Grisée plutôt que muette : sous Wayland, cocher cette case
+                // ne ferait rien (voir `always_on_top_supported`) — un widget
+                // qui accepte le clic sans effet visible se lirait comme un
+                // bouton cassé, alors que la limite vient du système de
+                // fenêtrage, pas de l'IDE.
+                let resp = if supported {
+                    resp
+                } else {
+                    resp.on_disabled_hover_text(tr(
+                        "Indisponible sous Wayland : aucune application ordinaire ne peut s'imposer au premier plan (limitation du système de fenêtrage, pas un bouton cassé)",
+                        "Unavailable under Wayland: no ordinary application can force itself on top (a display-server limitation, not a broken button)",
+                        "No disponible en Wayland: ninguna aplicación normal puede imponerse por encima (limitación del sistema de ventanas, no un botón roto)",
+                    ))
+                };
+                if resp.clicked() {
+                    self.always_on_top = on_top;
+                    self.save_settings();
+                    ui.close();
+                }
+            });
             egui::MenuBar::new().ui(ui, |ui| {
+                // Fermer / Réduire / Agrandir-Restaurer — seuls boutons de
+                // fenêtre qui existent encore, les décorations natives étant
+                // coupées (voir `main.rs`). À gauche, dans cet ordre, comme
+                // sur macOS.
+                //
+                // Le libellé d'accessibilité de chaque bouton ne doit PAS être
+                // son glyphe : `egui::Button` remplit par défaut le nœud
+                // AccessKit avec le texte affiché, et un lecteur d'écran
+                // annoncerait donc « croix » ou « carré » au lieu de « Fermer »
+                // ou « Réduire ». `label_for` réécrit ce libellé après coup —
+                // sans effet, et sans coût, si AccessKit est inactif (voir
+                // `Context::accesskit_node_builder`, qui rend `None` dans ce cas).
+                let label_for = |ui: &egui::Ui, resp: &egui::Response, text: &str| {
+                    let text = text.to_string();
+                    ui.ctx().accesskit_node_builder(resp.id, |node| node.set_label(text));
+                };
+                let close_tip = tr("Fermer", "Close", "Cerrar");
+                let close_resp = ui.button("×");
+                label_for(ui, &close_resp, close_tip);
+                if self.tip(close_resp, close_tip).clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                let min_tip = tr("Réduire", "Minimize", "Minimizar");
+                let min_resp = ui.button("🗕");
+                label_for(ui, &min_resp, min_tip);
+                if self.tip(min_resp, min_tip).clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
+                let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                let (glyph, restore_tip) = if maximized {
+                    ("🗗", tr("Restaurer", "Restore", "Restaurar"))
+                } else {
+                    ("🗖", tr("Agrandir", "Maximize", "Maximizar"))
+                };
+                let max_resp = ui.button(glyph);
+                label_for(ui, &max_resp, restore_tip);
+                if self.tip(max_resp, restore_tip).clicked() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                }
+                ui.separator();
                 // Une signature compacte : elle ancre la navigation et rend
                 // immédiatement identifiable la barre qui ne contient que les
                 // menus, sans gaspiller la place nécessaire aux libellés.
@@ -749,20 +819,32 @@ impl App {
                         if item(ui, tr("Pas à pas", "Step", "Paso a paso"), "F10") {
                             self.step();
                         }
+                    } else if self.win_debug_available() {
+                        if item(
+                            ui,
+                            tr(
+                                "Pas à pas (Wine, expérimental)",
+                                "Step (Wine, experimental)",
+                                "Paso a paso (Wine, experimental)",
+                            ),
+                            "F10",
+                        ) {
+                            self.step_any();
+                        }
                     } else {
                         ui.add_enabled(
                             false,
                             egui::Button::new(tr(
-                                "Pas à pas — indisponible pour PE64",
-                                "Step — unavailable for PE64",
-                                "Paso a paso — no disponible para PE64",
+                                "Pas à pas — indisponible (winedbg introuvable)",
+                                "Step — unavailable (winedbg not found)",
+                                "Paso a paso — no disponible (winedbg no encontrado)",
                             ))
                             .shortcut_text("F10"),
                         )
                         .on_disabled_hover_text(tr(
-                            "Wine exécute le PE64, mais ne permet pas à ASM Studio de le dérouler instruction par instruction.",
-                            "Wine runs the PE64, but does not let ASM Studio walk through it instruction by instruction.",
-                            "Wine ejecuta el PE64, pero no permite que ASM Studio lo recorra instrucción por instrucción.",
+                            "Wine exécute le PE64, mais le pas-à-pas expérimental a besoin de winedbg, introuvable ici.",
+                            "Wine runs the PE64, but the experimental step debugger needs winedbg, not found here.",
+                            "Wine ejecuta el PE64, pero el paso a paso experimental necesita winedbg, no encontrado aquí.",
                         ));
                     }
                     if item(ui, tr("Arrêter", "Stop", "Detener"), "Échap") {
@@ -903,34 +985,6 @@ impl App {
                     }
                 });
 
-                // Réduire / Agrandir-Restaurer / Fermer — seuls boutons de
-                // fenêtre qui existent encore, les décorations natives étant
-                // coupées (voir `main.rs`). Ajoutés dans cet ordre à un
-                // layout droite-à-gauche : Fermer posé en premier finit le
-                // plus à droite, comme sur Windows et GNOME.
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self
-                        .tip(ui.button("×"), tr("Fermer", "Close", "Cerrar"))
-                        .clicked()
-                    {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                    let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
-                    let (glyph, restore_tip) = if maximized {
-                        ("🗗", tr("Restaurer", "Restore", "Restaurar"))
-                    } else {
-                        ("🗖", tr("Agrandir", "Maximize", "Maximizar"))
-                    };
-                    if self.tip(ui.button(glyph), restore_tip).clicked() {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                    }
-                    if self
-                        .tip(ui.button("🗕"), tr("Réduire", "Minimize", "Minimizar"))
-                        .clicked()
-                    {
-                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                    }
-                });
             });
         });
     }
@@ -1215,10 +1269,21 @@ impl App {
                 // Wine : c'est bien un programme de l'élève en cours, même
                 // sans débogueur derrière.
                 let running = self.dbg.as_ref().is_some_and(|d| d.is_alive())
-                    || self.wine.as_ref().is_some_and(|w| w.is_running());
+                    || self.wine.as_ref().is_some_and(|w| w.is_running())
+                    || self.win_dbg.as_ref().is_some_and(|d| d.is_alive());
+                // « Par-dessus » reste natif seul (pas de pas-à-pas Windows
+                // expérimental) ; « Suivant »/« Continuer » couvrent aussi la
+                // session Wine expérimentale.
                 let can_step = self.can_step();
+                let can_step_any = self.can_step_any();
                 let step_tip = if self.target.is_runnable() {
                     tr("Instruction suivante (F10)", "Next instruction (F10)", "Instrucción siguiente (F10)")
+                } else if self.win_debug_available() {
+                    tr(
+                        "Instruction suivante — pas-à-pas expérimental sous Wine (F10)",
+                        "Next instruction — experimental step debugging under Wine (F10)",
+                        "Instrucción siguiente — paso a paso experimental con Wine (F10)",
+                    )
                 } else {
                     tr(
                         "Pas à pas indisponible pour PE64 ; choisissez Linux ELF64 pour déboguer.",
@@ -1242,10 +1307,10 @@ impl App {
                 }
                 // Next : exécute l'instruction suivante (accent quand disponible).
                 if self
-                    .tip(accent_button(ui, ic_debug.as_ref(), tr("Suivant", "Next", "Siguiente"), can_step), step_tip)
+                    .tip(accent_button(ui, ic_debug.as_ref(), tr("Suivant", "Next", "Siguiente"), can_step_any), step_tip)
                     .clicked()
                 {
-                    self.step();
+                    self.step_any();
                 }
                 // Par-dessus : franchit un `call` d'un bloc, sans dérouler la
                 // fonction appelée instruction par instruction.
@@ -1265,7 +1330,7 @@ impl App {
                 // Continuer : jusqu'au prochain point d'arrêt, ou la fin.
                 if self
                     .tip(
-                        bordered_button(ui, None, tr("Continuer", "Continue", "Continuar"), can_step),
+                        bordered_button(ui, None, tr("Continuer", "Continue", "Continuar"), can_step_any),
                         tr(
                             "Jusqu'au prochain point d'arrêt (F9)",
                             "To the next breakpoint (F9)",
@@ -1274,7 +1339,7 @@ impl App {
                     )
                     .clicked()
                 {
-                    self.cont();
+                    self.cont_any();
                 }
                 // Stop.
                 if self.tip(bordered_button(ui, ic_stop.as_ref(), tr("Arrêter", "Stop", "Detener"), running), tr("Arrêter (Échap)", "Stop (Esc)", "Detener (Esc)")).clicked() {
@@ -1300,9 +1365,20 @@ impl App {
                 // panneau doit être ouvert et visible pour qu'on le voie. Il a
                 // sa place ici aussi, dans la barre d'outils principale,
                 // toujours accessible quelle que soit la disposition en cours.
+                let output_flash = self.output_flash_intensity();
+                if output_flash > 0.0 {
+                    // L'animation ne bouge que si on redemande une image : sans
+                    // interaction, egui ne redessinerait plus la barre d'outils.
+                    ui.ctx().request_repaint();
+                }
                 if self
                     .tip(
-                        icon_button(ui, None, &format!("{} {}", super::ui_panels::CONSOLE_OUTPUT_ICON, tr("Sortie", "Output", "Salida"))),
+                        flashing_icon_button(
+                            ui,
+                            None,
+                            &format!("{} {}", super::ui_panels::CONSOLE_OUTPUT_ICON, tr("Sortie", "Output", "Salida")),
+                            output_flash,
+                        ),
                         tr(
                             "Sortie du programme seule, sans les messages de l'IDE (bascule)",
                             "Program output alone, without the IDE's messages (toggle)",

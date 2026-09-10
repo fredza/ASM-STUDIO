@@ -16,7 +16,9 @@ use crate::i18n::{self, Lang};
 
 mod file_ops;
 mod debug_ops;
+mod win_debug_ops;
 mod ui_chrome;
+mod ui_win_debug;
 mod ui_windows;
 mod ui_panels;
 mod ui_center;
@@ -157,6 +159,83 @@ impl App {
 pub(super) fn clipboard_text() -> Option<String> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
     clipboard.get_text().ok().filter(|s| !s.trim().is_empty())
+}
+
+/// « Toujours au premier plan » peut-il avoir un effet sur ce système ?
+///
+/// Sous Wayland, `egui-winit` traduit la commande vers `Window::set_window_level`
+/// de `winit` — dont le backend Wayland (vérifié dans les sources de la version
+/// utilisée ici, `winit` 0.30) est un corps de fonction vide : rien n'est même
+/// transmis au compositeur. Ce n'est pas propre à GNOME ni à une négociation qui
+/// échouerait : aucun protocole Wayland standard ne permet à une fenêtre
+/// ordinaire de s'imposer au-dessus des autres — c'est une décision d'ensemble de
+/// l'écosystème (la pile des fenêtres reste sous l'autorité du compositeur), pas
+/// une lacune ponctuelle que corrigerait une future version de `winit`.
+///
+/// Reproduit ici la même détection que `winit` utilise pour choisir son
+/// backend au démarrage (`WAYLAND_DISPLAY`/`WAYLAND_SOCKET` non vides ⇒
+/// Wayland, sinon `DISPLAY` non vide ⇒ X11) plutôt qu'une condition de
+/// compilation : le même binaire Linux tourne indifféremment sous l'un ou
+/// l'autre selon la session de l'utilisateur.
+pub(super) fn always_on_top_supported() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        always_on_top_supported_linux(
+            std::env::var("WAYLAND_DISPLAY").ok(),
+            std::env::var("WAYLAND_SOCKET").ok(),
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
+/// Logique pure derrière [`always_on_top_supported`] sous Linux, séparée de
+/// la lecture des variables d'environnement pour rester testable sans muter
+/// un état global du processus (risqué avec des tests exécutés en parallèle).
+#[cfg(target_os = "linux")]
+fn always_on_top_supported_linux(wayland_display: Option<String>, wayland_socket: Option<String>) -> bool {
+    let wayland = wayland_display
+        .filter(|v| !v.is_empty())
+        .or_else(|| wayland_socket.filter(|v| !v.is_empty()))
+        .is_some();
+    !wayland
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod always_on_top_tests {
+    use super::always_on_top_supported_linux;
+
+    /// C'est le cas qui a motivé toute cette fonction : une session Wayland
+    /// authentique (`WAYLAND_DISPLAY=wayland-0`, comme GNOME/Fedora la pose)
+    /// ne doit jamais rendre « supporté ».
+    #[test]
+    fn a_real_wayland_display_means_unsupported() {
+        assert!(!always_on_top_supported_linux(Some("wayland-0".to_string()), None));
+    }
+
+    /// `winit` traite une variable vide comme absente (voir sa détection de
+    /// backend) — la même règle s'applique ici pour rester en phase avec le
+    /// backend qu'il choisira réellement.
+    #[test]
+    fn an_empty_wayland_display_falls_back_to_x11() {
+        assert!(always_on_top_supported_linux(Some(String::new()), None));
+    }
+
+    /// Ni Wayland ni X11 en jeu (ex. le processus qui exécute les tests, sans
+    /// session graphique) : rien n'indique une limitation, donc supporté.
+    #[test]
+    fn no_wayland_signal_at_all_means_supported() {
+        assert!(always_on_top_supported_linux(None, None));
+    }
+
+    /// `WAYLAND_SOCKET` seul (sans `WAYLAND_DISPLAY`) compte aussi — c'est
+    /// l'autre variable que `winit` reconnaît pour détecter Wayland.
+    #[test]
+    fn wayland_socket_alone_also_counts() {
+        assert!(!always_on_top_supported_linux(None, Some("3".to_string())));
+    }
 }
 
 /// Accent principal : liens, sélection, repère de la ligne courante.
@@ -551,6 +630,14 @@ pub struct App {
     /// laisse pas déboguer instruction par instruction (voir
     /// [`crate::winerun`]).
     pub(super) wine: Option<crate::winerun::WineRun>,
+    /// Session de pas-à-pas Windows, quand la fenêtre dédiée (F10 pour PE64,
+    /// ou menu Exécution) en a démarré une — voir [`crate::win_debugger`] et
+    /// `win_debug_ops`. Distincte de `wine` ci-dessus : les deux ne tournent
+    /// jamais en même temps, `launch()` (bouton « Lancer ») restant sur
+    /// l'exécution directe, plus simple et avec sa sortie visible.
+    pub(super) win_dbg: Option<crate::win_debugger::WinDebugger>,
+    /// Fenêtre de pas-à-pas Windows ouverte (menu Exécution, ou raccourci).
+    pub(super) show_win_debug: bool,
     /// Registre en cours d'édition (laboratoire mémoire) et son tampon de saisie.
     pub(super) edit_reg: Option<&'static str>,
     pub(super) edit_buf: String,
@@ -566,6 +653,11 @@ pub struct App {
     /// pour raconter le déroulement, on ne peut donc pas l'y démêler après coup.
     pub(super) program_output: String,
     pub(super) show_program_output: bool,
+    /// Instant de la dernière écriture du programme, pour faire clignoter le
+    /// bouton « Sortie » de la barre d'outils quelques secondes — un signal
+    /// visible même si l'élève a les yeux sur l'éditeur plutôt que sur la
+    /// fenêtre de sortie, qui peut rouvrir derrière lui.
+    pub(super) output_flash_at: Option<std::time::Instant>,
     pub(super) status: String,
     /// Décalage vertical de l'éditeur (pour synchroniser la gouttière).
     pub(super) editor_scroll_y: f32,
@@ -620,6 +712,17 @@ pub struct App {
     /// Barre des actions d'exécution (Lancer, Suivant, Continuer…). Elle peut
     /// être masquée pour libérer de la hauteur sur un petit écran.
     pub(super) show_toolbar: bool,
+    /// « Toujours au premier plan », proposé par un clic droit sur la barre
+    /// de titre — les décorations natives sont coupées (voir `main.rs`), il
+    /// n'y a donc plus de menu système où le trouver.
+    pub(super) always_on_top: bool,
+    /// Dernière valeur de `always_on_top` réellement envoyée au système de
+    /// fenêtrage. `None` avant le premier envoi — y compris juste après le
+    /// chargement des réglages, pour qu'une préférence enregistrée à `true`
+    /// soit bien réappliquée au lancement, la fenêtre démarrant toujours en
+    /// niveau normal. Évite aussi de renvoyer la commande à chaque image :
+    /// rien ne dit qu'un ordre déjà transmis ne coûte rien à répéter.
+    pub(super) always_on_top_applied: Option<bool>,
     pub(super) show_tooltips: bool,
     /// Inspection au survol dans l'éditeur (voir [`inspect`]) : la valeur du
     /// mot sous le pointeur, affichée sur place.
@@ -815,6 +918,7 @@ const SETTINGS: &[Setting] = &[
     Setting { key: "mode", read: |a| a.mode.key().to_string(), write: |a, v| a.mode = UiMode::from_key(v) },
     Setting { key: "tooltips", read: |a| a.show_tooltips.to_string(), write: |a, v| a.show_tooltips = v == "true" },
     Setting { key: "toolbar", read: |a| a.show_toolbar.to_string(), write: |a, v| a.show_toolbar = v == "true" },
+    Setting { key: "always_on_top", read: |a| a.always_on_top.to_string(), write: |a, v| a.always_on_top = v == "true" },
     Setting { key: "inspect_hover", read: |a| a.inspect_hover.to_string(), write: |a, v| a.inspect_hover = v == "true" },
     Setting { key: "asmstd", read: |a| a.use_asmstd.to_string(), write: |a, v| a.use_asmstd = v == "true" },
     Setting { key: "animate", read: |a| a.animate.to_string(), write: |a, v| a.animate = v == "true" },
@@ -912,12 +1016,15 @@ impl App {
             pe_enabled: true,
             format_info: None,
             wine: None,
+            win_dbg: None,
+            show_win_debug: false,
             edit_reg: None,
             edit_buf: String::new(),
             edit_focus: false,
             console: String::new(),
             program_output: String::new(),
             show_program_output: false,
+            output_flash_at: None,
             status: String::new(),
             editor_scroll_y: 0.0,
             editor_ln: 1,
@@ -941,6 +1048,8 @@ impl App {
             folded_labels: std::collections::BTreeSet::new(),
             stack_tab: StackTab::Stack,
             show_toolbar: true,
+            always_on_top: false,
+            always_on_top_applied: None,
             show_tooltips: true,
             inspect_hover: true,
             animate: true,
@@ -1425,6 +1534,7 @@ impl App {
             self.show_shortcuts,
             self.show_settings,
             self.show_calculator,
+            self.show_win_debug,
             self.show_goto_line,
             self.show_program_output,
             self.show_license_gate,
@@ -1501,6 +1611,22 @@ impl eframe::App for App {
         // venait à s'étendre jusque-là.
         self.window_resize_handles(ctx);
 
+        // « Toujours au premier plan » (clic droit sur la barre de titre) :
+        // n'envoie la commande que lorsque la préférence a changé depuis la
+        // dernière fois — y compris au tout premier frame, où une préférence
+        // rechargée des réglages doit encore être appliquée, la fenêtre
+        // démarrant toujours en niveau normal. Sous Wayland, où cette commande
+        // n'a de toute façon aucun effet (voir [`always_on_top_supported`]),
+        // la case du menu est désactivée et `always_on_top` reste donc à
+        // `false` pour une session démarrée là — sauf préférence déjà
+        // enregistrée par une session antérieure sous X11, auquel cas
+        // l'envoi ci-dessous reste inoffensif : un appel sans effet de plus.
+        if self.always_on_top_applied != Some(self.always_on_top) {
+            let level = if self.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal };
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+            self.always_on_top_applied = Some(self.always_on_top);
+        }
+
         self.menu_bar(ui);
         self.toolbar(ui);
         self.welcome_banner(ui);
@@ -1525,6 +1651,7 @@ impl eframe::App for App {
         self.breakpoint_condition_window(ctx);
         self.goto_line_window(ctx);
         self.calculator_window(ctx);
+        self.win_debug_window(ctx);
         self.register_history_window(ctx);
         self.program_output_window(ctx);
         self.palette_window(ctx);
