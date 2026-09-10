@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.14] - 2026-09-10
+## [0.7.15] - 2026-09-10
+
+### Fixed
+- **A real crash under Wine could leave a stuck "couldn't attach" dialog on
+  screen, even after quitting ASM Studio.** When a student's program hits a
+  genuine fault (an invalid memory access, say — routine for an exercise not
+  yet solved), Wine calls its own crash handler (`winedbg --auto`) on its
+  own. That handler tries to open an interactive text console — but a
+  program launched by ASM Studio has none: its input/output are pipes, read
+  a frame at a time, not a terminal. With nothing to present, Wine falls
+  back to a dialog that never closes by itself. Fixed by turning off Wine's
+  own crash dialog (`ShowCrashDialog`, a standard Wine setting) once per
+  session, before the first program ever runs. Verified directly: with it
+  off, a real crash still gets caught and winedbg still prints its full
+  report — registers, stack, backtrace — to the output ASM Studio already
+  reads, then the process exits cleanly, with no dialog at all.
 
 ### Added
 - **NX and RELRO in the FORMAT panel**, next to PIE, for the "Modern

@@ -587,6 +587,7 @@ impl WinDebugger {
         crate::winerun::available()
             && Command::new("winedbg")
                 .arg("--help")
+                .env("DEBUGINFOD_URLS", "")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .stdin(Stdio::null())
@@ -616,6 +617,12 @@ impl WinDebugger {
         if !Self::available() {
             return Err(WinDbgError::WineMissing);
         }
+        // Sans rapport avec notre propre session `--gdb` (déjà attachée dès
+        // le départ, l'exception nous revient à nous, pas au gestionnaire
+        // automatique de Wine) : filet de sécurité pour le cas où `winedbg`
+        // meurt en cours de route et laisse le débogué sans personne
+        // attaché. Voir la doc de [`crate::winerun::suppress_crash_dialog`].
+        crate::winerun::suppress_crash_dialog();
         // `winedbg` refuse un chemin relatif (« Couldn't start process »,
         // vérifié) : il le cherche tel quel plutôt que depuis le répertoire
         // courant du processus.

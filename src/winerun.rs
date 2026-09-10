@@ -21,14 +21,52 @@ use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::Once;
 
 use crate::i18n::{self, Lang};
 
+/// Coupe le rapporteur de plantage graphique de Wine, une fois pour toute la
+/// session — pas à chaque lancement, `wine reg add` coûte un aller-retour
+/// complet à `wineserver`.
+///
+/// Le programme de l'élève plante pour de vrai, couramment : c'est même
+/// l'état normal d'un exercice pas encore réussi. Wine appelle alors tout
+/// seul son gestionnaire de plantage (`winedbg --auto`), qui tente d'ouvrir
+/// une console texte interactive — sauf qu'aucune des trois entrées
+/// standard de ce processus n'est un vrai terminal ([`WineRun::spawn`] les
+/// tuyaute pour les sonder sans bloquer). Sans console à présenter, Wine
+/// affiche à la place une boîte « n'a pas pu s'y attacher » qui ne se
+/// referme jamais toute seule — et personne dans ASM Studio n'est prévenu
+/// qu'il faudrait la fermer, puisque rien de ce module ne l'a demandée.
+/// Vérifié directement : la même désactivation laisse winedbg imprimer son
+/// rapport complet (registres, pile, trace) sur la sortie standard — que ce
+/// module lit déjà — puis rendre la main normalement, sans aucune boîte.
+pub(crate) fn suppress_crash_dialog() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = Command::new("wine")
+            .args(["reg", "add", r"HKCU\Software\Wine\WineDbg", "/v", "ShowCrashDialog", "/t", "REG_DWORD", "/d", "0", "/f"])
+            .env("WINEDEBUG", "-all")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    });
+}
+
 /// Wine est-il utilisable ? Vérifié à chaque lancement plutôt que mis en cache :
 /// l'installer pendant que l'IDE tourne doit suffire à s'en servir.
+///
+/// `DEBUGINFOD_URLS` effacé pour la même raison que dans
+/// [`crate::win_debugger`] (voir sa doc de module) : ce premier appel `wine`
+/// est souvent celui qui démarre `wineserver` pour toute la session, et
+/// c'est l'environnement de *ce* lancement que Wine réutilisera plus tard
+/// pour son propre rapporteur de plantage (`winedbg --auto`) — celui que
+/// rien ici ne pilote, et qui plante sur le même cache abîmé si personne ne
+/// l'a coupé en amont.
 pub fn available() -> bool {
     Command::new("wine")
         .arg("--version")
+        .env("DEBUGINFOD_URLS", "")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -89,12 +127,22 @@ impl StdinError {
 impl WineRun {
     /// Lance `exe` sous Wine, tuyaux branchés.
     pub fn spawn(exe: &Path) -> Result<Self, String> {
+        suppress_crash_dialog();
         let child = Command::new("wine")
             .arg(exe)
             // Wine bavarde sur stderr (« fixme: … ») à la moindre occasion. Ces
             // lignes ne viennent pas du programme de l'élève et n'ont rien à
             // faire dans sa console.
             .env("WINEDEBUG", "-all")
+            // Le programme de l'élève peut planter pour de vrai (accès
+            // mémoire invalide, par exemple) — c'est même le cas courant
+            // d'un exercice pas encore réussi. Wine appelle alors tout seul
+            // son propre rapporteur de plantage (`winedbg --auto`), que ce
+            // module ne pilote pas : voir la doc de module de
+            // `crate::win_debugger` pour le cache `debuginfod` abîmé qui le
+            // fait planter à son tour sur l'attache. Effacé ici pour la même
+            // raison, avant que le problème ne se pose.
+            .env("DEBUGINFOD_URLS", "")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -253,6 +301,10 @@ mod tests {
     use crate::assemble::{self, Target};
     use std::path::PathBuf;
 
+    /// Diagnostic ponctuel : imprime le chemin d'un exécutable qui accède
+    /// une adresse invalide (exception Windows réelle), pour le relancer à
+    /// la main sous `wine` nu et observer le rapporteur de plantage de Wine
+    /// lui-même — celui que ce module ne pilote pas.
     /// Assemble un source win64 en `.exe`, prêt à être lancé.
     fn build_exe(name: &str, source: &str) -> PathBuf {
         let dir = PathBuf::from("build").join(name);
@@ -281,6 +333,43 @@ mod tests {
                 "le programme ne finit pas"
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Un vrai plantage (accès à une adresse invalide) ne doit jamais laisser
+    /// de rapporteur de plantage Wine bloqué à l'écran : signalé par
+    /// l'utilisateur (« Erreur du programme… WineDbg n'a pas pu s'y attacher »,
+    /// visible même après avoir quitté l'IDE). Cause trouvée en reproduisant
+    /// hors de l'IDE : le gestionnaire automatique de Wine (`winedbg --auto`)
+    /// tente d'ouvrir une console interactive sur des tuyaux qui n'en sont
+    /// pas, et faute de console, Wine affiche une boîte qui ne se referme
+    /// jamais. `poll()` doit rapporter la fin du programme normalement, et
+    /// aucun `winedbg` ne doit survivre au-delà.
+    #[test]
+    fn a_real_crash_does_not_leave_a_stuck_wine_dialog() {
+        if !available() {
+            eprintln!("wine absent : non vérifié");
+            return;
+        }
+        let exe = build_exe(
+            "winerun-crash",
+            "bits 64\ndefault rel\nsection .text\nglobal main\nextern ExitProcess\nmain:\n  \
+             xor rax, rax\n  mov rax, [rax]\n  xor ecx, ecx\n  call ExitProcess\n",
+        );
+        let mut run = WineRun::spawn(&exe).expect("wine doit démarrer");
+        let (_out, code) = run_to_completion(&mut run);
+        assert_ne!(code, 0, "un accès mémoire invalide ne rend pas 0");
+
+        // Le temps que winedbg, une fois attaché, écrive son rapport et se
+        // termine — pas instantané, mais jamais indéfini non plus.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let stuck = std::process::Command::new("pgrep").args(["-x", "winedbg"]).output();
+            if stuck.is_ok_and(|o| o.stdout.is_empty()) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "un winedbg est resté accroché après le plantage");
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
 
