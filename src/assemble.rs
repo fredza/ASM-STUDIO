@@ -148,9 +148,24 @@ impl LinkOptions {
     /// n'installe. Le programme ne démarre alors pas du tout, et le noyau
     /// répond « fichier introuvable » — en parlant de l'interpréteur, pas du
     /// programme, ce dont l'élève n'a aucun moyen de se douter.
+    ///
+    /// `-z text` ne quitte jamais `-pie` non plus, et c'est le plus important
+    /// des deux : sans lui, une adresse absolue (`mov reg, étiquette`) n'est
+    /// pas forcément refusée — certaines versions de `ld` (vérifié : 2.42
+    /// accepte, 2.46 refuse, pour la même adresse) l'acceptent avec un simple
+    /// avertissement (« creating DT_TEXTREL in a PIE ») et posent un
+    /// relogement dynamique dans `.rela.dyn`. Rien ne l'applique jamais : sans
+    /// éditeur dynamique (`--no-dynamic-linker`), aucun `ld.so` ne le fait, et
+    /// notre `_start` écrit à la main n'a pas le bout de code que fournit la
+    /// glibc pour un « static PIE ». Le binaire démarre, le registre chargé
+    /// par l'adresse absolue reste celui du lien plutôt que celui du
+    /// chargement — l'écriture qui en dépend échoue en silence, sans le
+    /// moindre message. `-z text` transforme ce piège en un vrai refus au
+    /// lien, sur toutes les versions : c'est justement ce que le chapitre
+    /// enseigne à reconnaître, pas une exécution qui a l'air de réussir.
     fn ld_args(self) -> &'static [&'static str] {
         if self.pie {
-            &["-pie", "--no-dynamic-linker"]
+            &["-pie", "--no-dynamic-linker", "-z", "text"]
         } else {
             &[]
         }
@@ -720,7 +735,7 @@ mod pie_tests {
         .expect("l'exemple PIE se lie en position-indépendant");
         assert_eq!(elf_kind(&pie.binary), object::ObjectKind::Dynamic);
         assert!(
-            pie.log.contains("$ ld -pie --no-dynamic-linker -o"),
+            pie.log.contains("$ ld -pie --no-dynamic-linker -z text -o"),
             "journal : {}",
             pie.log
         );

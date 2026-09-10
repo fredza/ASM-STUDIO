@@ -13,15 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An optional position-independent link (`-pie`) for the Linux target**, for
   the "PIE and RIP-relative addressing" chapter. A checkbox under Run — shown
   only for the Linux target, since a PE64 is relocatable by birth — makes the
-  IDE link with `ld -pie --no-dynamic-linker`, producing an ELF of type `DYN`
-  instead of `EXEC`: a program the kernel may load anywhere. **Off by default,
-  and deliberately so**: it only accepts code written for it (`default rel`,
-  `lea reg, [rel label]` instead of an absolute address), and everything
-  written before that chapter addresses absolutely — `ld` refuses the
-  relocation outright rather than producing a binary that reads at the wrong
-  place, which is itself the symptom the chapter teaches to recognise. The
-  setting is remembered (`pie` in `settings.conf`), and every example, exercise
-  and lesson starter shipped with the IDE still links exactly as before.
+  IDE link with `ld -pie --no-dynamic-linker -z text`, producing an ELF of
+  type `DYN` instead of `EXEC`: a program the kernel may load anywhere. **Off
+  by default, and deliberately so**: it only accepts code written for it
+  (`default rel`, `lea reg, [rel label]` instead of an absolute address), and
+  everything written before that chapter addresses absolutely — `ld` refuses
+  the relocation outright rather than producing a binary that reads at the
+  wrong place, which is itself the symptom the chapter teaches to recognise.
+  `-z text` is what makes that refusal reliable: without it, an absolute
+  address links anyway on some `ld` versions, with only a warning, leaving a
+  dynamic relocation that nothing ever applies (no dynamic linker, no static-
+  PIE startup stub) — the program then runs and exits cleanly while reading
+  from the wrong place, silently. The setting is remembered (`pie` in
+  `settings.conf`), and every example, exercise and lesson starter shipped
+  with the IDE still links exactly as before.
 - **A new shipped example, `pie_rip_relatif.asm`**, that goes with it: one
   program addressing all of its data through RIP, reading and writing a
   counter in `.data`, and running identically whether linked position
