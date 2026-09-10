@@ -125,6 +125,44 @@ pub fn detect_target(source: &str) -> Option<Target> {
     }
 }
 
+/// Ce que l'on demande au lieur, en plus de la cible.
+///
+/// Séparé de [`Target`] à dessein : le format produit ne change pas — c'est un
+/// ELF64 dans les deux cas — seule change la façon dont le noyau le chargera.
+/// Le défaut est le lien historique, sans aucune option : un binaire assemblé
+/// sans rien demander est octet pour octet celui d'avant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LinkOptions {
+    /// Lier en exécutable position-indépendant (`ld -pie`), chargeable à
+    /// n'importe quelle adresse. Le code doit alors être écrit pour : `default
+    /// rel` et `lea reg, [rel étiquette]` plutôt qu'une adresse absolue, sans
+    /// quoi `ld` refuse le relogement plutôt que de produire un binaire faux.
+    pub pie: bool,
+}
+
+impl LinkOptions {
+    /// Arguments supplémentaires passés à `ld`.
+    ///
+    /// `--no-dynamic-linker` ne quitte jamais `-pie` : sans lui, `ld` place
+    /// dans le binaire un `PT_INTERP` réclamant `/lib/ld64.so.1`, que personne
+    /// n'installe. Le programme ne démarre alors pas du tout, et le noyau
+    /// répond « fichier introuvable » — en parlant de l'interpréteur, pas du
+    /// programme, ce dont l'élève n'a aucun moyen de se douter.
+    fn ld_args(self) -> &'static [&'static str] {
+        if self.pie {
+            &["-pie", "--no-dynamic-linker"]
+        } else {
+            &[]
+        }
+    }
+
+    /// Les mêmes arguments tels qu'ils apparaissent dans le journal, préfixe
+    /// d'espace compris (vide quand il n'y en a aucun).
+    fn logged(self) -> String {
+        self.ld_args().iter().map(|a| format!(" {a}")).collect()
+    }
+}
+
 pub struct BuildOutput {
     /// Chemin du binaire produit (ELF prêt pour ptrace, ou `.exe` PE64).
     pub binary: PathBuf,
@@ -162,8 +200,25 @@ pub fn assemble_for(
     target: Target,
     lang: Lang,
 ) -> Result<BuildOutput, String> {
+    assemble_for_with(src, out_dir, includes, target, LinkOptions::default(), lang)
+}
+
+/// Comme [`assemble_for`], mais en disant aussi ce qu'on attend du lieur.
+///
+/// Deux portes plutôt qu'un paramètre de plus partout : les options de lien ne
+/// concernent qu'un seul appelant — l'IDE, qui les persiste dans ses réglages.
+/// Tout le reste (tests, contrôle d'alignement, panneau FORMAT, exécution sous
+/// Wine) lie comme il l'a toujours fait, et continue de le dire en une ligne.
+pub fn assemble_for_with(
+    src: &Path,
+    out_dir: &Path,
+    includes: &[PathBuf],
+    target: Target,
+    opts: LinkOptions,
+    lang: Lang,
+) -> Result<BuildOutput, String> {
     match target {
-        Target::Linux => assemble_elf(src, out_dir, includes, lang),
+        Target::Linux => assemble_elf(src, out_dir, includes, opts, lang),
         Target::Windows | Target::WindowsGui => assemble_pe(src, out_dir, includes, target, lang),
     }
 }
@@ -174,10 +229,14 @@ pub fn assemble_for(
 /// routines (`math.asm`, `io.asm`…) du point d'entrée. Le lieur PE intégré ne
 /// sait pour l'instant lire qu'un seul objet COFF : refuser franchement deux
 /// sources vaut mieux que de jeter silencieusement les suivantes.
+/// Un projet ne s'assemble que depuis l'IDE : les options de lien sont ici un
+/// paramètre ordinaire, là où [`assemble_for`] garde une porte sans options
+/// pour ses nombreux autres appelants.
 pub fn assemble_project(
     project: &Project,
     out_dir: &Path,
     target: Target,
+    opts: LinkOptions,
     lang: Lang,
 ) -> Result<BuildOutput, String> {
     if target.is_windows() {
@@ -229,8 +288,9 @@ pub fn assemble_project(
         .filter(|s| !s.is_empty())
         .unwrap_or("programme");
     let binary = out_dir.join(name);
-    log.push_str(&format!("$ ld -o {} {}\n", binary.display(), objects.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" ")));
+    log.push_str(&format!("$ ld{} -o {} {}\n", opts.logged(), binary.display(), objects.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" ")));
     let ld = Command::new("ld")
+        .args(opts.ld_args())
         .arg("-o")
         .arg(&binary)
         .args(&objects)
@@ -407,6 +467,7 @@ fn assemble_elf(
     src: &Path,
     out_dir: &Path,
     includes: &[PathBuf],
+    opts: LinkOptions,
     lang: Lang,
 ) -> Result<BuildOutput, String> {
     let (stem, listing, mut log) = nasm(src, out_dir, includes, Target::Linux, lang)?;
@@ -414,8 +475,9 @@ fn assemble_elf(
     let binary = out_dir.join(&stem);
 
     // ld -o binary obj
-    log.push_str(&format!("$ ld -o {} {}\n", binary.display(), obj.display()));
+    log.push_str(&format!("$ ld{} -o {} {}\n", opts.logged(), binary.display(), obj.display()));
     let ld = Command::new("ld")
+        .args(opts.ld_args())
         .arg("-o")
         .arg(&binary)
         .arg(&obj)
@@ -622,6 +684,174 @@ mod tests {
 }
 
 #[cfg(test)]
+mod pie_tests {
+    use super::*;
+    use object::Object;
+
+    /// Le type ELF réellement écrit dans l'en-tête, celui que `readelf -h`
+    /// affiche. C'est la seule preuve qui vaille : le drapeau passé à `ld` ne
+    /// dit que l'intention.
+    fn elf_kind(binary: &Path) -> object::ObjectKind {
+        let data = std::fs::read(binary).expect("lecture du binaire");
+        object::File::parse(&*data).expect("ELF lisible").kind()
+    }
+
+    /// L'option change le type du binaire produit, et rien d'autre : le même
+    /// source donne un `ET_EXEC` sans elle, un `ET_DYN` avec — et les deux
+    /// s'exécutent et rendent le même résultat.
+    #[test]
+    fn the_pie_option_turns_the_executable_into_a_dyn_that_still_runs() {
+        let src = Path::new("examples_seed/pie_rip_relatif.asm");
+
+        let plain = assemble_for(src, Path::new("build/pie-off"), &[], Target::Linux, Lang::Fr)
+            .expect("l'exemple PIE s'assemble aussi en lien ordinaire");
+        assert_eq!(elf_kind(&plain.binary), object::ObjectKind::Executable);
+        assert!(plain.log.contains("$ ld -o"), "journal : {}", plain.log);
+        assert!(!plain.log.contains("-pie"), "journal : {}", plain.log);
+
+        let pie = assemble_for_with(
+            src,
+            Path::new("build/pie-on"),
+            &[],
+            Target::Linux,
+            LinkOptions { pie: true },
+            Lang::Fr,
+        )
+        .expect("l'exemple PIE se lie en position-indépendant");
+        assert_eq!(elf_kind(&pie.binary), object::ObjectKind::Dynamic);
+        assert!(
+            pie.log.contains("$ ld -pie --no-dynamic-linker -o"),
+            "journal : {}",
+            pie.log
+        );
+
+        // Un ELF de type DYN qui ne démarre pas serait un progrès purement
+        // décoratif : c'est l'exécution qui prouve que le chargeur s'en sort.
+        for binary in [&plain.binary, &pie.binary] {
+            let run = Command::new(binary).output().expect("le binaire doit s'exécuter");
+            assert!(run.status.success(), "{}: {:?}", binary.display(), run.status);
+            assert_eq!(
+                String::from_utf8_lossy(&run.stdout).lines().count(),
+                3,
+                "{} : le compteur en .data doit faire trois tours",
+                binary.display()
+            );
+        }
+    }
+
+    /// Un code qui adresse en absolu doit être refusé PAR LE LIEUR, franchement,
+    /// plutôt que produire un binaire qui lira n'importe où. C'est aussi la
+    /// leçon du chapitre : l'erreur de relogement est le symptôme à reconnaître.
+    #[test]
+    fn absolute_addressing_is_refused_at_link_time_in_pie() {
+        let dir = Path::new("build/pie-absolu");
+        std::fs::create_dir_all(dir).expect("dossier de test");
+        let src = dir.join("absolu.asm");
+        std::fs::write(
+            &src,
+            "section .data\nmsg db \"x\",10\nsection .text\nglobal _start\n_start:\n    mov rsi, msg\n    mov rax, 60\n    xor rdi, rdi\n    syscall\n",
+        )
+        .expect("écriture du source");
+
+        // Sans -pie, ce même source est parfaitement valide.
+        assemble_for(&src, dir, &[], Target::Linux, Lang::Fr).expect("lien ordinaire");
+
+        let err = match assemble_for_with(
+            &src,
+            dir,
+            &[],
+            Target::Linux,
+            LinkOptions { pie: true },
+            Lang::Fr,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("ld doit refuser une adresse absolue en -pie"),
+        };
+        assert!(err.starts_with("Échec de ld"), "{err}");
+    }
+
+    /// Le filet de sécurité de l'option : tant qu'elle n'est pas cochée, tout le
+    /// catalogue livré se lie exactement comme avant. Un `ld` qui se serait mis
+    /// à passer `-pie` de lui-même produirait des binaires d'un autre type, et
+    /// refuserait la plupart de ces sources.
+    #[test]
+    fn the_default_link_still_produces_plain_executables_everywhere() {
+        use object::Object as _;
+        let mut checked = 0;
+        for dir in ["examples", "examples_seed"] {
+            let Ok(entries) = std::fs::read_dir(dir) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("asm") {
+                    continue;
+                }
+                let Ok(source) = std::fs::read_to_string(&path) else { continue };
+                if detect_target(&source).is_some_and(Target::is_windows) {
+                    continue; // le lien PE ne prend pas d'option
+                }
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("x");
+                let out_dir = PathBuf::from("build/pie-survey").join(stem);
+                let Ok(out) = assemble_for(
+                    &path,
+                    &out_dir,
+                    &[PathBuf::from("examples")],
+                    Target::Linux,
+                    Lang::Fr,
+                ) else {
+                    continue; // ne s'assemble pas seul : hors sujet ici
+                };
+                checked += 1;
+                assert!(
+                    out.log.contains("$ ld -o") && !out.log.contains("-pie"),
+                    "{} lié autrement que par défaut :\n{}",
+                    path.display(),
+                    out.log
+                );
+                let data = std::fs::read(&out.binary).expect("lecture du binaire");
+                let kind = object::File::parse(&*data).expect("ELF lisible").kind();
+                assert_eq!(
+                    kind,
+                    object::ObjectKind::Executable,
+                    "{} n'est plus un ET_EXEC",
+                    path.display()
+                );
+            }
+        }
+        assert!(checked > 20, "trop peu de sources vérifiées ({checked})");
+    }
+
+    /// Les programmes de départ des leçons sont l'autre moitié du corpus : ils
+    /// vivent dans le binaire, et personne ne les verrait changer de type.
+    #[test]
+    fn lesson_starters_are_linked_as_before_too() {
+        let dir = Path::new("build/pie-survey-lessons");
+        let mut checked = 0;
+        for lesson in crate::tutorial::catalogue() {
+            let Some(starter) = lesson.starter else { continue };
+            if lesson.target().is_windows() {
+                continue;
+            }
+            let out_dir = dir.join(lesson.id);
+            std::fs::create_dir_all(&out_dir).expect("dossier de test");
+            let src = out_dir.join("lecon.asm");
+            std::fs::write(&src, starter).expect("écriture");
+            let Ok(out) = assemble_for(&src, &out_dir, &[], Target::Linux, Lang::Fr) else {
+                continue; // un starter à trous peut ne pas s'assembler tel quel
+            };
+            checked += 1;
+            assert!(
+                !out.log.contains("-pie"),
+                "{} lié en -pie sans qu'on l'ait demandé :\n{}",
+                lesson.id,
+                out.log
+            );
+            assert_eq!(elf_kind(&out.binary), object::ObjectKind::Executable, "{}", lesson.id);
+        }
+        assert!(checked > 20, "trop peu de leçons vérifiées ({checked})");
+    }
+}
+
+#[cfg(test)]
 mod asmstd_tests {
     use super::*;
     use std::path::Path;
@@ -714,7 +944,7 @@ mod project_assembly_tests {
         .expect("manifest");
         let project = Project::load(&manifest).expect("manifest valide");
 
-        let out = assemble_project(&project, &dir.join("build"), Target::Linux, Lang::Fr)
+        let out = assemble_project(&project, &dir.join("build"), Target::Linux, LinkOptions::default(), Lang::Fr)
             .expect("projet multi-fichiers");
         assert!(out.binary.is_file());
         let status = Command::new(&out.binary).status().expect("exécution");

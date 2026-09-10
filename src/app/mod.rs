@@ -623,6 +623,26 @@ pub struct App {
     /// courante à Linux — laisser un `.exe` en cours sans plus aucun menu pour
     /// en sortir serait un cul-de-sac.
     pub(super) pe_enabled: bool,
+    /// Lier la cible Linux en exécutable position-indépendant (`ld -pie`) ?
+    ///
+    /// Décoché par défaut, et ce n'est pas une timidité : la quasi-totalité des
+    /// programmes d'un cours d'assembleur adressent leurs données par leur
+    /// adresse absolue, ce que `ld -pie` refuse net. L'option accompagne le
+    /// chapitre qui apprend justement à écrire autrement (`default rel`,
+    /// `lea reg, [rel étiquette]`) ; l'activer avant ne donnerait qu'une erreur
+    /// de relogement incompréhensible.
+    pub(super) pie_enabled: bool,
+    /// Écart appliqué aux adresses statiques (listing, désassemblage, panneau
+    /// mémoire) pour les faire coïncider avec celles que `ptrace` rapporte.
+    ///
+    /// Nul tant que le binaire est un `ET_EXEC` — c'est-à-dire toujours, sauf
+    /// pour un exécutable position-indépendant, que le noyau charge ailleurs
+    /// que là où ses en-têtes l'annoncent (voir
+    /// [`crate::debugger::Debugger::load_bias`]). Mémorisé plutôt que
+    /// recalculé : c'est lui qui dit de combien les tables ont *déjà* été
+    /// décalées, et donc ce qu'il reste à faire quand un nouveau lancement en
+    /// annonce un autre.
+    pub(super) load_bias: u64,
     /// Exécutable Windows en cours d'exécution sous Wine, le cas échéant.
     ///
     /// Sa sortie va dans la même console que celle d'un programme Linux, mais
@@ -635,7 +655,12 @@ pub struct App {
     /// `win_debug_ops`. Distincte de `wine` ci-dessus : les deux ne tournent
     /// jamais en même temps, `launch()` (bouton « Lancer ») restant sur
     /// l'exécution directe, plus simple et avec sa sortie visible.
-    pub(super) win_dbg: Option<crate::win_debugger::WinDebugger>,
+    ///
+    /// Ce n'est pas le débogueur lui-même : celui-ci vit sur un thread dédié,
+    /// que cette poignée commande par canaux (voir `win_debug_ops`). Le
+    /// protocole RSP étant synchrone, l'appeler d'ici figerait tout l'IDE dès
+    /// qu'un programme s'arrête sur une boîte de dialogue modale.
+    pub(super) win_dbg: Option<win_debug_ops::WinDebugSession>,
     /// Fenêtre de pas-à-pas Windows ouverte (menu Exécution, ou raccourci).
     pub(super) show_win_debug: bool,
     /// Registre en cours d'édition (laboratoire mémoire) et son tampon de saisie.
@@ -941,6 +966,7 @@ const SETTINGS: &[Setting] = &[
     Setting { key: "welcome_dismissed", read: |a| a.welcome_dismissed.to_string(), write: |a, v| a.welcome_dismissed = v == "true" },
     Setting { key: "target", read: |a| a.target.key().to_string(), write: |a, v| a.target = crate::assemble::Target::from_key(v) },
     Setting { key: "pe", read: |a| a.pe_enabled.to_string(), write: |a, v| a.pe_enabled = v == "true" },
+    Setting { key: "pie", read: |a| a.pie_enabled.to_string(), write: |a, v| a.pie_enabled = v == "true" },
 ];
 
 impl App {
@@ -1014,6 +1040,11 @@ impl App {
             // Proposée par défaut : la fonctionnalité existe, autant qu'elle se
             // découvre. Une case dans les Réglages suffit à la retirer.
             pe_enabled: true,
+            // Décochée, elle : un lien `-pie` casse tout code qui adresse en
+            // absolu, c'est-à-dire tout ce que l'élève a écrit jusqu'au
+            // chapitre qui l'introduit.
+            pie_enabled: false,
+            load_bias: 0,
             format_info: None,
             wine: None,
             win_dbg: None,
@@ -1599,6 +1630,9 @@ impl eframe::App for App {
         // Et, pour la cible Windows, le programme confié à Wine : il écrit dans
         // la même console, sur le même rythme d'une sonde par frame.
         self.poll_wine(ctx);
+        // Et le pas-à-pas Windows expérimental, dont le débogueur tourne sur
+        // son propre thread : ici on ne fait que relever ce qu'il a rapporté.
+        self.poll_win_debug(ctx);
         if self.pending_flash {
             self.flash_time = ctx.input(|i| i.time);
             self.pending_flash = false;

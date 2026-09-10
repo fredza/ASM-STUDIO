@@ -27,6 +27,19 @@ impl Insn {
 
 /// Désassemble la section `.text` du binaire (syntaxe Intel).
 pub fn disassemble_text(binary: &Path) -> Result<Vec<Insn>, String> {
+    disassemble_text_from(binary, 0)
+}
+
+/// Comme [`disassemble_text`], mais en décodant le code comme s'il était
+/// chargé `bias` octets plus loin que ne le disent ses en-têtes — le cas d'un
+/// exécutable position-indépendant (voir
+/// [`crate::debugger::Debugger::load_bias`]).
+///
+/// Décaler après coup les adresses rendues ne suffirait pas : une cible de saut
+/// est imprimée *dans* l'opérande (« jne 0x167 »), et resterait à l'adresse du
+/// lien au milieu d'un listing affiché ailleurs. Capstone la calcule à partir de
+/// l'adresse qu'on lui donne : c'est donc là qu'il faut le dire.
+pub fn disassemble_text_from(binary: &Path, bias: u64) -> Result<Vec<Insn>, String> {
     let data = std::fs::read(binary).map_err(|e| format!("lecture {}: {e}", binary.display()))?;
     let file = object::File::parse(&*data).map_err(|e| format!("parse ELF: {e}"))?;
 
@@ -34,7 +47,7 @@ pub fn disassemble_text(binary: &Path) -> Result<Vec<Insn>, String> {
         .sections()
         .find(|s| s.name() == Ok(".text"))
         .ok_or_else(|| "section .text introuvable".to_string())?;
-    let addr = text.address();
+    let addr = text.address().wrapping_add(bias);
     let code = text.data().map_err(|e| format!("données .text: {e}"))?;
 
     let cs = Capstone::new()

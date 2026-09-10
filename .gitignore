@@ -1,6 +1,7 @@
 /target
 # Artefacts d'assemblage des exemples (.o, .lst, binaires ELF)
 /build
+/examples_seed/build
 /.junie
 /examples
 

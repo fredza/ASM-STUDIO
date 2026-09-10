@@ -544,6 +544,9 @@ pub struct Debugger {
     /// appel système bloquant), et l'interface ne lit le résultat qu'une fois
     /// la main rendue.
     watch_hit: Option<WatchHit>,
+    /// Écart entre l'adresse où le programme a réellement été chargé et celle
+    /// que portent ses en-têtes. Voir [`Self::load_bias`].
+    load_bias: u64,
 }
 
 impl Debugger {
@@ -630,6 +633,10 @@ impl Debugger {
                 let mem = open_mem(child)?;
                 let regs = read_regs(child)?;
                 let snap = snapshot_of(&mem, &regs, read_fpregs(child), None);
+                // Relevé maintenant, et une seule fois : les segments de
+                // l'exécutable sont déjà en place (l'`execve` est fait), et
+                // rien ne les déplacera plus.
+                let load_bias = load_bias_of(child, binary).unwrap_or(0);
                 Ok(Debugger {
                     child,
                     state: RunState::Stopped,
@@ -638,6 +645,7 @@ impl Debugger {
                     io,
                     watchpoints: Vec::new(),
                     watch_hit: None,
+                    load_bias,
                 })
             }
         }
@@ -1140,6 +1148,21 @@ impl Debugger {
         out
     }
 
+    /// Écart entre l'adresse de chargement réelle de l'exécutable et celle
+    /// écrite dans ses en-têtes. Nul pour un ELF ordinaire (`ET_EXEC`), dont le
+    /// noyau respecte les adresses au mot près.
+    ///
+    /// Un exécutable position-indépendant (`ld -pie`) est un `ET_DYN` : le
+    /// noyau le pose où il veut, et à `ELF_ET_DYN_BASE` — une adresse fixe,
+    /// mais pas nulle — même quand l'ASLR est coupée. Ses en-têtes disent
+    /// alors `0x1000` là où RIP vaudra `0x555555555000`. Tout ce qui compare
+    /// une adresse relevée par `ptrace` à une adresse lue dans le listing ou
+    /// dans le binaire doit donc ajouter cet écart à la seconde, sans quoi
+    /// aucune ligne ne se surligne et aucun point d'arrêt ne se déclenche.
+    pub fn load_bias(&self) -> u64 {
+        self.load_bias
+    }
+
     /// Bornes (début, fin) du segment `[heap]` d'après `/proc/<pid>/maps`,
     /// ou `None` si le programme n'a pas encore de tas.
     pub fn heap_range(&self) -> Option<(u64, u64)> {
@@ -1239,6 +1262,37 @@ fn open_mem(pid: Pid) -> DbgResult<File> {
         .write(true)
         .open(&path)
         .map_err(|e| DbgError::sys(format!("open {path}"), e))
+}
+
+/// Écart entre l'adresse à laquelle le noyau vient de charger `binary` et
+/// l'adresse de lien de son premier segment chargeable. `None` si l'un des deux
+/// ne se lit pas — l'appelant retombe alors sur zéro, c'est-à-dire sur le
+/// comportement d'avant, juste pour un `ET_EXEC`.
+///
+/// Les deux moitiés se lisent à deux endroits différents : l'adresse de lien
+/// dans le fichier (`p_vaddr` du premier `PT_LOAD`, arrondi à la page comme le
+/// fait le chargeur), l'adresse réelle dans `/proc/<pid>/maps`. La première
+/// ligne de `maps` qui porte le chemin du binaire est la bonne : le fichier est
+/// trié par adresse croissante, et c'est le segment d'offset 0.
+fn load_bias_of(pid: Pid, binary: &Path) -> Option<u64> {
+    use object::{Object, ObjectSegment};
+    const PAGE: u64 = 4096;
+    let data = std::fs::read(binary).ok()?;
+    let file = object::File::parse(&*data).ok()?;
+    // `object` ne rend que les `PT_LOAD` : le minimum est bien la base de lien.
+    let link_base = file.segments().map(|s| s.address()).min()? & !(PAGE - 1);
+
+    // Le chemin tel que le noyau l'écrit est canonique ; celui qu'on a reçu ne
+    // l'est pas forcément (un `build/` relatif, par exemple).
+    let path = std::fs::canonicalize(binary).ok()?;
+    let path = path.to_str()?;
+    let maps = std::fs::read_to_string(format!("/proc/{}/maps", pid.as_raw())).ok()?;
+    let start = maps.lines().find_map(|line| {
+        // 6e champ = chemin du fichier mappé, absent pour une région anonyme.
+        (line.split_whitespace().nth(5)? == path)
+            .then(|| u64::from_str_radix(line.split('-').next()?, 16).ok())?
+    })?;
+    Some(start.wrapping_sub(link_base))
 }
 
 /// Vrai si ce signal traduit une faute matérielle (et non la fin normale d'un

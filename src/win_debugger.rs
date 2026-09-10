@@ -40,11 +40,21 @@
 //! ci-dessous (`fp_regs`, `write_mem`, marqués `#[allow(dead_code)]` là où
 //! ils sont définis plutôt que par un `allow` de module, maintenant que le
 //! reste sert vraiment).
+//!
+//! Toutes les méthodes ci-dessous sont **bloquantes** : le protocole RSP est
+//! un échange requête/réponse, et [`WinDebugger::cont`] ne rend la main que
+//! lorsque le débogué s'arrête à nouveau. `app::win_debug_ops` ne les appelle
+//! donc jamais depuis le fil de l'interface : il confie le `WinDebugger` à un
+//! thread dédié pour la durée de la session. Ce module lui fournit de quoi
+//! couper court à une attente qui s'éternise ([`WinDbgInterrupt`]), la seule
+//! chose qu'un thread extérieur puisse faire sur une connexion synchrone.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use object::Object;
@@ -69,6 +79,10 @@ pub enum WinDbgError {
     NotStopped,
     /// Nom de registre inconnu.
     UnknownRegister(String),
+    /// La session a été coupée volontairement pendant l'attente (« Arrêter »
+    /// alors qu'une commande n'avait pas encore répondu) — voir
+    /// [`WinDbgInterrupt`].
+    Interrupted,
 }
 
 impl WinDbgError {
@@ -118,11 +132,90 @@ impl WinDbgError {
             WinDbgError::UnknownRegister(name) => {
                 format!("{} : {name}", tr("registre inconnu", "unknown register", "registro desconocido"))
             }
+            WinDbgError::Interrupted => tr(
+                "session de débogage interrompue",
+                "debugging session interrupted",
+                "sesión de depuración interrumpida",
+            )
+            .to_string(),
         }
     }
 }
 
 pub type WinDbgResult<T> = std::result::Result<T, WinDbgError>;
+
+/// De quoi couper court à une attente en cours, depuis un autre thread que
+/// celui qui possède le [`WinDebugger`].
+///
+/// Le besoin vient d'un cas très concret : le débogué appelle `MessageBoxA`,
+/// Windows affiche une boîte modale et n'en sort qu'au clic sur « OK ». Le
+/// `cont()` parti là-dedans attend sa réponse RSP jusqu'à [`REQUEST_TIMEOUT`],
+/// soit vingt secondes de session qui ne répond plus à « Arrêter ». Et rien
+/// ne peut être *envoyé* sur cette connexion pour l'abréger : ce `winedbg`
+/// n'implémente pas l'interruption asynchrone (`\x03`) du protocole.
+///
+/// La seule coupure fiable est donc de tuer `winedbg` lui-même : le serveur
+/// disparu, la connexion TCP se ferme, et la lecture bloquée côté client
+/// échoue immédiatement — le thread propriétaire redevient libre de relâcher
+/// sa session. C'est ce que fait [`Self::interrupt`], et c'est aussi ce qui
+/// évite de laisser derrière soi un `winedbg` et un programme débogué qui
+/// continueraient de tourner, invisibles.
+#[derive(Clone, Default)]
+pub struct WinDbgInterrupt {
+    /// PID du `winedbg` de la session, tant qu'il n'a pas été moissonné.
+    ///
+    /// Sous mutex plutôt qu'en atomique : le `Drop` du [`WinDebugger`] doit
+    /// pouvoir le désarmer *avant* son `wait()`, sans qu'un `interrupt()`
+    /// concurrent puisse viser entre-temps un PID que l'OS aurait déjà
+    /// recyclé pour un tout autre processus.
+    pid: Arc<Mutex<Option<u32>>>,
+    /// Posé par [`Self::interrupt`], lu par les attentes qui ne sont pas des
+    /// lectures socket — au lancement, la boucle qui guette l'ouverture du
+    /// port ne verrait sinon rien du tout et tournerait jusqu'à son délai.
+    cancelled: Arc<AtomicBool>,
+}
+
+impl WinDbgInterrupt {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Verrou pris sans se soucier de l'empoisonnement : un thread qui aurait
+    /// paniqué en tenant ce mutex n'y laisse qu'un `Option<u32>`, toujours
+    /// cohérent — refuser d'y toucher ne ferait que rendre l'arrêt impossible.
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<u32>> {
+        self.pid.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn arm(&self, pid: u32) {
+        *self.slot() = Some(pid);
+    }
+
+    fn disarm(&self) {
+        *self.slot() = None;
+    }
+
+    /// Coupe la session : `winedbg` est tué, toute lecture bloquée sur sa
+    /// connexion échoue dans la foulée. Rend vrai si un processus a bien été
+    /// visé (faux si la session n'était pas encore lancée, ou déjà finie).
+    pub fn interrupt(&self) -> bool {
+        self.cancelled.store(true, Ordering::SeqCst);
+        let slot = self.slot();
+        let Some(pid) = *slot else { return false };
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        )
+        .is_ok()
+    }
+
+    /// La session a-t-elle été coupée volontairement ? Ce qui permet à
+    /// l'appelant de ne pas rapporter comme une panne l'échec de lecture
+    /// qu'il vient lui-même de provoquer.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
 
 fn io_err(what: &'static str) -> impl Fn(std::io::Error) -> WinDbgError {
     move |e| WinDbgError::Protocol(format!("{what}: {e}"))
@@ -133,7 +226,9 @@ fn io_err(what: &'static str) -> impl Fn(std::io::Error) -> WinDbgError {
 /// Pas d'équivalent à `RunState::Running` de [`crate::debugger`] : les
 /// commandes RSP sont synchrones (on attend la réponse), et ce module ne
 /// relaie pas encore l'entrée standard — un programme qui bloque dessus
-/// bloque donc l'appel en cours, borné par [`REQUEST_TIMEOUT`].
+/// bloque donc l'appel en cours, borné par [`REQUEST_TIMEOUT`] ou abrégé par
+/// [`WinDbgInterrupt`]. « En cours » se lit donc du côté de l'appelant (le
+/// thread de session de `app::win_debug_ops`), pas ici.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WinRunState {
     Stopped,
@@ -167,7 +262,7 @@ struct RspConn {
 }
 
 impl RspConn {
-    fn connect(port: u16, deadline: Instant) -> WinDbgResult<Self> {
+    fn connect(port: u16, deadline: Instant, interrupt: &WinDbgInterrupt) -> WinDbgResult<Self> {
         loop {
             match TcpStream::connect(("127.0.0.1", port)) {
                 Ok(sock) => {
@@ -177,6 +272,13 @@ impl RspConn {
                     return Ok(RspConn { sock, buf: Vec::new() });
                 }
                 Err(e) => {
+                    // Seul endroit du lancement où tuer `winedbg` ne se voit
+                    // pas : il n'y a pas encore de socket dont la fermeture
+                    // nous réveillerait. On regarde donc le drapeau, sans quoi
+                    // « Arrêter » attendrait les huit secondes de démarrage.
+                    if interrupt.is_cancelled() {
+                        return Err(WinDbgError::Interrupted);
+                    }
                     if Instant::now() >= deadline {
                         return Err(WinDbgError::ConnectFailed(e.to_string()));
                     }
@@ -370,6 +472,10 @@ pub struct WinDebugger {
     regs: Registers,
     fp: Option<FpRegisters>,
     breakpoints: Vec<Bp>,
+    /// Armée sur le PID de `child` : c'est par elle qu'un autre thread peut
+    /// abréger une attente (voir [`WinDbgInterrupt`]). Conservée ici pour la
+    /// désarmer au `Drop`, avant de moissonner le processus.
+    interrupt: WinDbgInterrupt,
 }
 
 impl WinDebugger {
@@ -387,7 +493,23 @@ impl WinDebugger {
 
     /// Lance `exe` sous `winedbg --gdb` et s'arrête avant sa première
     /// instruction.
+    ///
+    /// Bloque le thread appelant le temps que Wine démarre (jusqu'à
+    /// [`STARTUP_TIMEOUT`]) : à n'appeler que depuis un thread dédié.
+    ///
+    /// L'application passe par [`Self::launch_interruptible`], pour garder de
+    /// quoi couper la session ; cette forme courte reste la porte d'entrée
+    /// naturelle du module — c'est elle que les tests ci-dessous utilisent,
+    /// et elle documente le cas où l'annulation n'est pas un souci.
+    #[allow(dead_code)]
     pub fn launch(exe: &Path) -> WinDbgResult<Self> {
+        Self::launch_interruptible(exe, &WinDbgInterrupt::new())
+    }
+
+    /// Comme [`Self::launch`], mais en armant `interrupt` dès que `winedbg`
+    /// existe : à partir de là, un autre thread peut couper la session — y
+    /// compris pendant le démarrage, qui n'est pas instantané.
+    pub fn launch_interruptible(exe: &Path, interrupt: &WinDbgInterrupt) -> WinDbgResult<Self> {
         if !Self::available() {
             return Err(WinDbgError::WineMissing);
         }
@@ -422,18 +544,46 @@ impl WinDebugger {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| WinDbgError::NoStart)?;
+        // Armée avant toute attente : ce qui suit peut durer plusieurs
+        // secondes, et « Arrêter » doit déjà mordre pendant ce temps-là.
+        interrupt.arm(child.id());
 
         let deadline = Instant::now() + STARTUP_TIMEOUT;
-        let mut conn = RspConn::connect(port, deadline)?;
+        let conn = match RspConn::connect(port, deadline, interrupt) {
+            Ok(conn) => conn,
+            Err(e) => {
+                // Pas encore de `WinDebugger` pour porter le `Drop` qui
+                // nettoie : sans ces deux lignes, un `winedbg` qui n'a pas
+                // ouvert son port resterait en zombie derrière l'IDE.
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+                interrupt.disarm();
+                return Err(e);
+            }
+        };
+
+        // Construit dès la connexion établie, avant même la poignée de main :
+        // tout échec en dessous passe désormais par `Drop`, qui tue `winedbg`
+        // et le moissonne, au lieu de l'abandonner en arrière-plan.
+        let mut dbg = WinDebugger {
+            child,
+            conn,
+            state: WinRunState::Stopped,
+            regs: Registers::default(),
+            fp: None,
+            breakpoints: Vec::new(),
+            interrupt: interrupt.clone(),
+        };
 
         // Capacités : sans `xmlRegisters=i386`, qui fait planter cette
         // version de winedbg (assertion dans gdbproxy.c — vérifié).
-        conn.request("qSupported:multiprocess+;swbreak+;hwbreak+")?;
+        dbg.conn.request("qSupported:multiprocess+;swbreak+;hwbreak+")?;
 
         // Confirme l'arrêt initial avant de lire les registres : un « W »/« X »
         // ici voudrait dire que le programme s'est terminé avant même le
         // premier arrêt (chemin introuvable, sous-système incompatible…).
-        let stop = conn.request("?")?;
+        let stop = dbg.conn.request("?")?;
         match stop.first() {
             Some(b'T') | Some(b'S') => {}
             Some(b'W') | Some(b'X') => return Err(WinDbgError::NoStart),
@@ -444,18 +594,7 @@ impl WinDebugger {
                 )));
             }
         }
-
-        let g = from_hex(&conn.request("g")?)?;
-        let (regs, fp) = registers_from_g(&g)?;
-
-        let mut dbg = WinDebugger {
-            child,
-            conn,
-            state: WinRunState::Stopped,
-            regs,
-            fp,
-            breakpoints: Vec::new(),
-        };
+        dbg.refresh_regs()?;
 
         // Le premier arrêt tombe dans le chargeur de Wine (`ntdll`), avant
         // que le programme du laboratoire n'existe vraiment — vérifié :
@@ -701,6 +840,10 @@ impl Drop for WinDebugger {
         // Windows qu'un détachement brutal (`DEBUG_PROCESS` sans
         // `DebugSetProcessKillOnExit(FALSE)`).
         let _ = self.conn.send("k");
+        // Désarmée AVANT le `wait()` : une fois le processus moissonné, son
+        // PID redevient attribuable, et un `interrupt()` retardataire tuerait
+        // un innocent. Le mutex de la poignée rend l'ordre observable.
+        self.interrupt.disarm();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -863,6 +1006,63 @@ mod tests {
         dbg.write_mem(entry, &[0x90, 0x90, 0x90, 0x90]).expect("écriture");
         let patched = dbg.read_mem(entry, 4).expect("relecture");
         assert_eq!(patched, vec![0x90, 0x90, 0x90, 0x90]);
+    }
+
+    /// Un programme qui ne rendra jamais la main tout seul — la version
+    /// automatisable du `MessageBoxA` qui attend un clic.
+    const BOUCLE_SANS_FIN: &str = r#"
+        bits 64
+        default rel
+        section .text
+            global main
+            extern ExitProcess
+        main:
+            xor     ecx, ecx
+        boucle:
+            inc     ecx
+            jmp     boucle
+            call    ExitProcess
+        "#;
+
+    /// La promesse de [`WinDbgInterrupt`] : un `cont()` parti dans quelque
+    /// chose qui ne s'arrête jamais est bel et bien débloqué depuis un autre
+    /// thread, en une poignée de secondes plutôt qu'au bout des vingt du
+    /// délai RSP — et il échoue, plutôt que de rendre un état inventé.
+    #[test]
+    fn interrupting_unblocks_a_command_that_never_returns() {
+        if !WinDebugger::available() {
+            eprintln!("wine absent : interruption non vérifiée");
+            return;
+        }
+        let exe = build_exe("windbg-interrupt", BOUCLE_SANS_FIN);
+        let interrupt = WinDbgInterrupt::new();
+        let mut dbg = WinDebugger::launch_interruptible(&exe, &interrupt).expect("lancement");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let outcome = dbg.cont();
+            let _ = tx.send(outcome.is_err());
+        });
+
+        // D'abord la preuve que la commande est bien coincée : sans quoi la
+        // suite passerait pour une bonne raison sans rien démontrer.
+        assert!(
+            rx.recv_timeout(Duration::from_millis(400)).is_err(),
+            "cont() ne peut pas revenir seul d'une boucle sans fin"
+        );
+
+        let t = Instant::now();
+        assert!(interrupt.interrupt(), "winedbg devait être visé");
+        let failed = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("l'interruption doit débloquer cont()");
+        assert!(failed, "la lecture coupée doit échouer, pas rendre un faux arrêt");
+        assert!(
+            t.elapsed() < Duration::from_secs(5),
+            "déblocage en {:?}, bien avant les 20 s du délai RSP",
+            t.elapsed()
+        );
+        worker.join().expect("le thread de commande doit se terminer");
     }
 
     /// Modifier un registre général se voit à la prochaine lecture.

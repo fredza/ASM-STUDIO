@@ -67,13 +67,17 @@ impl App {
             .as_ref()
             .map(|p| p.root.join("build"))
             .unwrap_or_else(|| super::abs_dir_of(&self.src_path).join("build"));
+        let opts = self.link_options();
         let result = match project.as_ref() {
-            Some(project) => assemble::assemble_project(project, &self.out_dir, self.target, self.lang),
-            None => assemble::assemble_for(&self.src_path, &self.out_dir, &self.include_dirs(), self.target, self.lang),
+            Some(project) => assemble::assemble_project(project, &self.out_dir, self.target, opts, self.lang),
+            None => assemble::assemble_for_with(&self.src_path, &self.out_dir, &self.include_dirs(), self.target, opts, self.lang),
         };
         match result {
             Ok(out) => {
                 self.log(&out.log);
+                // Un binaire neuf : les tables qui suivent sortent du fichier,
+                // donc dans les adresses du lien, avant tout décalage.
+                self.load_bias = 0;
                 // Mapping adresse → ligne source (suivi dans l'éditeur).
                 self.src_map = disasm::section_address(&out.binary, ".text")
                     .map(|base| srcmap::parse(&out.listing, base))
@@ -97,6 +101,68 @@ impl App {
                 self.status = i18n::tr(self.lang, "Échec build", "Build failed").to_string();
             }
         }
+    }
+
+    /// Ce que l'IDE demande au lieur, d'après les réglages.
+    ///
+    /// Le lien position-indépendant ne vaut que pour l'ELF : un PE64 est déjà
+    /// relogeable par nature, et le lieur intégré ne prend pas d'options.
+    pub(super) fn link_options(&self) -> assemble::LinkOptions {
+        assemble::LinkOptions {
+            pie: self.pie_enabled && !self.target.is_windows(),
+        }
+    }
+
+    /// Décale les tables d'adresses statiques pour qu'elles parlent des mêmes
+    /// adresses que `ptrace`.
+    ///
+    /// Le listing, le désassemblage et les adresses de section viennent du
+    /// fichier : ce sont les adresses du lien. Elles suffisent tant que le
+    /// noyau charge le programme là où le lieur l'a dit — vrai pour tout
+    /// `ET_EXEC`, faux pour un exécutable position-indépendant. Le décalage est
+    /// appliqué ici, une fois, à la racine : tout le reste de l'IDE (point
+    /// d'arrêt sur une ligne, surlignage de RIP, pile d'appels, microscope,
+    /// panneau mémoire) continue de travailler sur une seule échelle
+    /// d'adresses, sans rien savoir de tout ceci.
+    ///
+    /// Le paramètre est l'écart *voulu*, pas un incrément : `resume_here`
+    /// relance un second processus, et relire le même écart ne doit rien
+    /// décaler une seconde fois.
+    pub(super) fn set_load_bias(&mut self, bias: u64) {
+        let shift = bias.wrapping_sub(self.load_bias);
+        self.load_bias = bias;
+        if shift == 0 {
+            return;
+        }
+        self.src_map = self
+            .src_map
+            .iter()
+            .map(|(addr, line)| (addr.wrapping_add(shift), *line))
+            .collect();
+        // Le désassemblage est refait plutôt que décalé : une cible de saut
+        // s'imprime dans l'opérande, et ne suivrait pas un décalage appliqué
+        // aux seules adresses. Si le binaire n'est plus lisible, le décalage
+        // reste la meilleure réponse disponible.
+        match self
+            .binary
+            .clone()
+            .map(|bin| crate::disasm::disassemble_text_from(&bin, bias))
+        {
+            Some(Ok(insns)) => self.disasm = insns,
+            _ => {
+                for insn in &mut self.disasm {
+                    insn.address = insn.address.wrapping_add(shift);
+                }
+            }
+        }
+        self.disasm_index = self
+            .disasm
+            .iter()
+            .enumerate()
+            .map(|(i, insn)| (insn.address, i))
+            .collect();
+        self.mem_addr = self.mem_addr.wrapping_add(shift);
+        self.mem_input = format!("0x{:X}", self.mem_addr);
     }
 
     /// Assemble, puis ouvre le binaire produit dans Desdec.
@@ -151,6 +217,38 @@ impl App {
         if !self.pe_enabled && self.target.is_windows() {
             self.set_target(assemble::Target::Linux);
         }
+    }
+
+    /// Choisit le mode de lien de la cible Linux, et le persiste.
+    ///
+    /// Le binaire déjà produit l'a été de l'autre façon : le garder ferait
+    /// lancer un exécutable qui n'est plus celui que la case décrit. On le
+    /// jette, comme le fait un changement de cible, et un simple Ctrl+B le
+    /// refait.
+    pub(super) fn set_pie(&mut self, pie: bool) {
+        if self.pie_enabled == pie {
+            return;
+        }
+        self.pie_enabled = pie;
+        self.stop();
+        self.binary = None;
+        self.format_info = None;
+        self.save_settings();
+        self.log(i18n::tr3(
+            self.lang,
+            match pie {
+                true => "→ lien position-indépendant (ld -pie) : le programme sera chargé ailleurs qu'à l'adresse écrite dans ses en-têtes. Le code doit adresser en relatif (« default rel », « lea reg, [rel étiquette] »).",
+                false => "→ lien ordinaire (ld) : le programme sera chargé exactement aux adresses du lien.",
+            },
+            match pie {
+                true => "→ position-independent link (ld -pie): the program will be loaded somewhere other than the address written in its headers. The code must address relatively (“default rel”, “lea reg, [rel label]”).",
+                false => "→ ordinary link (ld): the program will be loaded exactly at the link addresses.",
+            },
+            match pie {
+                true => "→ enlace independiente de la posición (ld -pie): el programa se cargará en otro lugar distinto de la dirección escrita en sus cabeceras. El código debe direccionar de forma relativa («default rel», «lea reg, [rel etiqueta]»).",
+                false => "→ enlace ordinario (ld): el programa se cargará exactamente en las direcciones del enlace.",
+            },
+        ));
     }
 
     /// Change la cible d'assemblage. Le binaire produit pour l'ancienne n'a plus
@@ -300,6 +398,9 @@ impl App {
         self.dbg = None;
         match Debugger::launch(&bin) {
             Ok(dbg) => {
+                // Avant tout affichage : la barre d'état annonce RIP, et les
+                // tables doivent déjà être à l'échelle de ce RIP-là.
+                self.set_load_bias(dbg.load_bias());
                 self.status = format!("{} 0x{:X}", i18n::tr(self.lang, "Lancé — RIP @", "Started — RIP @"), dbg.regs().rip);
                 self.log("Running...");
                 self.dbg = Some(dbg);
@@ -321,9 +422,11 @@ impl App {
         if let Some(mut run) = self.wine.take() {
             run.kill();
         }
-        // Idem pour une session de pas-à-pas Windows : `Drop` de `WinDebugger`
-        // tue déjà `winedbg` (et, par ses règles, le débogué avec lui) — il
-        // suffit de la relâcher.
+        // Idem pour une session de pas-à-pas Windows : son `Drop` tue
+        // `winedbg` (et, par ses règles, le débogué avec lui), débloque au
+        // passage le thread qui attendait peut-être une réponse RSP, puis le
+        // joint — il suffit donc de relâcher la session, même en plein
+        // « Continuer » parti dans une boîte de dialogue modale.
         self.win_dbg = None;
         // Une consigne d'exécution en attente ne doit pas survivre au
         // programme qu'elle pilotait.
@@ -911,6 +1014,9 @@ impl App {
         let target = self.view_index;
         match Debugger::launch(&bin) {
             Ok(mut d) => {
+                // Un second processus : rien ne garantit qu'il soit tombé à la
+                // même base que le premier (voir `set_load_bias`).
+                self.set_load_bias(d.load_bias());
                 // `is_ready` et non `is_alive` : un pas resté suspendu dans un
                 // appel système laisse `step` sans effet, et la boucle
                 // tournerait à vide jusqu'au bout du compte.
@@ -1056,6 +1162,103 @@ mod tests {
         app.source = source.to_string();
         app.launch();
         app
+    }
+
+    /// Le pas-à-pas doit tenir sur un exécutable position-indépendant.
+    ///
+    /// C'est le seul cas où les adresses du binaire ne sont PAS celles de
+    /// l'exécution : le noyau pose un `ET_DYN` à `ELF_ET_DYN_BASE`, même avec
+    /// l'ASLR coupée. Trois preuves plutôt qu'une absence de plantage : le
+    /// décalage relevé n'est pas nul, chaque RIP retombe sur une ligne du
+    /// listing, et les octets lus en mémoire à RIP sont bien ceux de
+    /// l'instruction que le désassemblage annonce à cette adresse.
+    #[test]
+    fn single_stepping_follows_a_position_independent_executable() {
+        let source = std::fs::read_to_string("examples_seed/pie_rip_relatif.asm")
+            .expect("l'exemple PIE est livré avec l'IDE");
+        let mut app = App::new();
+        app.src_path = PathBuf::from("build/dbgops-pie.asm");
+        app.out_dir = PathBuf::from("build/dbgops-pie");
+        app.source = source.clone();
+        app.pie_enabled = true;
+        app.launch();
+
+        let bias = app.dbg.as_ref().expect("le PIE doit se lancer").load_bias();
+        assert_ne!(bias, 0, "un ET_DYN n'est pas chargé à l'adresse de son lien");
+        assert_eq!(app.load_bias, bias, "les tables doivent avoir suivi");
+        // Le panneau mémoire s'ouvre sur `.data` : encore faut-il que cette
+        // adresse-là existe dans le processus.
+        assert!(
+            app.dbg.as_ref().expect("débogueur").read_mem(app.mem_addr, 8).is_ok(),
+            "panneau mémoire ouvert sur 0x{:X}, illisible dans le processus",
+            app.mem_addr
+        );
+
+        let mut seen = 0;
+        for _ in 0..200 {
+            let Some(rip) = app
+                .dbg
+                .as_ref()
+                .filter(|d| d.is_ready())
+                .map(|d| d.regs().rip)
+            else {
+                break;
+            };
+            let line = *app
+                .src_map
+                .get(&rip)
+                .unwrap_or_else(|| panic!("RIP 0x{rip:X} ne correspond à aucune ligne du listing"));
+            let insn = app
+                .insn_at(rip)
+                .unwrap_or_else(|| panic!("RIP 0x{rip:X} hors du désassemblage"))
+                .clone();
+            let bytes = app
+                .dbg
+                .as_ref()
+                .expect("débogueur")
+                .read_mem(rip, insn.bytes.len())
+                .expect("lecture mémoire à RIP");
+            assert_eq!(
+                bytes, insn.bytes,
+                "ligne {line} : les octets en mémoire à 0x{rip:X} ne sont pas ceux de « {} {} »",
+                insn.mnemonic, insn.operands
+            );
+            seen += 1;
+            app.step();
+        }
+        assert!(seen > 10, "trop peu d'instructions parcourues ({seen})");
+        // La cible imprimée dans l'opérande d'un saut doit elle aussi être une
+        // adresse d'exécution : le panneau DÉSASSEMBLAGE la donne à lire à côté
+        // des adresses de la colonne de gauche.
+        let jump = app
+            .disasm
+            .iter()
+            .find(|i| i.mnemonic == "jne")
+            .expect("la boucle de l'exemple a bien un saut");
+        let target = u64::from_str_radix(jump.operands.trim_start_matches("0x"), 16)
+            .expect("cible de saut lisible");
+        assert!(
+            app.src_map.contains_key(&target),
+            "cible de saut 0x{target:X} restée à l'adresse du lien"
+        );
+        assert_eq!(app.program_output.lines().count(), 3, "sortie : {:?}", app.program_output);
+
+        // Et un point d'arrêt posé sur une ligne doit encore arrêter le
+        // programme : c'est `src_map` décalé qui le permet.
+        let line = source
+            .lines()
+            .position(|l| l.trim_start().starts_with("dec qword"))
+            .expect("la ligne du décrément existe")
+            + 1;
+        app.breakpoints.insert(line, None);
+        app.launch();
+        app.cont();
+        let rip = app.dbg.as_ref().expect("relancé").regs().rip;
+        assert_eq!(
+            app.src_map.get(&rip).copied(),
+            Some(line),
+            "le point d'arrêt de la ligne {line} n'a pas été atteint (RIP 0x{rip:X})"
+        );
     }
 
     /// Un source qui ne s'assemble pas ne part nulle part : Desdec s'ouvrirait

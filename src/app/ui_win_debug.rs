@@ -32,18 +32,21 @@ impl App {
                 RichText::new(tr(
                     "winedbg fait tourner le programme derrière un vrai chargeur Windows : \
                      les registres et l'arrêt sont réels, mais rien de la sortie du programme \
-                     n'apparaît ici, aucun exercice ni prédiction ne s'y vérifie, et « Continuer » \
-                     peut geler l'IDE quelques secondes si le programme attend une entrée qu'on \
-                     ne peut pas encore lui fournir.",
+                     n'apparaît ici, et aucun exercice ni prédiction ne s'y vérifie. Le débogueur \
+                     tourne à part : si le programme attend quelque chose qu'on ne peut pas encore \
+                     lui donner (une saisie, un clic sur une boîte de dialogue), l'IDE reste \
+                     utilisable et « Arrêter » coupe court.",
                     "winedbg runs the program behind a real Windows loader: registers and \
-                     stopping are real, but none of the program's output shows up here, no \
-                     exercise or prediction is checked here, and “Continue” may freeze the IDE \
-                     for a few seconds if the program is waiting for input it cannot yet be given.",
+                     stopping are real, but none of the program's output shows up here, and no \
+                     exercise or prediction is checked here. The debugger runs on its own thread: \
+                     if the program waits for something it cannot yet be given (input, a click on \
+                     a dialog box), the IDE stays usable and “Stop” cuts it short.",
                     "winedbg ejecuta el programa detrás de un cargador de Windows real: los \
                      registros y la parada son reales, pero nada de la salida del programa \
-                     aparece aquí, ningún ejercicio ni predicción se verifica aquí, y «Continuar» \
-                     puede congelar el IDE unos segundos si el programa espera una entrada que \
-                     aún no se le puede dar.",
+                     aparece aquí, y ningún ejercicio ni predicción se verifica aquí. El depurador \
+                     se ejecuta aparte: si el programa espera algo que aún no se le puede dar (una \
+                     entrada, un clic en un cuadro de diálogo), el IDE sigue utilizable y \
+                     «Detener» lo interrumpe.",
                 ))
                 .small()
                 .weak(),
@@ -82,16 +85,36 @@ impl App {
     }
 
     fn win_debug_session_ui(&mut self, ui: &mut egui::Ui, tr: &dyn Fn(&'static str, &'static str, &'static str) -> &'static str) {
-        let Some(d) = self.win_dbg.as_ref() else { return };
-        let alive = d.is_alive();
-        let state = d.state;
-        let regs = d.regs().clone();
-        let flags = d.flags();
-        // Compté ici, avant que `d` ne cesse d'être emprunté : c'est ce qui
-        // porte vraiment un `0xCC` en mémoire en ce moment, pas ce que
-        // l'éditeur affiche — les deux peuvent diverger un instant si un
+        let Some(session) = self.win_dbg.as_ref() else { return };
+        // Une commande est en vol : le débogueur travaille sur son thread, et
+        // rien ici n'est à jour. Le dire explicitement est tout le sujet — un
+        // élève qui ne voit rien bouger croit l'IDE figé, ce qu'il était
+        // vraiment avant que la session ne passe sur un thread à elle.
+        let busy = session.is_busy();
+        if session.is_starting() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(tr(
+                    "Démarrage de winedbg… (Wine peut prendre quelques secondes)",
+                    "Starting winedbg… (Wine may take a few seconds)",
+                    "Iniciando winedbg… (Wine puede tardar unos segundos)",
+                ));
+            });
+            ui.add_space(8.0);
+            if ui.button(tr("Arrêter", "Stop", "Detener")).clicked() {
+                self.win_debug_stop();
+            }
+            return;
+        }
+        let Some(snap) = session.snapshot().cloned() else { return };
+        let alive = snap.state == WinRunState::Stopped;
+        let state = snap.state;
+        let regs = snap.regs;
+        let flags = snap.flags;
+        // Ce qui porte vraiment un `0xCC` en mémoire au dernier arrêt, pas ce
+        // que l'éditeur affiche — les deux peuvent diverger un instant si un
         // point a été posé après le dernier « Continuer ».
-        let bp_count = d.breakpoints().count();
+        let bp_count = snap.breakpoints;
         let line = self.src_map.get(&regs.rip).copied();
 
         ui.horizontal(|ui| {
@@ -135,14 +158,31 @@ impl App {
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {
-            if ui.add_enabled(alive, egui::Button::new(tr("Suivant", "Next", "Siguiente"))).clicked() {
+            // Grisés pendant une commande : la suivante n'aurait nulle part
+            // où aller (le thread est occupé) et s'empilerait pour se dérouler
+            // toute seule plus tard. « Arrêter », lui, reste cliquable en
+            // permanence — c'est justement le seul recours quand le programme
+            // s'est arrêté sur quelque chose qui n'arrivera jamais.
+            let ready = alive && !busy;
+            if ui.add_enabled(ready, egui::Button::new(tr("Suivant", "Next", "Siguiente"))).clicked() {
                 self.win_debug_step();
             }
-            if ui.add_enabled(alive, egui::Button::new(tr("Continuer", "Continue", "Continuar"))).clicked() {
+            if ui.add_enabled(ready, egui::Button::new(tr("Continuer", "Continue", "Continuar"))).clicked() {
                 self.win_debug_cont();
             }
             if ui.button(tr("Arrêter", "Stop", "Detener")).clicked() {
                 self.win_debug_stop();
+            }
+            if busy {
+                ui.spinner();
+                ui.label(
+                    RichText::new(tr(
+                        "En cours… (« Arrêter » interrompt)",
+                        "Working… (“Stop” interrupts)",
+                        "En curso… («Detener» interrumpe)",
+                    ))
+                    .weak(),
+                );
             }
         });
 

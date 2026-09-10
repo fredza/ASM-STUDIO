@@ -105,6 +105,18 @@ pub fn inspect(path: &Path, lang: Lang) -> Result<Overview, String> {
             "objeto reubicable (aún sin enlazar)",
         )
         .to_string(),
+        // Un exécutable position-indépendant (`ld -pie`) est un `ET_DYN`, tout
+        // comme une bibliothèque partagée : c'est le même type ELF. Ce qui les
+        // sépare est le point d'entrée — un programme en a un, une
+        // bibliothèque le laisse à zéro. Annoncer « bibliothèque partagée » à
+        // l'élève qui vient de lier son propre programme en PIE serait le
+        // désigner par ce qu'il n'est pas.
+        object::ObjectKind::Dynamic if file.entry() != 0 => t(
+            "exécutable position-indépendant (PIE)",
+            "position-independent executable (PIE)",
+            "ejecutable independiente de la posición (PIE)",
+        )
+        .to_string(),
         object::ObjectKind::Dynamic => {
             t("bibliothèque partagée", "shared library", "biblioteca compartida").to_string()
         }
@@ -177,6 +189,19 @@ pub fn inspect(path: &Path, lang: Lang) -> Result<Overview, String> {
                 "Une section pèse zéro octet dans le fichier mais occupe de la place en mémoire : c'est .bss, les variables non initialisées, que le système met à zéro au chargement.",
                 "One section takes zero bytes in the file but occupies memory: that is .bss, the uninitialized variables, which the system zeroes at load time.",
                 "Una sección ocupa cero bytes en el archivo pero sí en memoria: es .bss, las variables sin inicializar, que el sistema pone a cero al cargar.",
+            )
+            .to_string(),
+        );
+    }
+    if file.format() == object::BinaryFormat::Elf
+        && file.kind() == object::ObjectKind::Dynamic
+        && file.entry() != 0
+    {
+        notes.push(
+            t(
+                "Les adresses ci-dessous sont celles du lien, pas celles de l'exécution : ce binaire est chargeable n'importe où, et le noyau le placera ailleurs. C'est pourquoi son code n'a le droit de désigner ses données que par une distance depuis RIP.",
+                "The addresses below are link addresses, not run addresses: this binary is loadable anywhere, and the kernel will put it elsewhere. That is why its code may only name its data by a distance from RIP.",
+                "Las direcciones de abajo son las del enlace, no las de la ejecución: este binario se puede cargar en cualquier lugar, y el núcleo lo situará en otro sitio. Por eso su código solo puede designar sus datos por una distancia desde RIP.",
             )
             .to_string(),
         );

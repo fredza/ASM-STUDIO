@@ -92,7 +92,7 @@ pub(super) fn setup_examples() {
     // Incrémenté quand on ajoute un exemple sans forcément livrer une nouvelle
     // version semver. Les installations déjà semées reçoivent ainsi les
     // nouveaux fichiers, sans jamais réécrire le travail existant.
-    const CATALOGUE_REVISION: &str = "3";
+    const CATALOGUE_REVISION: &str = "4";
     let dir = examples_dir();
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -122,6 +122,9 @@ pub(super) fn setup_examples() {
         ("longueur_chaine.asm", include_str!("../../examples_seed/longueur_chaine.asm")),
         ("pile_demo.asm",       include_str!("../../examples_seed/pile_demo.asm")),
         ("lire_ecrire.asm",     include_str!("../../examples_seed/lire_ecrire.asm")),
+        // Le seul exemple à demander une case cochée pour s'assembler : le lien
+        // position-indépendant (Exécution ▸ -pie). Il le dit dans son en-tête.
+        ("pie_rip_relatif.asm", include_str!("../../examples_seed/pie_rip_relatif.asm")),
         // Les quatre fondamentaux Windows gardent leurs jumeaux ELF ci-dessus.
         // Le préfixe ne sert qu'à migrer l'ancien catalogue à plat ; dans le
         // dossier `windows/`, ils retrouvent le même nom que leur jumeau ELF.

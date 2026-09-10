@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-09-10
+
+### Added
+- **An optional position-independent link (`-pie`) for the Linux target**, for
+  the "PIE and RIP-relative addressing" chapter. A checkbox under Run — shown
+  only for the Linux target, since a PE64 is relocatable by birth — makes the
+  IDE link with `ld -pie --no-dynamic-linker`, producing an ELF of type `DYN`
+  instead of `EXEC`: a program the kernel may load anywhere. **Off by default,
+  and deliberately so**: it only accepts code written for it (`default rel`,
+  `lea reg, [rel label]` instead of an absolute address), and everything
+  written before that chapter addresses absolutely — `ld` refuses the
+  relocation outright rather than producing a binary that reads at the wrong
+  place, which is itself the symptom the chapter teaches to recognise. The
+  setting is remembered (`pie` in `settings.conf`), and every example, exercise
+  and lesson starter shipped with the IDE still links exactly as before.
+- **A new shipped example, `pie_rip_relatif.asm`**, that goes with it: one
+  program addressing all of its data through RIP, reading and writing a
+  counter in `.data`, and running identically whether linked position
+  independently or not.
+- **Single-stepping now follows a position-independent executable.** A `DYN`
+  binary is loaded somewhere other than the address written in its headers —
+  even with ASLR disabled, as the debugger already does for reproducible
+  runs — so RIP matched no line of the listing and no breakpoint could ever
+  fire. The debugger now reads the real load address from `/proc/<pid>/maps`
+  at the first stop and offsets the listing, the disassembly (jump targets in
+  operands included) and the memory panel by that much, once, at the root:
+  breakpoints, "Resume here", the call stack, the microscope and the memory
+  panel all keep working on a single scale of addresses. The FORMAT panel also
+  stops calling such a binary a "shared library" — it is the same ELF type,
+  but a program with an entry point, not a library.
+
+### Fixed
+- **The experimental Windows step debugger froze the whole IDE whenever the
+  debugged program stopped on something that waits** — typically
+  `MessageBoxA`, whose modal dialog only returns on a click. The GDB remote
+  protocol behind `winedbg --gdb` is synchronous: `Continue` had nothing to
+  return until the program stopped again, and it was being called straight
+  from egui's event loop, so every part of the application — not just that
+  window — stayed frozen until the protocol's own twenty-second timeout.
+  GNOME eventually offered to kill "ASM Studio (not responding)".
+  The debugger now lives on a thread of its own for the whole session, and
+  the interface only posts commands and polls the answers once per frame,
+  the same way the Wine runner and the native debugger already did.
+  `Next`/`Continue` grey out with a "Working…" indicator while a command is
+  in flight, so a wait reads as a wait rather than as a hang, and `Stop`
+  stays clickable throughout: it really interrupts the pending command by
+  killing `winedbg`, which closes the connection and frees the background
+  thread within a second — instead of abandoning it, which would have left
+  `winedbg` and the debugged program running invisibly in the background.
+
 ## [0.7.11] - 2026-09-10
 
 ### Added

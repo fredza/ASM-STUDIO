@@ -808,6 +808,32 @@ impl App {
                     });
                     ui.separator();
                     }
+                    // Le lien position-indépendant ne concerne que l'ELF : un
+                    // PE64 est relogeable de naissance, et le lieur intégré ne
+                    // prend pas d'option. La case ne s'affiche donc que là où
+                    // elle veut dire quelque chose.
+                    if self.target == crate::assemble::Target::Linux {
+                        let mut pie = self.pie_enabled;
+                        if ui
+                            .checkbox(
+                                &mut pie,
+                                tr(
+                                    "Lien position-indépendant (-pie)",
+                                    "Position-independent link (-pie)",
+                                    "Enlace independiente de la posición (-pie)",
+                                ),
+                            )
+                            .on_hover_text(tr(
+                                "Produit un ELF chargeable à n'importe quelle adresse (type DYN), comme le fait le système pour tout programme moderne. Le code doit être écrit pour : « default rel » en tête de fichier et « lea reg, [rel étiquette] » plutôt qu'une adresse absolue — sinon ld refuse le relogement. C'est le sujet du chapitre PIE et adressage RIP-relatif ; laissez la case décochée pour tous les autres programmes.",
+                                "Produces an ELF loadable at any address (DYN type), the way the system loads every modern program. The code has to be written for it: “default rel” at the top of the file and “lea reg, [rel label]” instead of an absolute address — otherwise ld refuses the relocation. This is the subject of the PIE and RIP-relative addressing chapter; leave it unchecked for every other program.",
+                                "Produce un ELF cargable en cualquier dirección (tipo DYN), como hace el sistema con todo programa moderno. El código debe estar escrito para ello: «default rel» al principio del archivo y «lea reg, [rel etiqueta]» en lugar de una dirección absoluta — si no, ld rechaza la reubicación. Es el tema del capítulo PIE y direccionamiento relativo a RIP; deje la casilla desmarcada para todos los demás programas.",
+                            ))
+                            .changed()
+                        {
+                            self.set_pie(pie);
+                        }
+                        ui.separator();
+                    }
                     if item(ui, tr("Assembler", "Build", "Ensamblar"), "Ctrl+B") {
                         self.build();
                     }
