@@ -60,6 +60,69 @@ pub fn disassemble_text(binary: &Path) -> Result<Vec<Insn>, String> {
         .collect())
 }
 
+/// Désassemble au plus `count` instructions à partir de l'adresse virtuelle
+/// `addr`, en repartant du code brut.
+///
+/// [`disassemble_text`] balaie `.text` d'un bout à l'autre, et ce balayage se
+/// désynchronise sur le bourrage qui sépare les fonctions : les octets nuls
+/// d'alignement se décodent en instructions, et les vraies instructions qui
+/// suivent tombent alors à des adresses décalées. Pour aller regarder ce qui se
+/// trouve *exactement* à une adresse connue — la cible d'un `call`, par
+/// exemple — il faut redémarrer le décodage à cette adresse-là.
+pub fn disassemble_at(binary: &Path, addr: u64, count: usize) -> Vec<Insn> {
+    let Ok(data) = std::fs::read(binary) else {
+        return Vec::new();
+    };
+    let Ok(file) = object::File::parse(&*data) else {
+        return Vec::new();
+    };
+    let Some(text) = file.sections().find(|s| s.name() == Ok(".text")) else {
+        return Vec::new();
+    };
+    let Ok(code) = text.data() else {
+        return Vec::new();
+    };
+    let Some(offset) = addr.checked_sub(text.address()) else {
+        return Vec::new();
+    };
+    let Some(from) = code.get(offset as usize..) else {
+        return Vec::new();
+    };
+
+    let Ok(cs) = Capstone::new()
+        .x86()
+        .mode(arch::x86::ArchMode::Mode64)
+        .syntax(arch::x86::ArchSyntax::Intel)
+        .detail(false)
+        .build()
+    else {
+        return Vec::new();
+    };
+    let Ok(insns) = cs.disasm_count(from, addr, count) else {
+        return Vec::new();
+    };
+    insns
+        .iter()
+        .map(|i| Insn {
+            address: i.address(),
+            bytes: i.bytes().to_vec(),
+            mnemonic: i.mnemonic().unwrap_or("").to_string(),
+            operands: i.op_str().unwrap_or("").to_string(),
+        })
+        .collect()
+}
+
+/// Adresse virtuelle du point d'entrée du binaire.
+///
+/// ELF comme PE la portent dans leur en-tête, et c'est une adresse complète des
+/// deux côtés (image base comprise pour le PE) : de quoi retrouver la première
+/// instruction exécutée dans le désassemblage.
+pub fn entry_address(binary: &Path) -> Option<u64> {
+    let data = std::fs::read(binary).ok()?;
+    let file = object::File::parse(&*data).ok()?;
+    Some(file.entry())
+}
+
 /// Adresse virtuelle de début d'une section (ex. `.data`), si présente.
 pub fn section_address(binary: &Path, name: &str) -> Option<u64> {
     let data = std::fs::read(binary).ok()?;

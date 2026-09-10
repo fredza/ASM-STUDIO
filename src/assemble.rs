@@ -247,7 +247,27 @@ pub fn assemble_project(
         ));
     }
     log.push_str("Build OK\n");
+    append_stack_alignment_warning(&mut log, &binary, &listing, target, lang);
     Ok(BuildOutput { binary, listing, log })
+}
+
+/// Ajoute au journal l'avertissement d'alignement de pile, s'il y a lieu.
+///
+/// Le contrôle est purement consultatif — voir [`crate::stack_check`]. Il tourne
+/// une fois le binaire écrit, ne peut qu'ajouter du texte, et ne remet jamais en
+/// cause un assemblage réussi : c'est le dernier moment où l'IDE peut prévenir
+/// l'élève avant qu'il ne lance un programme dont le plantage ne lui
+/// apprendrait rien.
+fn append_stack_alignment_warning(
+    log: &mut String,
+    binary: &Path,
+    listing: &Path,
+    target: Target,
+    lang: Lang,
+) {
+    if let Some(warning) = crate::stack_check::warn_for_binary(binary, listing, target, lang) {
+        log.push_str(&warning);
+    }
 }
 
 /// Assemble et lie un objet COFF en exécutable PE64, sans outil externe autre
@@ -293,6 +313,7 @@ fn assemble_pe(
         report.size,
         i18n::tr3(lang, "octets", "bytes", "bytes")
     ));
+    append_stack_alignment_warning(&mut log, &binary, &listing, target, lang);
     Ok(BuildOutput { binary, listing, log })
 }
 
@@ -412,6 +433,7 @@ fn assemble_elf(
     }
 
     log.push_str("Build OK\n");
+    append_stack_alignment_warning(&mut log, &binary, &listing, Target::Linux, lang);
     Ok(BuildOutput { binary, listing, log })
 }
 

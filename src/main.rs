@@ -17,6 +17,7 @@ mod pe_link;
 mod project;
 mod simd;
 mod srcmap;
+mod stack_check;
 mod syntax;
 mod syscall;
 mod theme;
