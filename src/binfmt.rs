@@ -65,6 +65,19 @@ pub struct Overview {
     pub notes: Vec<String>,
     /// Taille du fichier sur le disque.
     pub file_size: u64,
+    /// Pile non exécutable — une des trois protections du chapitre "NX, RELRO
+    /// et PIE". Vrai dès qu'aucun `PT_GNU_STACK` ne réclame `PF_X` : sans ce
+    /// segment, Linux ne rend pas la pile exécutable pour autant, il applique
+    /// son défaut, qui est justement NX (vérifié dans les tests). `None` hors
+    /// ELF — le PE n'a pas cette notion, son équivalent `/NXCOMPAT` est un bit
+    /// d'en-tête que ce module ne lit pas encore — et `None` aussi si les
+    /// program headers ne se relisent pas : non mesuré n'est pas absent.
+    pub nx: Option<bool>,
+    /// Ce que le chargeur doit écrire pendant le chargement est remis en
+    /// lecture seule ensuite (`PT_GNU_RELRO`) — une autre des trois
+    /// protections du même chapitre. Même règle de `None` que [`Self::nx`].
+    /// La troisième, PIE, se lit dans [`Self::kind`].
+    pub relro: Option<bool>,
 }
 
 /// Ouvre `path` et le décrit. `lang` sert aux explications, pas à la lecture.
@@ -206,6 +219,40 @@ pub fn inspect(path: &Path, lang: Lang) -> Result<Overview, String> {
             .to_string(),
         );
     }
+    let protections = if file.format() == object::BinaryFormat::Elf {
+        elf_protections(&data)
+    } else {
+        None
+    };
+    let (nx, relro) = match &protections {
+        Some(p) => (Some(p.nx), Some(p.relro)),
+        None => (None, None),
+    };
+    if protections.as_ref().is_some_and(|p| !p.stack_marked) {
+        notes.push(
+            t(
+                "Aucun segment GNU_STACK dans ce binaire : NASM n'écrit pas la section \
+                 .note.GNU-stack que gcc ajoute d'habitude, donc ld ne pose aucun marqueur et \
+                 laisse le noyau trancher. Sous Linux x86-64, un binaire 64 bits sans marqueur \
+                 reçoit une pile non exécutable : la protection est bien là, mais tenue par le \
+                 défaut du noyau plutôt que réclamée par le fichier. Un programme issu de gcc, \
+                 lui, porte le marqueur et l'exige.",
+                "No GNU_STACK segment in this binary: NASM does not emit the .note.GNU-stack \
+                 section that gcc usually adds, so ld writes no marker at all and leaves the \
+                 decision to the kernel. On Linux x86-64 a 64-bit binary with no marker gets a \
+                 non-executable stack: the protection is there, but held up by the kernel default \
+                 rather than demanded by the file. A gcc-built program carries the marker and \
+                 requires it.",
+                "Ningún segmento GNU_STACK en este binario: NASM no escribe la sección \
+                 .note.GNU-stack que gcc suele añadir, así que ld no pone ningún marcador y deja \
+                 decidir al núcleo. En Linux x86-64, un binario de 64 bits sin marcador recibe una \
+                 pila no ejecutable: la protección está ahí, pero sostenida por el valor \
+                 predeterminado del núcleo y no exigida por el archivo. Un programa hecho con gcc \
+                 sí lleva el marcador y lo exige.",
+            )
+            .to_string(),
+        );
+    }
     if imports.is_empty() && file.kind() == object::ObjectKind::Executable {
         notes.push(
             t(
@@ -228,7 +275,63 @@ pub fn inspect(path: &Path, lang: Lang) -> Result<Overview, String> {
         symbols,
         notes,
         file_size: data.len() as u64,
+        nx,
+        relro,
     })
+}
+
+/// Ce que les program headers d'un ELF disent des protections.
+struct ElfProtections {
+    /// Pile non exécutable.
+    nx: bool,
+    /// Un `PT_GNU_STACK` est présent, quel que soit son contenu : la pile est
+    /// alors décrite par le fichier, et non laissée au défaut du noyau. Sert
+    /// à expliquer le cas d'ici, où ce segment manque — pas à décider [`nx`].
+    ///
+    /// [`nx`]: Self::nx
+    stack_marked: bool,
+    relro: bool,
+}
+
+/// Lit les program headers `PT_GNU_STACK`/`PT_GNU_RELRO` d'un ELF pour en
+/// tirer deux des trois protections du chapitre "NX, RELRO et PIE" (la
+/// troisième, PIE, se lit sur le type ELF lui-même — voir [`inspect`]).
+///
+/// L'absence de `PT_GNU_STACK` ne vaut pas pile exécutable : c'est même
+/// l'inverse. `ld` n'écrit ce segment que si un objet d'entrée porte une
+/// section `.note.GNU-stack` — ce que NASM ne fait pas — et le noyau, faute
+/// de marqueur, applique son défaut, qui pour un binaire 64 bits sous x86-64
+/// est une pile non exécutable. Seul un `PT_GNU_STACK` portant `PF_X`
+/// (c'est-à-dire `ld -z execstack`) rend vraiment la pile exécutable. Les
+/// deux tests plus bas le vérifient sur des binaires réellement liés.
+///
+/// `None` si l'en-tête ne se relit pas — ne devrait pas arriver, puisque
+/// `object::File::parse` l'a déjà accepté plus haut, mais mieux vaut alors
+/// ne rien afficher que d'annoncer des protections absentes qu'on n'a pas su
+/// mesurer.
+///
+/// Volontairement silencieux sur le distinguo RELRO partiel/complet (ce
+/// dernier suppose en plus une liaison immédiate, `-z now`, que le lieur
+/// natif de cet IDE ne demande jamais) : un module qui ne fait que décrire
+/// n'invente pas un état qu'aucun binaire produit ici ne peut prendre.
+fn elf_protections(data: &[u8]) -> Option<ElfProtections> {
+    use object::read::elf::FileHeader as _;
+    use object::read::elf::ProgramHeader as _;
+    let header = object::elf::FileHeader64::<object::Endianness>::parse(data).ok()?;
+    let endian = header.endian().ok()?;
+    let headers = header.program_headers(endian, data).ok()?;
+    let mut prot = ElfProtections { nx: true, stack_marked: false, relro: false };
+    for ph in headers {
+        match ph.p_type(endian) {
+            object::elf::PT_GNU_STACK => {
+                prot.stack_marked = true;
+                prot.nx = ph.p_flags(endian).0 & object::elf::PF_X.0 == 0;
+            }
+            object::elf::PT_GNU_RELRO => prot.relro = true,
+            _ => {}
+        }
+    }
+    Some(prot)
 }
 
 /// Droits d'une section, résumés en `rwx`.
@@ -349,6 +452,96 @@ mod tests {
             o.symbols.iter().any(|(n, _)| n == "_start"),
             "le symbole d'entrée doit être listé"
         );
+        // Vérifié avec `readelf -lW` : le lien natif ne pose aucun segment
+        // GNU_STACK (NASM n'écrit pas .note.GNU-stack) ni GNU_RELRO (pas de
+        // section dynamique à protéger sans -pie). Sans GNU_STACK, la pile
+        // n'en est pas exécutable pour autant — voir
+        // `an_unmarked_stack_is_not_executable_at_run_time`.
+        assert_eq!(o.nx, Some(true), "sans GNU_STACK, le noyau laisse la pile non exécutable");
+        assert_eq!(o.relro, Some(false), "pas de segment GNU_RELRO sans -pie");
+        assert!(
+            o.notes.iter().any(|n| n.contains("GNU_STACK")),
+            "l'absence de marqueur doit être expliquée, pas seulement chiffrée"
+        );
+    }
+
+    /// La preuve que l'absence de `PT_GNU_STACK` ne veut pas dire « pile
+    /// exécutable » : un binaire lié comme ceux d'ASM Studio meurt d'un
+    /// SIGSEGV en sautant sur du code posé sur la pile, alors que le même
+    /// objet lié `-z execstack` s'exécute jusqu'au bout. C'est ce qui autorise
+    /// le panneau FORMAT à afficher NX en vert pour ces binaires.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn an_unmarked_stack_is_not_executable_at_run_time() {
+        let dir = Path::new("build/fmt-execstack");
+        std::fs::create_dir_all(dir).expect("dossier");
+        let asm = dir.join("saut_pile.asm");
+        // Écrit « mov eax,60 ; xor edi,edi ; syscall » sur la pile, puis y saute.
+        std::fs::write(
+            &asm,
+            "bits 64\nsection .text\n  global _start\n_start:\n  sub rsp, 16\n  \
+             mov byte [rsp+0], 0xb8\n  mov dword [rsp+1], 60\n  mov byte [rsp+5], 0x31\n  \
+             mov byte [rsp+6], 0xff\n  mov byte [rsp+7], 0x0f\n  mov byte [rsp+8], 0x05\n  \
+             jmp rsp\n",
+        )
+        .expect("source");
+        let bin = assemble::assemble_for(&asm, dir, &[], Target::Linux, crate::i18n::Lang::Fr)
+            .expect("assemblage")
+            .binary;
+
+        let o = inspect(&bin, Lang::Fr).expect("lecture ELF");
+        assert_eq!(o.nx, Some(true), "aucun GNU_STACK : NX par défaut du noyau");
+        let status = std::process::Command::new(&bin).status().expect("exécution");
+        assert!(
+            !status.success(),
+            "sauter sur la pile doit échouer : c'est ce que NX veut dire"
+        );
+
+        // Le même objet, relié en réclamant explicitement une pile exécutable,
+        // va au bout — sans quoi le test ci-dessus ne prouverait rien.
+        let exec_stack = dir.join("saut_pile_execstack");
+        let ok = std::process::Command::new("ld")
+            .args(["-z", "execstack", "-o"])
+            .arg(&exec_stack)
+            .arg(dir.join("saut_pile.o"))
+            .status()
+            .expect("ld");
+        assert!(ok.success(), "lien -z execstack");
+        assert_eq!(
+            inspect(&exec_stack, Lang::Fr).expect("lecture").nx,
+            Some(false),
+            "un GNU_STACK portant PF_X, lui, veut bien dire pile exécutable"
+        );
+        assert!(
+            std::process::Command::new(&exec_stack).status().expect("exécution").success(),
+            "avec -z execstack, le même code doit s'exécuter"
+        );
+    }
+
+    /// Un exécutable lié en PIE porte un segment GNU_RELRO (le lieur natif
+    /// l'ajoute dès qu'il y a une section dynamique à protéger) mais reste,
+    /// lui aussi, sans marqueur GNU_STACK : ce n'est pas -pie qui change ça.
+    #[test]
+    fn pie_executable_gains_relro_but_still_no_stack_marker() {
+        let dir = Path::new("build/fmt-elf-pie");
+        std::fs::create_dir_all(dir).expect("dossier");
+        let bin = assemble::assemble_for_with(
+            Path::new("examples_seed/pie_rip_relatif.asm"),
+            dir,
+            &[],
+            Target::Linux,
+            assemble::LinkOptions { pie: true },
+            crate::i18n::Lang::Fr,
+        )
+        .expect("lien PIE")
+        .binary;
+        let o = inspect(&bin, Lang::Fr).expect("lecture ELF PIE");
+        assert_eq!(o.relro, Some(true), "un lien -pie pose un segment GNU_RELRO");
+        assert_eq!(o.nx, Some(true), "toujours pas de GNU_STACK, donc toujours le défaut du noyau");
+        assert!(
+            o.notes.iter().any(|n| n.contains("GNU_STACK")),
+            "-pie n'ajoute pas le marqueur : l'explication reste due à l'élève"
+        );
     }
 
     /// Le même source assemblé pour Windows se décrit de la même façon — c'est
@@ -384,6 +577,11 @@ mod tests {
             o.notes.iter().any(|n| n.contains("pas à pas") || n.contains("instruction par instruction")),
             "l'IDE doit prévenir qu'il ne déroulera pas ce binaire instruction par instruction"
         );
+        // NX/RELRO sont une notion ELF (GNU_STACK/GNU_RELRO) : les taire pour
+        // un PE plutôt qu'annoncer une protection absente qui n'a pas de sens
+        // ici évite de laisser croire que ce format n'en offre aucune.
+        assert_eq!(o.nx, None, "NX est une notion ELF, pas PE");
+        assert_eq!(o.relro, None, "RELRO est une notion ELF, pas PE");
     }
 
     /// Chaque section usuelle a une explication, dans les trois langues.

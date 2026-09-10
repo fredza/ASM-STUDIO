@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.13] - 2026-09-10
+## [0.7.14] - 2026-09-10
+
+### Added
+- **NX and RELRO in the FORMAT panel**, next to PIE, for the "Modern
+  protections: NX, RELRO and PIE" chapter. Read straight from the ELF program
+  headers (`PT_GNU_STACK`, `PT_GNU_RELRO`), not simulated. The interesting
+  case is the common one: NASM never emits the `.note.GNU-stack` section gcc
+  adds, so `ld` writes no `GNU_STACK` segment at all in anything this IDE
+  produces — and that is *not* the same as an executable stack. Absent a
+  marker, the kernel applies its own default, which on x86-64 is already
+  non-executable; a note says so, backed by a test that actually runs code
+  placed on the stack (segfault without a marker, success with one, and with
+  `-z execstack` explicitly). RELRO appears once linking is `-pie` (an
+  ASM Studio binary never reaches "full" RELRO — that needs `-z now`, which
+  this linker never requests — so only presence/absence is shown, not the
+  partial/full distinction). Both read `None` outside ELF, and `None` rather
+  than a false "absent" if the program headers fail to parse.
 
 ### Fixed
 - **`WinDebugger::available()` was launching two Wine processes on every UI

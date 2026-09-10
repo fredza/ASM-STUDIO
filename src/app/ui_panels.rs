@@ -1584,6 +1584,29 @@ impl App {
                     ui.label(RichText::new(format!("{} {}", info.file_size, tr("octets", "bytes", "bytes"))).monospace());
                     ui.end_row();
                 });
+                if info.nx.is_some() || info.relro.is_some() {
+                    ui.add_space(3.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(tr("Protections", "Protections", "Protecciones")).small().weak());
+                        if let Some(nx) = info.nx {
+                            ui.label(RichText::new("NX").small().monospace().color(if nx { flag_on() } else { false_col() }))
+                                .on_hover_text(tr(
+                                    "La pile ne peut pas contenir de code exécutable. Un segment GNU_STACK sans le drapeau X l'exige ; sans aucun segment GNU_STACK, le noyau applique quand même ce défaut à un binaire 64 bits. Seul un GNU_STACK portant X (ld -z execstack) rend la pile exécutable. L'une des trois protections du chapitre PIE/RELRO/NX.",
+                                    "The stack cannot hold executable code. A GNU_STACK segment without the X flag demands it; with no GNU_STACK segment at all, the kernel applies that default to a 64-bit binary anyway. Only a GNU_STACK carrying X (ld -z execstack) makes the stack executable. One of the three protections from the PIE/RELRO/NX chapter.",
+                                    "La pila no puede contener código ejecutable. Un segmento GNU_STACK sin el indicador X lo exige; sin ningún segmento GNU_STACK, el núcleo aplica de todos modos ese valor predeterminado a un binario de 64 bits. Solo un GNU_STACK con X (ld -z execstack) hace ejecutable la pila. Una de las tres protecciones del capítulo PIE/RELRO/NX.",
+                                ));
+                        }
+                        if let Some(relro) = info.relro {
+                            ui.label(RichText::new("RELRO").small().monospace().color(if relro { flag_on() } else { false_col() }))
+                                .on_hover_text(tr(
+                                    "Ce que le chargeur doit écrire pendant le chargement (.dynamic, et la GOT quand il y en a une) repasse en lecture seule une fois le travail fait : c'est le segment GNU_RELRO. Absent tant qu'il n'y a pas de section dynamique — sans rien à reloguer au chargement, il n'y a rien à reprotéger. Lier en PIE le fait apparaître.",
+                                    "Whatever the loader must write while loading (.dynamic, and the GOT when there is one) goes back to read-only once the work is done: that is the GNU_RELRO segment. Absent as long as there is no dynamic section — with nothing to relocate at load time, there is nothing to re-protect. Linking as PIE makes it appear.",
+                                    "Lo que el cargador debe escribir durante la carga (.dynamic, y la GOT cuando la hay) vuelve a ser de solo lectura una vez hecho el trabajo: es el segmento GNU_RELRO. Ausente mientras no haya sección dinámica — sin nada que relocalizar al cargar, no hay nada que volver a proteger. Enlazar en PIE lo hace aparecer.",
+                                ));
+                        }
+                        ui.label(RichText::new(tr("— voir « exécutable » ci-dessus pour PIE", "— see “executable” above for PIE", "— vea «ejecutable» arriba para PIE")).small().weak());
+                    });
+                }
                 // Ce panneau répond aux questions qu'ASM Studio sait poser d'un
                 // binaire ; Desdec pose les autres. Le bouton est ici plutôt
                 // qu'à la barre d'outils parce que c'est ici qu'on regarde le
