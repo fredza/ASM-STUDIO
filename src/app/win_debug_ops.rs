@@ -151,8 +151,7 @@ impl App {
         let stops = self.stop_addresses(None);
         let lang = self.lang;
         let mut used = 0usize;
-        loop {
-            let Some(d) = self.win_dbg.as_mut() else { break };
+        while let Some(d) = self.win_dbg.as_mut() {
             for addr in stops.keys() {
                 let _ = d.set_breakpoint(*addr);
             }

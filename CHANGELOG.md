@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-10
+
+### Fixed
+- **CI was red on every push, unrelated to what changed**: `cargo test`
+  (debug builds only — `cargo test --release`, what the release workflow
+  runs, was never affected) aborted on the first of about eighty headless
+  UI tests, each dropping an `egui::Context::run_ui` output without
+  handling its `textures_delta`. That's `egui`/`epaint` itself: any fresh
+  `Context`'s very first `run_ui` uploads its default font atlas, and
+  `epaint::TexturesDelta`'s `Drop` impl `debug_assert!`s that this got
+  handled — a real bug in a real renderer (an unshown texture), a false
+  positive in a layout-only test. Silenced with a single targeted
+  `[profile.test.package.epaint] debug-assertions = false` in `Cargo.toml`,
+  rather than touching every affected test — it disarms only `epaint`'s own
+  `debug_assert!`s, not `asm_studio`'s.
+- **A clippy lint** (`while_let_loop`) in the new Windows step debugger's
+  `Continue` command, caught once `cargo clippy --all-targets -- -D
+  warnings` could actually run to completion instead of failing to build
+  first.
+
 ## [0.7.0] - 2026-09-10
 
 ### Added
