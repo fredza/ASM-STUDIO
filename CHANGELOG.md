@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-09-10
+
+### Added
+- **A build-time warning for misaligned-stack calls.** The classic trap —
+  an `add rsp, N` that undoes the alignment set up for one call before a
+  second one — crashes deep inside a system DLL or libc, at an address
+  that names none of the student's lines, sometimes only every other run.
+  The new check follows the linear instruction path from the entry point,
+  tallying `push`/`pop` and `sub`/`add rsp, N`, and warns on the first
+  `call` reached with RSP not a multiple of 16 — but only when that call
+  leaves the program (an import thunk or PLT stub); a misaligned call into
+  the student's own code has no observable effect, and gets left alone.
+  Gives up silently on the first jump, loop, or non-literal stack
+  adjustment rather than risk a false positive. A warning, not an error:
+  appended to the build log, in all three languages, never blocks
+  assembly. Verified against every shipped example and lesson starter —
+  the only one that triggers it is "The shadow space" (`win_pile`), whose
+  starter contains exactly this bug on purpose.
+
+### Fixed
+- **The PE linker misaligned its import tables with an even number of
+  imported DLLs** — the import descriptors (20 bytes each) didn't leave
+  the thunk arrays on an 8-byte boundary. Found while chasing what turned
+  out to be an unrelated crash (see below); real nonetheless, now covered
+  by a test that links and actually runs a two-DLL binary under Wine.
+- **A Wine crash blamed on the PE linker was actually a misaligned stack**
+  in the test program itself — `add rsp, 40` undoing an earlier
+  alignment before a second `call`. Wine reports every general-protection
+  fault as "read access to `FFFFFFFFFFFFFFFF`", which sent the
+  investigation toward the linker before the real cause surfaced. This is
+  exactly the trap the new build-time warning above now catches.
+
 ## [0.7.1] - 2026-09-10
 
 ### Fixed
