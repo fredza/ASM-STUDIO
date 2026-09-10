@@ -712,7 +712,13 @@ fn build_idata(base: u32, imports: &[Import]) -> Idata {
 
     let desc_size = 20 * (dlls.len() as u32 + 1);
     let thunk_bytes: u32 = dlls.iter().map(|(_, v)| 8 * (v.len() as u32 + 1)).sum();
-    let ilt_start = desc_size;
+    // Les descripteurs font 20 octets : avec un nombre pair de DLL, leur tableau
+    // ne se termine pas sur un multiple de 8, et l'ILT comme l'IAT seraient
+    // désalignées. Ce sont des tableaux de mots de 64 bits, que le chargeur
+    // réécrit un à un ; les aligner est ce que fait tout lieur, et c'est aussi
+    // ce qu'exige un accès atomique. La section commence à une adresse alignée
+    // sur une page, donc aligner le décalage suffit.
+    let ilt_start = align(desc_size, 8);
     let iat_start = ilt_start + thunk_bytes;
     let names_start = iat_start + thunk_bytes;
 
@@ -1174,4 +1180,111 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+
+    /// Un programme qui importe de **deux** DLL, pris de bout en bout.
+    ///
+    /// Le cas à une seule DLL ne dit rien de la table d'import : avec un seul
+    /// descripteur, l'ILT et l'IAT tombent par chance sur un multiple de 8, et
+    /// il n'y a pas de second groupe dont le chargeur doive retrouver les
+    /// noms. Ce test-ci emprunte les deux chemins : `printf` vient de
+    /// `msvcrt.dll`, `ExitProcess` de `kernel32.dll`. Il vérifie à la fois la
+    /// structure posée dans le fichier et ce que le vrai chargeur en fait.
+    const TWO_DLLS: &str = r#"
+    bits 64
+    default rel
+
+    section .data
+        fmt db "deux DLL: %d", 10, 0
+    section .text
+        global main
+        extern printf
+        extern ExitProcess
+    main:
+        sub     rsp, 40
+        lea     rcx, [fmt]
+        mov     edx, 7
+        call    printf
+        mov     ecx, 42
+        call    ExitProcess
+    "#;
+
+    /// Les tableaux de *thunks* (ILT et IAT) sont des tableaux de mots de
+    /// 64 bits : le chargeur y écrit une adresse par entrée. Les descripteurs
+    /// qui les précèdent font 20 octets, donc un nombre pair de DLL laisse le
+    /// tableau à un décalage de 4 — désaligné. Aucun lieur ne livre cela, et
+    /// rien ne garantit qu'un chargeur (ou une écriture atomique) le tolère.
+    #[test]
+    fn thunk_tables_are_eight_byte_aligned_with_several_dlls() {
+        let (exe, report) = build("two-dlls", TWO_DLLS);
+        let dlls: Vec<&str> = report.imports.iter().map(|i| i.dll.as_str()).collect();
+        assert_eq!(dlls, vec!["msvcrt.dll", "kernel32.dll"], "deux DLL distinctes");
+
+        let data = std::fs::read(&exe).expect("lecture de l'exe");
+        let pe = PeFile64::parse(&*data).expect("PE64 valide");
+
+        // L'IAT annoncée au chargeur (répertoire n° 12) est alignée.
+        let dir = pe
+            .data_directories()
+            .get(pe::IMAGE_DIRECTORY_ENTRY_IAT)
+            .expect("répertoire IAT");
+        let iat_rva = dir.virtual_address.get(object::LittleEndian);
+        assert_eq!(iat_rva % 8, 0, "IAT désalignée en 0x{iat_rva:X}");
+
+        // Et chaque descripteur vise une ILT et une IAT alignées, pour un nom
+        // de DLL lisible : c'est tout ce dont le chargeur dispose.
+        let table = pe
+            .import_table()
+            .expect("table d'import lisible")
+            .expect("table présente");
+        let mut descs = table.descriptors().expect("descripteurs");
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(desc) = descs.next().expect("descripteur suivant") {
+            let ilt = desc.original_first_thunk.get(object::LittleEndian);
+            let iat = desc.first_thunk.get(object::LittleEndian);
+            assert_eq!(ilt % 8, 0, "ILT désalignée en 0x{ilt:X}");
+            assert_eq!(iat % 8, 0, "IAT désalignée en 0x{iat:X}");
+            let name = table
+                .name(desc.name.get(object::LittleEndian))
+                .expect("nom de DLL");
+            seen.push(String::from_utf8_lossy(name).into_owned());
+        }
+        seen.sort();
+        assert_eq!(seen, vec!["kernel32.dll", "msvcrt.dll"]);
+    }
+
+    /// Le même programme, exécuté pour de bon : c'est la seule preuve que le
+    /// chargeur accepte une table d'import à plusieurs descripteurs. La sortie
+    /// vient de `msvcrt.dll` et le code de retour de `kernel32.dll` : il faut
+    /// que les deux IAT aient été résolues pour que le test passe. Ignoré si
+    /// wine manque, comme le reste de la suite.
+    #[test]
+    fn two_dlls_run_under_wine_when_available() {
+        if std::process::Command::new("wine")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("wine absent : exécution du PE à deux DLL non vérifiée");
+            return;
+        }
+        let (exe, _) = build("wine-two-dlls", TWO_DLLS);
+        let out = std::process::Command::new("wine")
+            .arg(&exe)
+            .env("WINEDEBUG", "-all")
+            .output()
+            .expect("lancement de wine");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("deux DLL: 7"),
+            "printf (msvcrt.dll) n'a rien écrit: {stdout:?} / {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(42),
+            "ExitProcess (kernel32.dll) doit rendre 42 (stderr: {})",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
+
