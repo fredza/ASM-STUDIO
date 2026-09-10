@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.12] - 2026-09-10
+## [0.7.13] - 2026-09-10
+
+### Fixed
+- **`WinDebugger::available()` was launching two Wine processes on every UI
+  frame.** It backs both the toolbar's Windows Step/Continue buttons and the
+  step debugger window, so a session that stayed busy — most visibly, a
+  program waiting on a `MessageBoxA` — requested a repaint every 30ms, and
+  each one paid `wine --version` plus `winedbg --help` (~140ms combined).
+  That is what surfaced as a runaway `winedbg`/`start.exe` process churn and
+  high CPU right after answering a dialog box. The result is now memoized for
+  five seconds — long enough that a frame costs nothing, short enough that
+  installing Wine while the IDE runs still needs no restart to be picked up.
+- **Answering a real dialog box could outlast the debugger's own patience.**
+  `Continue` waited at most twenty seconds for winedbg's reply, the same
+  budget used for an ordinary instruction — but a human reading a `MessageBoxA`
+  and finding the OK button routinely takes longer, and the session used to
+  close on a bare "Resource temporarily unavailable (os error 11)" that named
+  nothing useful. Resuming execution now gets two minutes, and a genuine
+  timeout closes the session with a message that says what actually
+  happened: the program never got its answer, so try again. The step debugger
+  window also now says, while a command is in flight, that a dialog box may
+  be open elsewhere on screen and waiting for a click.
 
 ### Added
 - **An optional position-independent link (`-pie`) for the Linux target**, for

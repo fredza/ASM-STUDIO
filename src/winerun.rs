@@ -284,6 +284,23 @@ mod tests {
         }
     }
 
+    /// Vérification ponctuelle : l'exemple livré `win_arithmetic.asm`,
+    /// lancé exactement comme le ferait le bouton « Lancer ».
+    #[test]
+    fn shipped_win_arithmetic_runs_under_wine() {
+        if !available() {
+            eprintln!("wine absent : non vérifié");
+            return;
+        }
+        let source = std::fs::read_to_string("examples_seed/win_arithmetic.asm")
+            .expect("l'exemple est livré avec l'IDE");
+        let exe = build_exe("winerun-shipped-arith", &source);
+        let mut run = WineRun::spawn(&exe).expect("wine doit démarrer");
+        let (out, code) = run_to_completion(&mut run);
+        assert_eq!(code, 0, "sortie : {out}");
+        assert!(out.contains("Resultat = 8"), "sortie : {out}");
+    }
+
     /// Le programme tourne, écrit dans la console de l'IDE et rend son code de
     /// sortie — c'est tout ce que la cible Windows promet.
     #[test]

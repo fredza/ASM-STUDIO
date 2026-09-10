@@ -48,6 +48,12 @@
 //! thread dédié pour la durée de la session. Ce module lui fournit de quoi
 //! couper court à une attente qui s'éternise ([`WinDbgInterrupt`]), la seule
 //! chose qu'un thread extérieur puisse faire sur une connexion synchrone.
+//!
+//! Seule exception, et elle a coûté cher : [`WinDebugger::available`] est
+//! appelée par la barre d'outils, donc depuis le fil de l'interface, à chaque
+//! frame. Elle lançait deux processus Wine à chaque fois — voir
+//! [`AVAILABILITY_TTL`] pour ce que ça donnait, et pourquoi sa réponse est
+//! désormais mémorisée.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -83,6 +89,11 @@ pub enum WinDbgError {
     /// alors qu'une commande n'avait pas encore répondu) — voir
     /// [`WinDbgInterrupt`].
     Interrupted,
+    /// `winedbg` n'a rien répondu dans le temps imparti. Le cas courant n'est
+    /// pas une panne mais une attente : le programme débogué est arrêté sur
+    /// quelque chose que le protocole ne sait pas nous montrer — une boîte de
+    /// dialogue modale, une saisie clavier — et personne n'y a répondu.
+    Timeout,
 }
 
 impl WinDbgError {
@@ -138,6 +149,18 @@ impl WinDbgError {
                 "sesión de depuración interrumpida",
             )
             .to_string(),
+            WinDbgError::Timeout => tr(
+                "le programme n'a pas repris la main. S'il affichait une boîte de dialogue, \
+                 il fallait y répondre : winedbg ne peut pas le faire à votre place, et il \
+                 n'attend pas indéfiniment. La session est refermée — relancez « Démarrer ».",
+                "the program never came back. If it was showing a dialog box, it had to be \
+                 answered: winedbg cannot do it for you, and it does not wait forever. The \
+                 session is closed — hit “Start” again.",
+                "el programa no devolvió el control. Si mostraba un cuadro de diálogo, había \
+                 que responderlo: winedbg no puede hacerlo por usted, y no espera \
+                 indefinidamente. La sesión se cerró — pulse «Iniciar» de nuevo.",
+            )
+            .to_string(),
         }
     }
 }
@@ -149,10 +172,12 @@ pub type WinDbgResult<T> = std::result::Result<T, WinDbgError>;
 ///
 /// Le besoin vient d'un cas très concret : le débogué appelle `MessageBoxA`,
 /// Windows affiche une boîte modale et n'en sort qu'au clic sur « OK ». Le
-/// `cont()` parti là-dedans attend sa réponse RSP jusqu'à [`REQUEST_TIMEOUT`],
-/// soit vingt secondes de session qui ne répond plus à « Arrêter ». Et rien
-/// ne peut être *envoyé* sur cette connexion pour l'abréger : ce `winedbg`
-/// n'implémente pas l'interruption asynchrone (`\x03`) du protocole.
+/// `cont()` parti là-dedans attend sa réponse RSP jusqu'à [`CONT_TIMEOUT`] —
+/// deux minutes, exprès, pour laisser à l'élève le temps de répondre à la
+/// boîte. Sans cette poignée, ce seraient deux minutes de session qui ne
+/// répond plus à « Arrêter ». Et rien ne peut être *envoyé* sur cette
+/// connexion pour l'abréger : ce `winedbg` n'implémente pas l'interruption
+/// asynchrone (`\x03`) du protocole.
 ///
 /// La seule coupure fiable est donc de tuer `winedbg` lui-même : le serveur
 /// disparu, la connexion TCP se ferme, et la lecture bloquée côté client
@@ -245,11 +270,22 @@ struct Bp {
     armed: bool,
 }
 
-/// Délai maximal d'attente d'une réponse RSP. Une instruction ordinaire
-/// répond en microsecondes ; ce plafond ne sert qu'à éviter un blocage
-/// indéfini si le programme débogué attend une entrée qu'on ne peut pas
-/// encore lui fournir (voir la note de module sur la sortie/entrée absentes).
+/// Délai maximal d'attente d'une réponse RSP. Une lecture de registres ou de
+/// mémoire répond en microsecondes : ce plafond ne sert qu'à ne jamais rester
+/// bloqué pour toujours sur une connexion devenue muette.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Délai accordé au seul paquet qui peut légitimement mettre longtemps :
+/// `vCont;c`, qui ne répond que lorsque le programme s'arrête à nouveau.
+///
+/// Vingt secondes suffisaient tant qu'on ne pensait qu'aux boucles de calcul.
+/// Mais un programme Windows qui appelle `MessageBoxA` attend un humain :
+/// l'élève lit la boîte, cherche le bouton, clique. Vérifié à l'usage — il y
+/// passe couramment plus de vingt secondes, et la session mourait alors sous
+/// ses yeux sur un « Resource temporarily unavailable (os error 11) » qui ne
+/// veut rien dire pour lui. Deux minutes lui laissent le temps de répondre,
+/// et restent un plafond : rien ne peut attendre indéfiniment ici.
+const CONT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Délai laissé à `winedbg` pour ouvrir son port avant d'abandonner.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -337,6 +373,19 @@ impl RspConn {
                 match self.sock.read(&mut tmp) {
                     Ok(n) => break n,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    // Le délai de lecture qui expire arrive en `WouldBlock`
+                    // (Linux) ou `TimedOut` (autres) : ce n'est pas une panne
+                    // du protocole mais une attente qu'on abrège, et le dire
+                    // en ces termes est tout ce qui sépare un message utile
+                    // d'un « os error 11 » incompréhensible.
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        return Err(WinDbgError::Timeout);
+                    }
                     Err(e) => return Err(io_err("lecture RSP")(e)),
                 }
             };
@@ -352,6 +401,21 @@ impl RspConn {
     fn request(&mut self, payload: &str) -> WinDbgResult<Vec<u8>> {
         self.send(payload)?;
         self.recv()
+    }
+
+    /// Comme [`Self::request`], mais en accordant [`CONT_TIMEOUT`] à la
+    /// réponse. Réservé à la reprise d'exécution : elle seule peut attendre
+    /// un geste humain (voir [`CONT_TIMEOUT`]).
+    fn request_running(&mut self, payload: &str) -> WinDbgResult<Vec<u8>> {
+        self.sock
+            .set_read_timeout(Some(CONT_TIMEOUT))
+            .map_err(io_err("réglage du délai"))?;
+        let out = self.request(payload);
+        // Remis quoi qu'il arrive : les lectures suivantes (registres,
+        // mémoire) n'ont aucune raison d'attendre deux minutes, et une erreur
+        // ici ne doit pas laisser la connexion avec un plafond de travers.
+        let _ = self.sock.set_read_timeout(Some(REQUEST_TIMEOUT));
+        out
     }
 }
 
@@ -461,6 +525,26 @@ fn registers_from_g(bytes: &[u8]) -> WinDbgResult<(Registers, Option<FpRegisters
     Ok((regs, fp))
 }
 
+/// Combien de temps la réponse de [`WinDebugger::available`] reste valable.
+///
+/// Cette recherche n'est pas un test de `PATH` : elle lance deux vrais
+/// processus Wine (`wine --version`, `winedbg --help`), soit ~140 ms à chaque
+/// appel. L'interface l'appelait depuis la barre d'outils, donc à **chaque
+/// frame** dès que la cible était Windows — et le pas-à-pas Windows redemande
+/// une frame toutes les 30 ms tant qu'une commande est en vol. De quoi saturer
+/// un cœur, figer l'IDE, et faire défiler dans `ps` un flot de `start.exe
+/// /exec winedbg` éphémères aux PID toujours nouveaux, à côté de celui de la
+/// session : c'est exactement le « winedbg qui se relance en boucle » signalé
+/// après un clic sur une boîte de dialogue.
+///
+/// Le résultat est donc mémorisé quelques secondes. Assez pour qu'une frame ne
+/// coûte plus rien ; assez peu pour tenir la promesse d'origine — installer
+/// Wine pendant que l'IDE tourne suffit à s'en servir, sans le redémarrer.
+const AVAILABILITY_TTL: Duration = Duration::from_secs(5);
+
+/// Dernière réponse de [`WinDebugger::available`], avec sa date.
+static AVAILABILITY: Mutex<Option<(bool, Instant)>> = Mutex::new(None);
+
 /// Un débogueur PE64 sous Wine, piloté via `winedbg --gdb` et RSP.
 pub struct WinDebugger {
     /// Le processus `winedbg` lui-même (pas le débogué, que Wine gère à part
@@ -480,7 +564,26 @@ pub struct WinDebugger {
 
 impl WinDebugger {
     /// Wine et `winedbg` sont-ils utilisables ?
+    ///
+    /// Appelable depuis la boucle de frames : la réponse est mémorisée
+    /// [`AVAILABILITY_TTL`] (voir la note de cette constante — sans elle, cet
+    /// appel lançait deux processus Wine par frame).
     pub fn available() -> bool {
+        let mut slot = AVAILABILITY.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((found, when)) = *slot
+            && when.elapsed() < AVAILABILITY_TTL
+        {
+            return found;
+        }
+        // La sonde garde le verrou : deux threads qui se posent la question en
+        // même temps lancent alors un seul Wine, pas deux.
+        let found = Self::probe();
+        *slot = Some((found, Instant::now()));
+        found
+    }
+
+    /// La recherche elle-même, sans mémorisation.
+    fn probe() -> bool {
         crate::winerun::available()
             && Command::new("winedbg")
                 .arg("--help")
@@ -686,7 +789,7 @@ impl WinDebugger {
             self.breakpoints[pos].armed = true;
         }
 
-        let reply = self.conn.request("vCont;c")?;
+        let reply = self.conn.request_running("vCont;c")?;
         if !self.apply_stop(&reply)? {
             return Ok(()); // terminé
         }
@@ -867,11 +970,60 @@ fn read_entry_va(exe: &Path) -> WinDbgResult<u64> {
     Ok(file.entry())
 }
 
+/// Verrou partagé par les tests qui font tourner une vraie session Wine.
+///
+/// `wineserver` et le serveur X sont communs à tout le processus de test.
+/// Plusieurs sessions de pas-à-pas en parallèle se tolèrent (verrou en
+/// lecture) ; celle qui pilote une vraie fenêtre à l'écran, elle, ne supporte
+/// aucun voisin — vérifié : la boîte de dialogue qu'elle attend se referme
+/// toute seule dès qu'une autre session Wine s'agite à côté, et le test perd
+/// alors ce qu'il prétendait vérifier. Elle prend donc le verrou en écriture
+/// et tourne seule.
+#[cfg(test)]
+static WINE_TESTS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// À prendre par tout test qui lance une vraie session Wine sans avoir besoin
+/// de l'écran pour lui seul (voir [`WINE_TESTS`]).
+#[cfg(test)]
+pub(crate) fn shared_wine_test() -> std::sync::RwLockReadGuard<'static, ()> {
+    WINE_TESTS.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// À prendre par le seul test qui pilote une vraie fenêtre à l'écran.
+#[cfg(test)]
+pub(crate) fn exclusive_wine_test() -> std::sync::RwLockWriteGuard<'static, ()> {
+    WINE_TESTS.write().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::assemble::{self, Target};
     use std::path::PathBuf;
+
+    /// La barre d'outils demande « Wine est-il là ? » à chaque frame, et le
+    /// pas-à-pas Windows redemande une frame toutes les 30 ms tant qu'une
+    /// commande tourne. Chaque réponse non mémorisée coûtait deux lancements
+    /// de Wine (~140 ms) : l'IDE y passait tout son temps, et `ps` se
+    /// remplissait de `winedbg` éphémères — le « winedbg en boucle » signalé.
+    ///
+    /// Deux cents appels d'affilée doivent donc coûter à peu près rien. Sans
+    /// mémorisation, ce même compte prendrait une demi-minute.
+    #[test]
+    fn asking_whether_wine_is_available_is_free_after_the_first_time() {
+        // Le premier appel paie la sonde, où qu'on en soit dans le TTL.
+        let first = WinDebugger::available();
+        let t = Instant::now();
+        for _ in 0..200 {
+            assert_eq!(WinDebugger::available(), first, "réponse instable");
+        }
+        let elapsed = t.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "200 appels ont pris {elapsed:?} : la réponse n'est pas mémorisée, \
+             et l'interface repaie un lancement de Wine à chaque frame"
+        );
+    }
 
     fn build_exe(name: &str, source: &str) -> PathBuf {
         let dir = PathBuf::from("build").join(name);
@@ -910,6 +1062,36 @@ mod tests {
             call    ExitProcess
         "#;
 
+    /// Vérification ponctuelle demandée par l'utilisateur après une boîte
+    /// « WineDbg n'a pas pu s'y attacher » vue pendant une session de test
+    /// manuel : l'exemple livré `win_hello_world.asm`, pas-à-pas jusqu'au
+    /// bout, ne doit ni planter ni laisser winedbg dans un état étrange.
+    #[test]
+    fn shipped_win_hello_world_steps_to_a_clean_exit() {
+        if !WinDebugger::available() {
+            eprintln!("wine absent : non vérifié");
+            return;
+        }
+        let _wine = shared_wine_test();
+        let source = std::fs::read_to_string("examples_seed/win_hello_world.asm")
+            .expect("l'exemple est livré avec l'IDE");
+        let exe = build_exe("windbg-shipped-hello", &source);
+        let mut dbg = WinDebugger::launch(&exe).expect("lancement");
+        // Un « Suivant » entre dans kernel32/ntdll (pas de step-over côté
+        // Windows) : quelques pas dans le programme lui-même, comme un élève
+        // le ferait, puis Continuer jusqu'à la sortie plutôt que de
+        // dénombrer des instructions internes à Wine.
+        for _ in 0..3 {
+            if !dbg.is_alive() {
+                break;
+            }
+            dbg.step().expect("pas");
+        }
+        dbg.cont().expect("continuer jusqu'à la fin");
+        assert!(!dbg.is_alive());
+        assert_eq!(dbg.state, WinRunState::Exited(0), "code de sortie inattendu");
+    }
+
     /// Le lancement s'arrête avant la première instruction, et les registres
     /// lus décrivent un thread réel (RSP non nul).
     #[test]
@@ -918,6 +1100,7 @@ mod tests {
             eprintln!("wine absent : lancement non vérifié");
             return;
         }
+        let _wine = shared_wine_test();
         let exe = build_exe("windbg-launch", HELLO);
         let dbg = WinDebugger::launch(&exe).expect("lancement");
         assert!(dbg.is_alive());
@@ -931,6 +1114,7 @@ mod tests {
             eprintln!("wine absent : pas-à-pas non vérifié");
             return;
         }
+        let _wine = shared_wine_test();
         let exe = build_exe("windbg-step", HELLO);
         let mut dbg = WinDebugger::launch(&exe).expect("lancement");
         let mut last = dbg.regs().rip;
@@ -953,6 +1137,7 @@ mod tests {
             eprintln!("wine absent : point d'arrêt non vérifié");
             return;
         }
+        let _wine = shared_wine_test();
         let exe = build_exe("windbg-bp", HELLO);
         let mut dbg = WinDebugger::launch(&exe).expect("lancement");
         let entry = dbg.regs().rip;
@@ -982,6 +1167,7 @@ mod tests {
             eprintln!("wine absent : fin de programme non vérifiée");
             return;
         }
+        let _wine = shared_wine_test();
         let exe = build_exe("windbg-exit", HELLO);
         let mut dbg = WinDebugger::launch(&exe).expect("lancement");
         dbg.cont().expect("continuer jusqu'à la fin");
@@ -997,6 +1183,7 @@ mod tests {
             eprintln!("wine absent : mémoire non vérifiée");
             return;
         }
+        let _wine = shared_wine_test();
         let exe = build_exe("windbg-mem", HELLO);
         let mut dbg = WinDebugger::launch(&exe).expect("lancement");
         let entry = dbg.regs().rip;
@@ -1034,6 +1221,7 @@ mod tests {
             eprintln!("wine absent : interruption non vérifiée");
             return;
         }
+        let _wine = shared_wine_test();
         let exe = build_exe("windbg-interrupt", BOUCLE_SANS_FIN);
         let interrupt = WinDbgInterrupt::new();
         let mut dbg = WinDebugger::launch_interruptible(&exe, &interrupt).expect("lancement");
@@ -1072,6 +1260,7 @@ mod tests {
             eprintln!("wine absent : écriture de registre non vérifiée");
             return;
         }
+        let _wine = shared_wine_test();
         let exe = build_exe("windbg-setreg", HELLO);
         let mut dbg = WinDebugger::launch(&exe).expect("lancement");
         dbg.set_register("RAX", 0x1234_5678_9abc_def0).expect("écriture");

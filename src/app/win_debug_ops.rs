@@ -45,7 +45,7 @@ use eframe::egui;
 
 use crate::debugger::{Flags, Registers};
 use crate::i18n::{self, Lang};
-use crate::win_debugger::{WinDbgInterrupt, WinDbgResult, WinDebugger, WinRunState};
+use crate::win_debugger::{WinDbgError, WinDbgInterrupt, WinDbgResult, WinDebugger, WinRunState};
 
 use super::App;
 use super::debug_ops::{StopMap, stops_here};
@@ -78,6 +78,13 @@ enum WinEvent {
     Stopped(Box<WinSnapshot>),
     /// La commande a échoué ; message déjà traduit, prêt à journaliser.
     Failed(String),
+    /// Le délai d'attente a expiré sans réponse : la session se referme, mais
+    /// ce n'est pas une panne de l'IDE — le plus souvent, le programme
+    /// attendait un geste que personne ne lui a donné. Distingué de
+    /// [`WinEvent::Failed`] pour que la barre d'état le dise en ces termes,
+    /// plutôt que d'annoncer un échec sur ce qui est presque toujours un
+    /// malentendu (voir [`crate::win_debugger::WinDbgError::Timeout`]).
+    GaveUp(String),
 }
 
 /// L'état du débogué recopié à chaque arrêt.
@@ -165,9 +172,9 @@ impl WinDebugSession {
                 self.snap = Some((*snap).clone());
                 Some(WinEvent::Stopped(snap))
             }
-            Ok(WinEvent::Failed(msg)) => {
+            Ok(other) => {
                 self.busy = false;
-                Some(WinEvent::Failed(msg))
+                Some(other)
             }
             // Déconnecté : le thread s'est arrêté sans rien dire (panique, ou
             // fin normale après un `Stop`). Plus rien à attendre de lui.
@@ -311,7 +318,11 @@ fn session_thread(
                 // abouti. L'annoncer ferait apparaître une erreur rouge sur
                 // un geste délibéré de l'élève.
                 if !interrupt.is_cancelled() {
-                    let _ = evts.send(WinEvent::Failed(e.message(lang)));
+                    let msg = e.message(lang);
+                    let _ = evts.send(match e {
+                        WinDbgError::Timeout => WinEvent::GaveUp(msg),
+                        _ => WinEvent::Failed(msg),
+                    });
                 }
                 break;
             }
@@ -474,6 +485,20 @@ impl App {
                 .to_string();
                 // Le thread s'est déjà retiré après avoir rapporté sa panne :
                 // relâcher la session ne fait plus que joindre un thread fini.
+                self.win_dbg = None;
+            }
+            Some(WinEvent::GaveUp(msg)) => {
+                let lang = self.lang;
+                self.log(&msg);
+                self.status = i18n::tr3(
+                    lang,
+                    "Pas-à-pas Windows : session refermée après une trop longue attente",
+                    "Windows step debugging: session closed after waiting too long",
+                    "Paso a paso Windows: sesión cerrada tras una espera demasiado larga",
+                )
+                .to_string();
+                // Même geste que « Arrêter » : le `Drop` tue `winedbg` et
+                // joint le thread. Rien de Wine ne survit à cette ligne.
                 self.win_dbg = None;
             }
             None => {}
@@ -639,12 +664,213 @@ mod tests {
         wait_ready(app, ctx, Duration::from_secs(60))
     }
 
+    /// Titre de la boîte du test : distinctif, pour que `xdotool` ne puisse
+    /// tomber que sur elle.
+    const BOITE_TITRE: &str = "TitreTestMessageBox";
+
+    /// Combien de temps la boîte reste à l'écran avant qu'on y réponde.
+    ///
+    /// Plus long que les vingt secondes de `REQUEST_TIMEOUT`, et c'est tout
+    /// l'intérêt : c'est exactement là que la session mourait.
+    const ATTENTE_ELEVE: Duration = Duration::from_secs(25);
+
+    /// La fenêtre de la boîte est-elle à l'écran ? Rend son identifiant X.
+    fn boite_a_l_ecran() -> Option<String> {
+        let out = std::process::Command::new("xdotool")
+            .args(["search", "--name", BOITE_TITRE])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        // Plusieurs fenêtres peuvent porter ce titre (Wine en crée de
+        // techniques autour du dialogue) : une seule suffit, et passer la
+        // liste entière comme un seul argument ne donnait qu'un `BadWindow`.
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .map(str::to_string)
+    }
+
+    /// Répond à la boîte comme le ferait l'élève : le focus sur sa fenêtre,
+    /// puis un appui sur Entrée — le bouton par défaut est « OK ».
+    ///
+    /// `windowfocus` plutôt que `windowactivate` : sous GNOME/XWayland,
+    /// `windowactivate --sync` reste bloqué une quinzaine de secondes sur une
+    /// fenêtre Wine que le compositeur ne remonte jamais, et la touche part
+    /// alors dans le vide. `windowfocus` pose le focus X directement, et
+    /// `xdotool key` passe par XTEST : une vraie frappe, identique à celle
+    /// d'un clavier, pas un événement synthétique que Wine ignorerait.
+    fn repondre_a_la_boite(id: &str) -> bool {
+        for _ in 0..10 {
+            let focused = std::process::Command::new("xdotool")
+                .args(["windowfocus", id])
+                .status()
+                .is_ok_and(|s| s.success());
+            if focused {
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = std::process::Command::new("xdotool")
+                    .args(["key", "--clearmodifiers", "Return"])
+                    .status();
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            if boite_a_l_ecran().is_none() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Le geste réel d'un élève : son programme ouvre une `MessageBoxA`,
+    /// « Continuer » attend dessus, et il prend son temps avant de répondre.
+    /// Pas une simulation — une vraie frappe XTEST (`xdotool`) sur la vraie
+    /// fenêtre Wine, sur le bouton par défaut de la vraie boîte.
+    ///
+    /// Ce que ce test verrouille, dans l'ordre où ça a cassé :
+    ///
+    ///   * la boîte reste à l'écran vingt-cinq secondes — plus que les vingt
+    ///     du délai RSP d'origine, qui refermait alors la session sur un
+    ///     « Resource temporarily unavailable (os error 11) » alors que le
+    ///     programme se portait très bien et n'attendait qu'un clic (voir
+    ///     `CONT_TIMEOUT` dans `crate::win_debugger`) ;
+    ///   * une fois la boîte refermée, « Continuer » rend la main et le
+    ///     programme va jusqu'à son `ExitProcess` ;
+    ///   * la session refermée ne laisse aucun processus Wine derrière elle.
+    #[test]
+    fn clicking_ok_on_a_real_messagebox_does_not_wedge_winedbg() {
+        if !WinDebugger::available() {
+            eprintln!("wine absent : non vérifié");
+            return;
+        }
+        if std::process::Command::new("xdotool").arg("--version").output().is_err() {
+            eprintln!("xdotool absent : clic réel non vérifié");
+            return;
+        }
+        // Seul test à piloter une vraie fenêtre : il lui faut l'écran, et
+        // wineserver, pour lui tout seul (voir `WINE_TESTS`).
+        let _wine = crate::win_debugger::exclusive_wine_test();
+        assert!(
+            boite_a_l_ecran().is_none(),
+            "une fenêtre « {BOITE_TITRE} » traîne déjà : le test ne saurait pas laquelle il vise"
+        );
+        let source = format!(
+            r#"
+            bits 64
+            default rel
+            section .data
+                texte db "Cliquez sur OK pour continuer.", 0
+                titre db "{BOITE_TITRE}", 0
+            section .text
+                global main
+                extern MessageBoxA
+                extern ExitProcess
+            main:
+                sub     rsp, 40
+                xor     rcx, rcx
+                lea     rdx, [texte]
+                lea     r8, [titre]
+                xor     r9d, r9d
+                call    MessageBoxA
+                xor     ecx, ecx
+                call    ExitProcess
+            "#
+        );
+        let ctx = egui::Context::default();
+        let mut app = app_with("messagebox-click", &source);
+        assert!(start_and_wait(&mut app, &ctx), "la session doit démarrer");
+
+        // Depuis un fil à part : rien d'autre ne peut répondre à la boîte
+        // pendant que le thread principal sonde `poll_win_debug` en boucle,
+        // exactement comme la boucle de frames de l'interface le ferait.
+        // Large : pendant un `cargo test` complet, plusieurs sessions Wine
+        // tournent en parallèle et la boîte peut mettre longtemps à s'afficher.
+        let clicker = std::thread::spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(90);
+            let id = loop {
+                if let Some(id) = boite_a_l_ecran() {
+                    break id;
+                }
+                if Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            };
+            std::thread::sleep(ATTENTE_ELEVE);
+            Some(repondre_a_la_boite(&id))
+        });
+
+        app.win_debug_cont();
+        let responded = wait_ready(&mut app, &ctx, Duration::from_secs(180));
+        let clicked = clicker.join().unwrap_or(None);
+        assert_eq!(
+            clicked,
+            Some(true),
+            "la vraie boîte n'a pas pu être vue puis refermée par xdotool : \
+             sans ça le reste du test ne démontrerait rien (état : {:?})",
+            app.status
+        );
+        assert!(
+            responded,
+            "« Continuer » n'a pas repris la main après {ATTENTE_ELEVE:?} de boîte à l'écran \
+             puis un clic réel sur OK"
+        );
+        let snap = app
+            .win_dbg
+            .as_ref()
+            .expect("la session doit avoir survécu à l'attente")
+            .snapshot()
+            .expect("un état après le clic");
+        assert_eq!(snap.state, WinRunState::Exited(0), "sortie attendue après ExitProcess");
+
+        // Et rien ne survit à la fermeture — ni `winedbg`, ni le débogué.
+        app.win_debug_stop();
+        assert!(app.win_dbg.is_none());
+        let restants = std::process::Command::new("pgrep")
+            .args(["-f", "windbgops-messagebox-click.exe"])
+            .output()
+            .expect("pgrep");
+        assert!(
+            restants.stdout.is_empty(),
+            "processus Wine encore vivants après la fin de la session : {}",
+            String::from_utf8_lossy(&restants.stdout)
+        );
+    }
+
+    /// Vérification ponctuelle : la vraie file App→session→winedbg, sur
+    /// l'exemple livré, du démarrage jusqu'à la sortie, comme le ferait un
+    /// élève avec Démarrer puis Suivant×3 puis Continuer.
+    #[test]
+    fn shipped_win_hello_world_through_the_real_app_session() {
+        if !WinDebugger::available() {
+            eprintln!("wine absent : non vérifié");
+            return;
+        }
+        let _wine = crate::win_debugger::shared_wine_test();
+        let source = std::fs::read_to_string("examples_seed/win_hello_world.asm")
+            .expect("l'exemple est livré avec l'IDE");
+        let ctx = egui::Context::default();
+        let mut app = app_with("shipped-hello-real", &source);
+        assert!(start_and_wait(&mut app, &ctx), "la session doit démarrer");
+        for _ in 0..3 {
+            if app.win_dbg.as_ref().is_none_or(|s| !s.is_alive()) {
+                break;
+            }
+            app.win_debug_step();
+            assert!(wait_ready(&mut app, &ctx, Duration::from_secs(30)), "le pas doit répondre");
+        }
+        if app.win_dbg.as_ref().is_some_and(|s| s.is_alive()) {
+            app.win_debug_cont();
+            assert!(wait_ready(&mut app, &ctx, Duration::from_secs(30)), "continuer doit répondre");
+        }
+    }
+
     #[test]
     fn starting_a_session_stops_before_the_first_instruction() {
         if !WinDebugger::available() {
             eprintln!("wine absent : session Windows non vérifiée");
             return;
         }
+        let _wine = crate::win_debugger::shared_wine_test();
         let ctx = egui::Context::default();
         let mut app = app_with("start", HELLO);
         assert!(start_and_wait(&mut app, &ctx), "la session doit démarrer");
@@ -661,6 +887,7 @@ mod tests {
             eprintln!("wine absent : démarrage non bloquant non vérifié");
             return;
         }
+        let _wine = crate::win_debugger::shared_wine_test();
         let mut app = app_with("start-async", HELLO);
         // L'assemblage, lui, reste synchrone : on le fait avant de chronométrer,
         // sinon on mesurerait nasm plutôt que le lancement de Wine.
@@ -696,6 +923,7 @@ mod tests {
             eprintln!("wine absent : pas-à-pas Windows non vérifié");
             return;
         }
+        let _wine = crate::win_debugger::shared_wine_test();
         let ctx = egui::Context::default();
         let mut app = app_with("step", HELLO);
         assert!(start_and_wait(&mut app, &ctx), "session");
@@ -712,6 +940,7 @@ mod tests {
             eprintln!("wine absent : fin de programme non vérifiée");
             return;
         }
+        let _wine = crate::win_debugger::shared_wine_test();
         let ctx = egui::Context::default();
         let mut app = app_with("cont", HELLO);
         assert!(start_and_wait(&mut app, &ctx), "session");
@@ -729,6 +958,7 @@ mod tests {
             eprintln!("wine absent : point d'arrêt Windows non vérifié");
             return;
         }
+        let _wine = crate::win_debugger::shared_wine_test();
         let ctx = egui::Context::default();
         let mut app = app_with("bp", HELLO);
         let line = app
@@ -753,6 +983,7 @@ mod tests {
             eprintln!("wine absent : arrêt de session non vérifié");
             return;
         }
+        let _wine = crate::win_debugger::shared_wine_test();
         let ctx = egui::Context::default();
         let mut app = app_with("stop", HELLO);
         assert!(start_and_wait(&mut app, &ctx), "session");
@@ -777,6 +1008,7 @@ mod tests {
             eprintln!("wine absent : non-blocage non vérifié");
             return;
         }
+        let _wine = crate::win_debugger::shared_wine_test();
         let ctx = egui::Context::default();
         let mut app = app_with("hang", BOUCLE_SANS_FIN);
         assert!(start_and_wait(&mut app, &ctx), "session");
@@ -834,6 +1066,7 @@ mod tests {
             eprintln!("wine absent : empilement non vérifié");
             return;
         }
+        let _wine = crate::win_debugger::shared_wine_test();
         let ctx = egui::Context::default();
         let mut app = app_with("busy", BOUCLE_SANS_FIN);
         assert!(start_and_wait(&mut app, &ctx), "session");

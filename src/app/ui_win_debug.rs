@@ -186,6 +186,26 @@ impl App {
             }
         });
 
+        // Le seul cas où « En cours… » dure vraiment, et le seul que l'élève
+        // ne peut pas deviner : son programme a ouvert une fenêtre Windows et
+        // attend qu'on lui réponde. Rien ne le montre ici — le panneau ne
+        // relaie ni la sortie ni les fenêtres du débogué — alors on le dit.
+        if busy {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(tr(
+                    "Si votre programme affiche une boîte de dialogue (MessageBox), répondez-y : \
+                     elle est ailleurs à l'écran, et le pas-à-pas reprend dès que vous cliquez.",
+                    "If your program is showing a dialog box (MessageBox), answer it: it is \
+                     elsewhere on screen, and stepping resumes as soon as you click.",
+                    "Si su programa muestra un cuadro de diálogo (MessageBox), respóndalo: está \
+                     en otra parte de la pantalla, y el paso a paso sigue en cuanto haga clic.",
+                ))
+                .small()
+                .weak(),
+            );
+        }
+
         if bp_count > 0 {
             ui.add_space(6.0);
             ui.label(
