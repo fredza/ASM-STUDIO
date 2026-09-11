@@ -674,22 +674,35 @@ mod tests {
     /// l'intérêt : c'est exactement là que la session mourait.
     const ATTENTE_ELEVE: Duration = Duration::from_secs(25);
 
-    /// La fenêtre de la boîte est-elle à l'écran ? Rend son identifiant X.
-    fn boite_a_l_ecran() -> Option<String> {
-        let out = std::process::Command::new("xdotool")
-            .args(["search", "--name", BOITE_TITRE])
+    /// Les fenêtres *visibles* qui portent le titre de la boîte — toutes.
+    ///
+    /// Wine en crée deux pour un seul dialogue (une technique autour de la
+    /// vraie), du même titre, et `xdotool search` ne dit pas laquelle recevra
+    /// la touche : donner le focus à la mauvaise réussit, `Return` part
+    /// dedans, et la boîte reste à l'écran. Ce test a cassé exactement ainsi
+    /// le jour où le « bureau virtuel » Wine — qui, en emboîtant tout dans un
+    /// conteneur, mettait la bonne en premier — a été désactivé. D'où la
+    /// liste entière plutôt que la première ligne ; `--onlyvisible` n'écarte
+    /// que celles qu'aucun clic ne pourrait atteindre de toute façon.
+    fn boites_visibles() -> Vec<String> {
+        let Ok(out) = std::process::Command::new("xdotool")
+            .args(["search", "--onlyvisible", "--name", BOITE_TITRE])
             .output()
-            .ok()?;
+        else {
+            return Vec::new();
+        };
         if !out.status.success() {
-            return None;
+            return Vec::new();
         }
-        // Plusieurs fenêtres peuvent porter ce titre (Wine en crée de
-        // techniques autour du dialogue) : une seule suffit, et passer la
-        // liste entière comme un seul argument ne donnait qu'un `BadWindow`.
         String::from_utf8_lossy(&out.stdout)
             .lines()
-            .next()
             .map(str::to_string)
+            .collect()
+    }
+
+    /// La boîte est-elle à l'écran ?
+    fn boite_a_l_ecran() -> Option<String> {
+        boites_visibles().into_iter().next()
     }
 
     /// Répond à la boîte comme le ferait l'élève : le focus sur sa fenêtre,
@@ -701,17 +714,23 @@ mod tests {
     /// alors dans le vide. `windowfocus` pose le focus X directement, et
     /// `xdotool key` passe par XTEST : une vraie frappe, identique à celle
     /// d'un clavier, pas un événement synthétique que Wine ignorerait.
-    fn repondre_a_la_boite(id: &str) -> bool {
+    ///
+    /// La liste est relue à chaque tentative, et chaque fenêtre visible reçoit
+    /// la touche : l'identifiant peut changer si Wine recrée le dialogue, et
+    /// s'il en affiche deux, celle qui a le focus n'est pas forcément la bonne.
+    fn repondre_a_la_boite() -> bool {
         for _ in 0..10 {
-            let focused = std::process::Command::new("xdotool")
-                .args(["windowfocus", id])
-                .status()
-                .is_ok_and(|s| s.success());
-            if focused {
-                std::thread::sleep(Duration::from_millis(300));
-                let _ = std::process::Command::new("xdotool")
-                    .args(["key", "--clearmodifiers", "Return"])
-                    .status();
+            for id in boites_visibles() {
+                let focused = std::process::Command::new("xdotool")
+                    .args(["windowfocus", &id])
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if focused {
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _ = std::process::Command::new("xdotool")
+                        .args(["key", "--clearmodifiers", "Return"])
+                        .status();
+                }
             }
             std::thread::sleep(Duration::from_millis(500));
             if boite_a_l_ecran().is_none() {
@@ -786,17 +805,17 @@ mod tests {
         // tournent en parallèle et la boîte peut mettre longtemps à s'afficher.
         let clicker = std::thread::spawn(|| {
             let deadline = Instant::now() + Duration::from_secs(90);
-            let id = loop {
-                if let Some(id) = boite_a_l_ecran() {
-                    break id;
+            loop {
+                if boite_a_l_ecran().is_some() {
+                    break;
                 }
                 if Instant::now() >= deadline {
                     return None;
                 }
                 std::thread::sleep(Duration::from_millis(200));
-            };
+            }
             std::thread::sleep(ATTENTE_ELEVE);
-            Some(repondre_a_la_boite(&id))
+            Some(repondre_a_la_boite())
         });
 
         app.win_debug_cont();
