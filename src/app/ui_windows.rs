@@ -1606,13 +1606,15 @@ impl App {
             ),
         }};
 
-        // Corps borné à une fraction de l'écran, comme la fenêtre Réglages :
-        // une sortie de mille lignes poussait sinon le pied de page et le
-        // bouton « Fermer » hors de la fenêtre, qui débordait de l'écran.
-        // Une sortie se lit dans une boîte compacte ; le défilement absorbe
-        // les longues traces plutôt que d'agrandir la fenêtre jusqu'à masquer
-        // l'éditeur. La limite est aussi cohérente avec sa taille maximale.
-        let max_body_h = (ctx.content_rect().height() * 0.38).clamp(160.0, 300.0);
+        // Fenêtre et corps bornés à une fraction de l'écran, comme le
+        // parcours d'apprentissage : un `max_height` fixe (540, comme avant)
+        // pouvait encore dépasser un petit écran, et surtout, seul le pavé de
+        // sortie défilait — pas le message de saisie, la description ni le
+        // bouton « Fermer » au-dessus/en dessous de lui, qui pouvaient donc se
+        // retrouver hors champ sans aucun moyen d'y faire défiler. Le
+        // défilement absorbe les longues traces plutôt que d'agrandir la
+        // fenêtre jusqu'à masquer l'éditeur.
+        let max_h = (ctx.content_rect().height() * 0.75).clamp(280.0, 560.0);
         let mut open = true;
         let mut copy = false;
         egui::Window::new(tr("Sortie du programme", "Program output", "Salida del programa"))
@@ -1627,9 +1629,9 @@ impl App {
             .default_width(540.0)
             .min_width(360.0)
             .max_width(720.0)
-            .default_height(340.0)
+            .default_height(max_h)
             .min_height(240.0)
-            .max_height(540.0)
+            .max_height(max_h)
             .pivot(egui::Align2::CENTER_CENTER)
             .default_pos(ctx.content_rect().center())
             .open(&mut open)
@@ -1667,87 +1669,102 @@ impl App {
                 }
                 ui.add_space(4.0);
 
-                if can_type {
-                    // Le message souligne l'attente ACTIVE (le programme est
-                    // suspendu sur un `read`, en accent) ; le reste du temps —
-                    // le programme tourne, prêt à en recevoir une plus tard —
-                    // un rappel neutre suffit : le champ, lui, reste ouvert
-                    // dans les deux cas.
-                    let (hint_msg, hint_col) = if waiting_for_input {
-                        (
-                            if wine_input_available {
-                                tr(
-                                    "Saisissez une réponse pour le programme Windows, puis validez.",
-                                    "Enter a response for the Windows program, then submit.",
-                                    "Introduzca una respuesta para el programa Windows y envíela.",
+                // Tout le reste — message de saisie, pavé de sortie,
+                // description, bouton Fermer — défile ensemble : dérivé de
+                // `max_h` (l'écran), pas de `ui.available_height()`, qui
+                // s'est montré peu fiable tant que cette fenêtre
+                // redimensionnable n'a pas fini de mesurer sa taille
+                // automatique. ~35 px de budget pour le bandeau déjà dessiné
+                // au-dessus.
+                // Un seul niveau de défilement, pas deux imbriqués : un
+                // `ScrollArea` à l'intérieur d'un autre partageait mal les
+                // gestes de molette entre les deux (le rouleau de la souris
+                // finissait par ne plus rien faire bouger, ni vers le haut ni
+                // vers le bas). `stick_to_bottom` vit donc ici, sur l'unique
+                // défilement, et suit la dernière ligne écrite comme un vrai
+                // terminal.
+                let scroll_max_h = (max_h - 35.0).max(160.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("program_output_outer_scroll")
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, false])
+                    .max_height(scroll_max_h)
+                    .show(ui, |ui| {
+                        if can_type {
+                            // Le message souligne l'attente ACTIVE (le programme est
+                            // suspendu sur un `read`, en accent) ; le reste du temps —
+                            // le programme tourne, prêt à en recevoir une plus tard —
+                            // un rappel neutre suffit : le champ, lui, reste ouvert
+                            // dans les deux cas.
+                            let (hint_msg, hint_col) = if waiting_for_input {
+                                (
+                                    if wine_input_available {
+                                        tr(
+                                            "Saisissez une réponse pour le programme Windows, puis validez.",
+                                            "Enter a response for the Windows program, then submit.",
+                                            "Introduzca una respuesta para el programa Windows y envíela.",
+                                        )
+                                    } else {
+                                        tr(
+                                            "Le programme attend votre saisie : tapez-la puis validez.",
+                                            "The program is waiting for input: type it, then submit.",
+                                            "El programa espera una entrada: escríbala y envíela.",
+                                        )
+                                    },
+                                    action(),
                                 )
                             } else {
-                                tr(
-                                    "Le programme attend votre saisie : tapez-la puis validez.",
-                                    "The program is waiting for input: type it, then submit.",
-                                    "El programa espera una entrada: escríbala y envíela.",
+                                (
+                                    tr(
+                                        "Le programme tourne : de quoi lui envoyer une entrée dès qu'il en aura besoin.",
+                                        "The program is running: ready to send it input as soon as it needs one.",
+                                        "El programa está en ejecución: listo para enviarle una entrada en cuanto la necesite.",
+                                    ),
+                                    hdr,
                                 )
-                            },
-                            action(),
-                        )
-                    } else {
-                        (
-                            tr(
-                                "Le programme tourne : de quoi lui envoyer une entrée dès qu'il en aura besoin.",
-                                "The program is running: ready to send it input as soon as it needs one.",
-                                "El programa está en ejecución: listo para enviarle una entrada en cuanto la necesite.",
-                            ),
-                            hdr,
-                        )
-                    };
-                    ui.label(RichText::new(hint_msg).color(hint_col));
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("❯").monospace().color(action()));
-                        let hint = tr(
-                            "Saisie à envoyer au programme…",
-                            "Input to send to the program…",
-                            "Entrada para enviar al programa…",
-                        );
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut self.stdin_input)
-                                .id_salt("program_output_stdin")
-                                .desired_width(f32::INFINITY)
-                                .font(egui::TextStyle::Monospace)
-                                .hint_text(hint),
-                        );
-                        let submit_with_enter = response.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        let submit_with_button = ui
-                            .button(tr("Envoyer", "Send", "Enviar"))
-                            .clicked();
-                        if submit_with_enter || submit_with_button {
-                            self.send_stdin();
-                            response.request_focus();
-                        } else if claim_input_focus {
-                            response.request_focus();
+                            };
+                            ui.label(RichText::new(hint_msg).color(hint_col));
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("❯").monospace().color(action()));
+                                let hint = tr(
+                                    "Saisie à envoyer au programme…",
+                                    "Input to send to the program…",
+                                    "Entrada para enviar al programa…",
+                                );
+                                let response = ui.add(
+                                    egui::TextEdit::singleline(&mut self.stdin_input)
+                                        .id_salt("program_output_stdin")
+                                        .desired_width(f32::INFINITY)
+                                        .font(egui::TextStyle::Monospace)
+                                        .hint_text(hint),
+                                );
+                                let submit_with_enter = response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                let submit_with_button = ui
+                                    .button(tr("Envoyer", "Send", "Enviar"))
+                                    .clicked();
+                                if submit_with_enter || submit_with_button {
+                                    self.send_stdin();
+                                    response.request_focus();
+                                } else if claim_input_focus {
+                                    response.request_focus();
+                                }
+                            });
+                            ui.add_space(4.0);
                         }
-                    });
-                    ui.add_space(4.0);
-                }
 
-                // Le terminal se distingue des panneaux de l'IDE par la surface
-                // la plus enfoncée du thème — celle de l'éditeur —, pas par un
-                // noir écrit en dur : sur un thème clair, ce dernier plaquait un
-                // rectangle de charbon au milieu d'une fenêtre pâle.
-                let theme = crate::theme::current();
-                egui::Frame::new()
-                    .fill(theme.ui.extreme)
-                    .stroke(egui::Stroke::new(1.0_f32, theme.ui.border))
-                    .corner_radius(egui::CornerRadius::same(4))
-                    .inner_margin(egui::Margin::same(8))
-                    .show(ui, |ui| {
-                        ui.set_min_height(140.0);
-                        egui::ScrollArea::vertical()
-                            .id_salt("program_output_scroll")
-                            .stick_to_bottom(true)
-                            .max_height(max_body_h)
-                            .auto_shrink([false, false])
+                        // Le terminal se distingue des panneaux de l'IDE par la surface
+                        // la plus enfoncée du thème — celle de l'éditeur —, pas par un
+                        // noir écrit en dur : sur un thème clair, ce dernier plaquait un
+                        // rectangle de charbon au milieu d'une fenêtre pâle.
+                        let theme = crate::theme::current();
+                        egui::Frame::new()
+                            .fill(theme.ui.extreme)
+                            .stroke(egui::Stroke::new(1.0_f32, theme.ui.border))
+                            .corner_radius(egui::CornerRadius::same(4))
+                            .inner_margin(egui::Margin::same(8))
                             .show(ui, |ui| {
+                                ui.set_min_height(140.0);
                                 ui.set_width(ui.available_width());
                                 if self.program_output.is_empty() {
                                     // Une zone vide sans un mot laisserait croire
@@ -1774,24 +1791,24 @@ impl App {
                                     );
                                 }
                             });
-                    });
 
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(tr(
-                        "Ce que votre programme a écrit, sans les messages de l'IDE.",
-                        "What your program wrote, without the IDE's own messages.",
-                        "Lo que su programa escribió, sin los mensajes del IDE.",
-                    ))
-                    .small()
-                    .color(hdr),
-                );
-                ui.separator();
-                ui.vertical_centered(|ui| {
-                    if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
-                        self.show_program_output = false;
-                    }
-                });
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(tr(
+                                "Ce que votre programme a écrit, sans les messages de l'IDE.",
+                                "What your program wrote, without the IDE's own messages.",
+                                "Lo que su programa escribió, sin los mensajes del IDE.",
+                            ))
+                            .small()
+                            .color(hdr),
+                        );
+                        ui.separator();
+                        ui.vertical_centered(|ui| {
+                            if ui.button(tr("Fermer", "Close", "Cerrar")).clicked() {
+                                self.show_program_output = false;
+                            }
+                        });
+                    });
             });
 
         if copy {

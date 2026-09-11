@@ -312,6 +312,13 @@ impl App {
             None => format!("🎯 {}", tr("Prédiction", "Prediction", "Predicción")),
         };
 
+        // Bornée à une fraction de l'écran, comme « Sortie du programme » et
+        // le parcours d'apprentissage : sans ce plafond, sur un petit écran
+        // le décalage par rapport au centre pouvait pousser la fenêtre
+        // hors champ. Le contenu défile déjà (`ScrollArea`), donc la réduire
+        // ne coupe rien.
+        let max_h = (ctx.content_rect().height() * 0.7).clamp(220.0, 480.0);
+        let max_w = (ctx.content_rect().width() * 0.6).clamp(280.0, 520.0);
         let mut open = true;
         egui::Window::new(title)
             // Id explicite : le titre contient le score et change donc en cours
@@ -322,11 +329,22 @@ impl App {
             .resizable(true)
             .default_width(320.0)
             .default_height(260.0)
+            .max_width(max_w)
+            .max_height(max_h)
             .default_pos(ctx.content_rect().center() + egui::vec2(180.0, -60.0))
             .show(ctx, |ui| {
+                // Sans `max_height` explicite, la `ScrollArea` mesure son
+                // contenu comme illimité et ne défile jamais — même bug que
+                // sur la fenêtre du tutoriel. `ui.available_height()` s'est
+                // montré peu fiable dans ce cas (fenêtre redimensionnable
+                // encore en train de mesurer sa taille automatique) : on
+                // calcule plutôt depuis `max_h`, la hauteur plafond de la
+                // fenêtre elle-même, moins la marge de sa barre de titre.
+                let scroll_max_h = (max_h - 50.0).max(140.0);
                 egui::ScrollArea::vertical()
                     .id_salt("predict_scroll")
                     .auto_shrink([false, false])
+                    .max_height(scroll_max_h)
                     .show(ui, |ui| self.predict_body(ui));
             });
 

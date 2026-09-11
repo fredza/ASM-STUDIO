@@ -228,15 +228,31 @@ impl App {
 
         let lang = self.lang;
         let mut open = true;
+        // Hauteur et largeur bornées à une fraction de l'écran : sur un petit
+        // écran (ou l'app pas maximisée), un `min_height` fixe plus grand que
+        // l'espace réel poussait le pied de page (progression, bouton Fermer)
+        // hors champ — même bug déjà vu et corrigé pour « Sortie du
+        // programme ». Le sommaire et chaque leçon défilent déjà en interne
+        // (`ScrollArea`), donc réduire la fenêtre ne coupe aucun contenu.
+        // Marge volontairement généreuse (0.8, pas 0.92) : la fenêtre doit
+        // laisser voir un bord d'écran tout autour, sinon son pied de page —
+        // bouton Fermer compris — se retrouve visuellement collé au bord,
+        // voire dessous la barre des tâches du système. Le plafond de 640 (pas
+        // 900) vise le même but sur un grand écran : au-delà, le confort de
+        // lecture n'y gagne rien, seule la marge en pâtit.
+        let max_h = (ctx.content_rect().height() * 0.8).clamp(320.0, 640.0);
+        let max_w = (ctx.content_rect().width() * 0.9).clamp(480.0, 820.0);
         dialog_window(
             ctx,
             i18n::tr3(lang, "✦ Parcours d'apprentissage", "✦ Learning path", "✦ Recorrido de aprendizaje"),
         )
         .resizable(true)
         .default_width(780.0)
-        .default_height(700.0)
-        .min_width(620.0)
-        .min_height(460.0)
+        .default_height(max_h)
+        .min_width(420.0)
+        .min_height(320.0)
+        .max_width(max_w)
+        .max_height(max_h)
         .open(&mut open)
         .show(ctx, |ui| {
             let current = self
@@ -244,16 +260,22 @@ impl App {
                 .clone()
                 .and_then(|id| crate::tutorial::find(&id));
             if let Some(lesson) = current {
-                self.lesson_ui(ui, &lesson);
+                self.lesson_ui(ui, &lesson, max_h);
             } else {
-                self.tutorial_toc_ui(ui);
+                self.tutorial_toc_ui(ui, max_h);
             }
         });
         self.show_tutorial_dialog = open;
     }
 
     /// Sommaire du parcours.
-    pub(super) fn tutorial_toc_ui(&mut self, ui: &mut egui::Ui) {
+    ///
+    /// `window_max_h` est la hauteur plafond de la fenêtre qui l'héberge : le
+    /// défilement interne s'y calcule directement, plutôt que sur
+    /// `ui.available_height()` (peu fiable tant qu'une fenêtre redimensionnable
+    /// est encore en train de mesurer sa taille automatique — le vrai bug qui
+    /// laissait ce sommaire déborder sans jamais devenir scrollable).
+    pub(super) fn tutorial_toc_ui(&mut self, ui: &mut egui::Ui, window_max_h: f32) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let hdr = self.c_header();
@@ -304,9 +326,18 @@ impl App {
             .or_else(|| self.tutorial_progress.next_lesson())
             .map(|l| l.level);
 
+        // Même correctif que dans `lesson_ui` : sans `max_height` explicite,
+        // ce sommaire ne défile jamais — c'est la fenêtre entière qui déborde
+        // à sa place. Le budget réservé au-dessus (barre de progression,
+        // bouton Reprendre, phrase d'intro) tient en ~170 px ; le retirer du
+        // plafond de la fenêtre donne une limite fiable, contrairement à
+        // `ui.available_height()` qui peut se lire comme illimitée tant que
+        // la fenêtre redimensionnable n'a pas fini de mesurer sa taille.
+        let scroll_max_h = (window_max_h - 170.0).max(160.0);
         egui::ScrollArea::vertical()
             .id_salt("tutorial_toc")
             .auto_shrink([false, false])
+            .max_height(scroll_max_h)
             .show(ui, |ui| {
                 for level in Level::ALL {
                     // Le parcours Windows suit son réglage : décocher
@@ -514,7 +545,9 @@ impl App {
     }
 
     /// Contenu d'une leçon ouverte.
-    pub(super) fn lesson_ui(&mut self, ui: &mut egui::Ui, lesson: &Lesson) {
+    ///
+    /// `window_max_h` : voir [`Self::tutorial_toc_ui`].
+    pub(super) fn lesson_ui(&mut self, ui: &mut egui::Ui, lesson: &Lesson, window_max_h: f32) {
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let hdr = self.c_header();
@@ -550,9 +583,23 @@ impl App {
         ui.label(RichText::new(lesson.title.get(lang)).size(15.0).strong().color(self.c_mnemonic()));
         ui.add_space(4.0);
 
+        // Sans hauteur maximale explicite, une `ScrollArea` mesure son
+        // contenu comme s'il avait toute la place voulue : elle ne s'active
+        // jamais, et c'est la fenêtre autour d'elle qui déborde de l'écran à
+        // la place — sans offrir de défilement pour autant. `ui.available_
+        // height()` s'est montré peu fiable ici (peut se lire comme illimitée
+        // tant qu'une fenêtre redimensionnable n'a pas fini de mesurer sa
+        // taille) : on calcule plutôt depuis la hauteur plafond de la
+        // fenêtre, moins le budget du bandeau déjà dessiné au-dessus (retour
+        // + niveau, barre de progression, titre — une petite centaine de
+        // pixels). Le bouton « Suivante » et le reste de la navigation vivent
+        // dans ce même bloc, donc rester à portée de scroll leur importe
+        // aussi.
+        let scroll_max_h = (window_max_h - 130.0).max(160.0);
         egui::ScrollArea::vertical()
             .id_salt("tutorial_lesson")
             .auto_shrink([false, false])
+            .max_height(scroll_max_h)
             .show(ui, |ui| {
                 card(ui, |ui| {
                     ui.label(

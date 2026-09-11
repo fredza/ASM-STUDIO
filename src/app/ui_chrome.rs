@@ -2,9 +2,9 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::i18n;
 #[cfg(target_os = "linux")]
-use crate::debugger::RunState;
+use crate::debugger::{Flags, RunState};
 #[cfg(target_os = "macos")]
-use crate::vm_debugger::RunState;
+use crate::vm_debugger::{Flags, RunState};
 
 use super::{
     App, accent, flag_on, flag_off, false_col, warn_col, changed_col,
@@ -1431,6 +1431,35 @@ impl App {
                 // L'état du programme et le format produit sont déjà dans la
                 // barre d'état. Les répéter ici gaspille l'espace réservé aux
                 // actions et donne l'impression de trois boutons sans action.
+
+                // Bande de flags : un résumé toujours visible, qui ne demande
+                // ni de détacher ni de repositionner le panneau Flags. Même
+                // code couleur que ce panneau — vert actif, gris inactif,
+                // orange « vient de changer » — pour que les deux se lisent
+                // pareil ; seul le nom complet reste réservé au panneau.
+                // N'occupe de la place que quand il y a quelque chose à
+                // montrer.
+                if let Some(snap) = self.snap() {
+                    ui.separator();
+                    let flags = Flags::from_eflags(snap.regs.eflags);
+                    let prev_flags = self.prev_snap().map(|p| Flags::from_eflags(p.regs.eflags)).unwrap_or_default();
+                    for ((name, val), (_, pval)) in flags.named().into_iter().zip(prev_flags.named()) {
+                        let changed = val != pval;
+                        let col = if changed {
+                            changed_col()
+                        } else if val {
+                            flag_on()
+                        } else {
+                            flag_off()
+                        };
+                        ui.label(RichText::new(name).monospace().small().strong().color(col))
+                            .on_hover_text(if val {
+                                tr("Positionné", "Set", "Activo")
+                            } else {
+                                tr("Non positionné", "Not set", "No activo")
+                            });
+                    }
+                }
             });
             });
         });

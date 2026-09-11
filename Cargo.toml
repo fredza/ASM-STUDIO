@@ -1,6 +1,6 @@
 [package]
 name = "asm_studio"
-version = "0.7.20"
+version = "0.7.21"
 edition = "2024"
 # GPLv3 + clause Commons Clause (revente interdite) : ce montage composite
 # n'a pas d'identifiant SPDX standard, le fichier fait foi.

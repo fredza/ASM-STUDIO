@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.21] - 2026-09-11
+
+### Fixed
+- **The "Learning path" and "Prediction" windows could spill off a small
+  screen with no way to scroll down to their own Close/Next buttons.**
+  Their internal `ScrollArea` had no maximum height, so on a screen (or an
+  unmaximized app window) shorter than their default size, the window grew
+  to fit its content instead of scrolling it — the same overflow already
+  fixed once for "Program output", just not generalized to these two. A
+  first pass bounded the scroll to `ui.available_height()`, which turned
+  out to be unreliable inside a resizable window still auto-sizing itself
+  (it can read as effectively unbounded); heights are now derived directly
+  from the screen size instead, the same way "Program output" already did.
+- **"Program output" could become entirely unscrollable — in either
+  direction — once its content grew tall enough to need it.** Making its
+  window itself screen-bounded (the fix above) introduced a second,
+  nested `ScrollArea` around the whole dialog, on top of the one already
+  wrapping just the output pane. Two nested vertical scroll areas fight
+  over mouse-wheel input in egui, and the visible result was a scrollbar
+  that never moved. Merged back into a single scroll for the whole
+  dialog, with `stick_to_bottom` (follow the latest line, like a
+  terminal) moved onto that one scroll instead of the inner one.
+
+### Added
+- **A compact flags strip (ZF CF OF SF PF AF) in the toolbar**, visible
+  whenever a program is loaded. It mirrors the Flags panel's own color
+  code — green when set, gray when clear, orange when it just changed —
+  so the two read the same way; only the full names stay reserved for the
+  panel. Answers a plainer question: reading the flags used to mean
+  detaching or repositioning the Flags panel just to keep an eye on it
+  during a run.
+
 ## [0.7.20] - 2026-09-11
 
 ### Added
