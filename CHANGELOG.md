@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.16] - 2026-09-11
+
+### Fixed
+- **The CI test that clicks through a real `MessageBoxA` under Wine was
+  flaky, failing depending on what the developer's keyboard was doing at
+  the same time.** It focused the dialog's window with `xdotool
+  windowfocus`, then sent a real `Return` keypress over XTEST — but under
+  GNOME/Wayland, XTEST delivers to whichever window the compositor
+  currently focuses, not the one `windowfocus` just targeted. Fixed by
+  closing the dialog with `xdotool windowquit` instead, which addresses a
+  `WM_DELETE_WINDOW` request straight to the window itself, independent of
+  keyboard focus — `MessageBoxA` treats it exactly like a click on its
+  default button. Also hardened the "is xdotool usable here" check to
+  actually query the display (`getdisplaygeometry`) rather than just
+  `--version`, which succeeds even with no `DISPLAY` at all.
+
 ## [0.7.15] - 2026-09-10
 
 ### Fixed
