@@ -705,32 +705,31 @@ mod tests {
         boites_visibles().into_iter().next()
     }
 
-    /// Répond à la boîte comme le ferait l'élève : le focus sur sa fenêtre,
-    /// puis un appui sur Entrée — le bouton par défaut est « OK ».
+    /// Répond à la boîte comme le ferait l'élève qui la referme par la croix
+    /// de sa fenêtre : `WM_DELETE_WINDOW` (`xdotool windowquit`), et
+    /// `MessageBoxA` rend la main.
     ///
-    /// `windowfocus` plutôt que `windowactivate` : sous GNOME/XWayland,
-    /// `windowactivate --sync` reste bloqué une quinzaine de secondes sur une
-    /// fenêtre Wine que le compositeur ne remonte jamais, et la touche part
-    /// alors dans le vide. `windowfocus` pose le focus X directement, et
-    /// `xdotool key` passe par XTEST : une vraie frappe, identique à celle
-    /// d'un clavier, pas un événement synthétique que Wine ignorerait.
+    /// Pas une frappe clavier. Une touche envoyée par XTEST va à la fenêtre
+    /// qui a le focus, et sous GNOME/Wayland ce focus appartient au
+    /// compositeur, pas à `xdotool windowfocus` : il suffisait que quelqu'un
+    /// tape dans un terminal à côté pour que le `Return` y parte — le test
+    /// passait ou cassait selon ce que l'utilisateur faisait de ses mains
+    /// pendant ce temps (vérifié : même code, même machine, résultats
+    /// opposés). La demande de fermeture, elle, est adressée à la fenêtre
+    /// elle-même, quel que soit le focus. Un vrai geste d'utilisateur tout
+    /// autant ; vérifié sur le binaire seul : le programme termine en 0.
     ///
     /// La liste est relue à chaque tentative, et chaque fenêtre visible reçoit
-    /// la touche : l'identifiant peut changer si Wine recrée le dialogue, et
-    /// s'il en affiche deux, celle qui a le focus n'est pas forcément la bonne.
+    /// la demande : Wine en crée deux pour un dialogue, la seconde disparaît
+    /// dès que la première se ferme, et un échec sur celle-là n'est pas une
+    /// nouvelle.
     fn repondre_a_la_boite() -> bool {
         for _ in 0..10 {
             for id in boites_visibles() {
-                let focused = std::process::Command::new("xdotool")
-                    .args(["windowfocus", &id])
-                    .status()
-                    .is_ok_and(|s| s.success());
-                if focused {
-                    std::thread::sleep(Duration::from_millis(300));
-                    let _ = std::process::Command::new("xdotool")
-                        .args(["key", "--clearmodifiers", "Return"])
-                        .status();
-                }
+                let _ = std::process::Command::new("xdotool")
+                    .args(["windowquit", &id])
+                    .stderr(std::process::Stdio::null())
+                    .status();
             }
             std::thread::sleep(Duration::from_millis(500));
             if boite_a_l_ecran().is_none() {
@@ -742,8 +741,9 @@ mod tests {
 
     /// Le geste réel d'un élève : son programme ouvre une `MessageBoxA`,
     /// « Continuer » attend dessus, et il prend son temps avant de répondre.
-    /// Pas une simulation — une vraie frappe XTEST (`xdotool`) sur la vraie
-    /// fenêtre Wine, sur le bouton par défaut de la vraie boîte.
+    /// Pas une simulation — une vraie demande de fermeture (`xdotool
+    /// windowquit`) adressée à la vraie fenêtre Wine, comme la croix de son
+    /// cadre, indépendante du focus clavier (voir `repondre_a_la_boite`).
     ///
     /// Ce que ce test verrouille, dans l'ordre où ça a cassé :
     ///
@@ -761,8 +761,17 @@ mod tests {
             eprintln!("wine absent : non vérifié");
             return;
         }
-        if std::process::Command::new("xdotool").arg("--version").output().is_err() {
-            eprintln!("xdotool absent : clic réel non vérifié");
+        // Pas `xdotool --version` : il réussit sans écran, et le runner CI de
+        // ce dépôt tourne en service sur une machine où il y a bien un
+        // xdotool, mais aucun `DISPLAY` — le clic n'aurait alors personne à
+        // atteindre, et la boîte ne serait « jamais trouvée ». Interroger
+        // l'écran lui-même tranche les deux cas d'un coup.
+        let display = std::process::Command::new("xdotool")
+            .arg("getdisplaygeometry")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !display {
+            eprintln!("xdotool absent ou aucun affichage joignable : clic réel non vérifié");
             return;
         }
         // Seul test à piloter une vraie fenêtre : il lui faut l'écran, et
