@@ -184,7 +184,19 @@ fi
 # ------------------------------------------------------------ agent croisé
 
 step "Compilation de l'agent (x86_64-unknown-linux-gnu, release)"
-cargo build --release --bin asmstudio-agent --features vm-agent --target x86_64-unknown-linux-gnu
+# Le lieur croisé est passé en variable d'environnement, pas via un
+# `.cargo/config.toml` commité : un override de ce fichier pour la target
+# `x86_64-unknown-linux-gnu` s'applique aussi à une compilation NATIVE sur une
+# machine Linux (cette même target), où `x86_64-linux-gnu-gcc` n'existe pas —
+# ça cassait `cargo build` pour tout développeur Linux du dépôt. La variable
+# ne s'applique, elle, qu'à cette invocation.
+if have x86_64-linux-gnu-gcc; then
+    cross_linker="x86_64-linux-gnu-gcc"
+else
+    cross_linker="x86_64-unknown-linux-gnu-gcc"
+fi
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="${cross_linker}" \
+    cargo build --release --bin asmstudio-agent --features vm-agent --target x86_64-unknown-linux-gnu
 readonly AGENT_BIN="${ROOT}/target/x86_64-unknown-linux-gnu/release/asmstudio-agent"
 [ -f "${AGENT_BIN}" ] || { err "agent introuvable après compilation : ${AGENT_BIN}"; exit 1; }
 ok "$(du -h "${AGENT_BIN}" | cut -f1)  ${AGENT_BIN#"${ROOT}"/}"
