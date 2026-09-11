@@ -13,7 +13,10 @@
 //! Le résultat est un [`Diagnosis`] : une cause probable nommée, un texte
 //! explicatif, et une piste de correction.
 
+#[cfg(target_os = "linux")]
 use crate::debugger::{Fault, MemRegion, RegionKind};
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::{Fault, MemRegion, RegionKind};
 use crate::i18n::{self, Lang};
 
 /// Cause probable d'une faute, déduite du contexte.
@@ -76,8 +79,6 @@ pub fn diagnose(
     line: Option<usize>,
     lang: Lang,
 ) -> Diagnosis {
-    use nix::sys::signal::Signal::*;
-
     let tr = |fr: &str, en: &str, es: &str| -> String {
         match lang {
             Lang::Fr => fr.to_string(),
@@ -91,10 +92,14 @@ pub fn diagnose(
     let rip_mapped = regions.iter().any(|r| r.contains(fault.rip));
 
     // SIGFPE / SIGILL / SIGBUS ont une cause immédiate, sans analyse d'adresse.
-    let cause = match fault.signal {
-        SIGFPE => Cause::DivisionByZero,
-        SIGILL => Cause::IllegalInstruction,
-        SIGBUS => Cause::Misaligned,
+    // Comparé par nom plutôt que par signal brut : `Fault::signal_name()`
+    // existe à l'identique côté natif (Linux, `nix::sys::signal::Signal`) et
+    // côté VM (macOS, `vm_protocol::SignalName`), ce qui évite de dupliquer
+    // ce match pour les deux représentations.
+    let cause = match fault.signal_name() {
+        "SIGFPE" => Cause::DivisionByZero,
+        "SIGILL" => Cause::IllegalInstruction,
+        "SIGBUS" => Cause::Misaligned,
         // SIGSEGV : c'est là que le contexte compte.
         _ => classify_segv(addr, region, rip_mapped, is_write, regions),
     };
@@ -487,7 +492,10 @@ pub fn cause_label(cause: Cause, lang: Lang) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use nix::sys::signal::Signal;
+    #[cfg(target_os = "macos")]
+    use crate::vm_debugger::SignalName as Signal;
 
     fn region(start: u64, end: u64, kind: RegionKind, perms: &str) -> MemRegion {
         MemRegion { start, end, kind, perms: perms.to_string() }
@@ -608,7 +616,9 @@ mod tests {
 /// Tests d'intégration : on fait réellement planter des programmes NASM et on
 /// vérifie que le diagnostic tombe juste. C'est le seul moyen de valider la
 /// chaîne complète ptrace → siginfo → carte mémoire → cause.
-#[cfg(test)]
+///
+/// Linux uniquement — voir `abi.rs::integration`, même raison.
+#[cfg(all(test, target_os = "linux"))]
 mod integration {
     use super::*;
     use crate::{assemble, debugger::Debugger, disasm};

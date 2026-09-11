@@ -43,7 +43,10 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 
+#[cfg(target_os = "linux")]
 use crate::debugger::{Flags, Registers};
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::{Flags, Registers};
 use crate::i18n::{self, Lang};
 use crate::win_debugger::{WinDbgError, WinDbgInterrupt, WinDbgResult, WinDebugger, WinRunState};
 

@@ -1,6 +1,9 @@
 use eframe::egui::{self, RichText};
 
-use crate::debugger::Flags;
+#[cfg(target_os = "linux")]
+use crate::debugger::{Flags, Registers, RunState};
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::{Flags, Registers, RunState};
 use crate::explain;
 use crate::i18n;
 use crate::syscall;
@@ -1535,7 +1538,6 @@ impl App {
         if !self.show_program_output {
             return;
         }
-        use crate::debugger::RunState;
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
         let hdr = self.c_header();
@@ -1814,7 +1816,7 @@ impl App {
         }
         let lang = self.lang;
         let tr = |fr: &'static str, en: &'static str, es: &'static str| i18n::tr3(lang, fr, en, es);
-        let noms: [&'static str; 18] = crate::debugger::Registers::default().named().map(|(n, _)| n);
+        let noms: [&'static str; 18] = Registers::default().named().map(|(n, _)| n);
         let idx = self.reg_history_idx.min(noms.len() - 1);
 
         // Série et changements relevés avant le rendu : l'interface emprunte

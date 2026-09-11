@@ -304,23 +304,11 @@ pub fn assemble_project(
         .unwrap_or("programme");
     let binary = out_dir.join(name);
     log.push_str(&format!("$ ld{} -o {} {}\n", opts.logged(), binary.display(), objects.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" ")));
-    let ld = Command::new("ld")
-        .args(opts.ld_args())
-        .arg("-o")
-        .arg(&binary)
-        .args(&objects)
-        .output()
-        .map_err(|e| {
-            let what = i18n::tr3(lang, "impossible de lancer", "could not run", "no se pudo ejecutar");
-            format!("{what} ld: {e}")
-        })?;
-    log.push_str(&String::from_utf8_lossy(&ld.stderr));
-    if !ld.status.success() {
-        return Err(format!(
-            "{}:\n{log}",
-            i18n::tr3(lang, "Échec de ld", "ld failed", "Error de ld")
-        ));
-    }
+    let named_objects: Vec<(String, &Path)> = objects
+        .iter()
+        .map(|p| (p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), p.as_path()))
+        .collect();
+    link_elf(&named_objects, &binary, opts, &mut log, lang)?;
     log.push_str("Build OK\n");
     append_stack_alignment_warning(&mut log, &binary, &listing, target, lang);
     Ok(BuildOutput { binary, listing, log })
@@ -489,29 +477,72 @@ fn assemble_elf(
     let obj = out_dir.join(format!("{stem}.o"));
     let binary = out_dir.join(&stem);
 
-    // ld -o binary obj
     log.push_str(&format!("$ ld{} -o {} {}\n", opts.logged(), binary.display(), obj.display()));
-    let ld = Command::new("ld")
-        .args(opts.ld_args())
-        .arg("-o")
-        .arg(&binary)
-        .arg(&obj)
-        .output()
-        .map_err(|e| {
-            let what = i18n::tr3(lang, "impossible de lancer", "could not run", "no se pudo ejecutar");
-            format!("{what} ld: {e}")
-        })?;
-    log.push_str(&String::from_utf8_lossy(&ld.stderr));
-    if !ld.status.success() {
-        return Err(format!(
-            "{}:\n{log}",
-            i18n::tr3(lang, "Échec de ld", "ld failed", "Error de ld")
-        ));
-    }
+    link_elf(&[(format!("{stem}.o"), &obj)], &binary, opts, &mut log, lang)?;
 
     log.push_str("Build OK\n");
     append_stack_alignment_warning(&mut log, &binary, &listing, Target::Linux, lang);
     Ok(BuildOutput { binary, listing, log })
+}
+
+/// Lie des objets ELF64 en un exécutable : `ld` local sous Linux, `ld`
+/// *dans la VM* sur macOS (aucun linker ELF natif là-bas — voir le plan de
+/// portage). `objects` porte le nom à donner à chaque objet côté agent (pour
+/// le journal, sans conséquence sur le résultat) et son chemin local.
+fn link_elf(
+    objects: &[(String, &Path)],
+    binary: &Path,
+    opts: LinkOptions,
+    log: &mut String,
+    lang: Lang,
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let ld = Command::new("ld")
+            .args(opts.ld_args())
+            .arg("-o")
+            .arg(binary)
+            .args(objects.iter().map(|(_, path)| path))
+            .output()
+            .map_err(|e| {
+                let what = i18n::tr3(lang, "impossible de lancer", "could not run", "no se pudo ejecutar");
+                format!("{what} ld: {e}")
+            })?;
+        log.push_str(&String::from_utf8_lossy(&ld.stderr));
+        if !ld.status.success() {
+            return Err(format!("{}:\n{log}", i18n::tr3(lang, "Échec de ld", "ld failed", "Error de ld")));
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut payload = Vec::with_capacity(objects.len());
+        for (name, path) in objects {
+            let bytes = std::fs::read(path).map_err(|e| format!("lecture de {}: {e}", path.display()))?;
+            payload.push((name.clone(), bytes));
+        }
+        let ld_args: Vec<String> = opts.ld_args().iter().map(|s| s.to_string()).collect();
+        match crate::vm_debugger::link_via_vm(payload, ld_args) {
+            Ok(r) => {
+                log.push_str(&r.log);
+                std::fs::write(binary, &r.binary).map_err(|e| format!("écriture de {}: {e}", binary.display()))?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(mut perms) = std::fs::metadata(binary).map(|m| m.permissions()) {
+                        perms.set_mode(0o755);
+                        let _ = std::fs::set_permissions(binary, perms);
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => Err(format!(
+                "{}:\n{log}{}",
+                i18n::tr3(lang, "Échec de ld (VM)", "ld failed (VM)", "Error de ld (VM)"),
+                e.message(lang)
+            )),
+        }
+    }
 }
 
 #[cfg(test)]

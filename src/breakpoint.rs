@@ -28,7 +28,10 @@
 //! non signée) ; « ce registre est-il négatif ? » s'écrit `SF == 1`, ce qui est
 //! de toute façon la bonne leçon.
 
+#[cfg(target_os = "linux")]
 use crate::debugger::{Flags, Registers};
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::{Flags, Registers};
 use crate::i18n::{self, Lang};
 
 /// Comparateur d'une condition.

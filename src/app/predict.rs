@@ -11,6 +11,10 @@
 use eframe::egui::{self, RichText};
 
 use super::{accent, App, changed_col, false_col, flag_on, card, parse_hex};
+#[cfg(target_os = "linux")]
+use crate::debugger::Flags;
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::Flags;
 use crate::i18n::{self, Lang};
 
 /// Résultat d'une prédiction résolue.
@@ -474,7 +478,7 @@ impl App {
                 }) {
                     let flags = self
                         .snap()
-                        .map(|s| crate::debugger::Flags::from_eflags(s.regs.eflags))
+                        .map(|s| Flags::from_eflags(s.regs.eflags))
                         .unwrap_or_default();
                     let e = crate::explain::explain(&insn.mnemonic, &insn.operands, flags, lang);
                     ui.add_space(6.0);

@@ -1,7 +1,10 @@
 use eframe::egui::{self, Color32, RichText};
 
 use crate::i18n;
+#[cfg(target_os = "linux")]
 use crate::debugger::RunState;
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::RunState;
 
 use super::{
     App, accent, flag_on, flag_off, false_col, warn_col, changed_col,

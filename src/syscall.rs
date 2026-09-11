@@ -11,7 +11,10 @@
 //! 0x402000 sur la sortie standard (l'écran) » se comprend sans manuel. C'est
 //! la différence entre lire les registres et comprendre l'appel.
 
+#[cfg(target_os = "linux")]
 use crate::debugger::Registers;
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::Registers;
 use crate::i18n::{self, Lang};
 
 /// Nom de l'appel système d'après son numéro.

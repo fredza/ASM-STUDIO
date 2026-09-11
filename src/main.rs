@@ -1,32 +1,4 @@
-mod abi;
-mod app;
-mod assemble;
-mod binfmt;
-mod breakpoint;
-mod debugger;
-mod desdec;
-mod diagnostic;
-mod disasm;
-mod effects;
-mod encoding;
-mod exercise;
-mod explain;
-mod i18n;
-mod license;
-mod pe_link;
-mod project;
-mod simd;
-mod srcmap;
-mod stack_check;
-mod syntax;
-mod syscall;
-mod theme;
-mod trial;
-mod tutorial;
-mod updater;
-mod version;
-mod win_debugger;
-mod winerun;
+use asm_studio::app;
 
 fn main() -> eframe::Result {
     let mut viewport = eframe::egui::ViewportBuilder::default()

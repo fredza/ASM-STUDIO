@@ -1,7 +1,10 @@
 use eframe::egui;
 
 use crate::assemble;
-use crate::debugger::{Debugger, RunState};
+#[cfg(target_os = "linux")]
+use crate::debugger::{Debugger, Flags, Registers, RunState};
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::{Flags, Registers, RunState, VmDebugger as Debugger};
 use crate::disasm;
 use crate::i18n;
 use crate::srcmap;
@@ -28,11 +31,11 @@ pub(super) type StopMap = std::collections::HashMap<u64, Option<crate::breakpoin
 /// Faut-il s'arrêter dans cet état ? Une condition posée sur une ligne n'est
 /// évaluée que lorsque l'exécution y arrive : rien ne sert de la vérifier
 /// ailleurs, et c'est ce qui garde le pas à une dizaine de microsecondes.
-pub(super) fn stops_here(stops: &StopMap, regs: &crate::debugger::Registers) -> bool {
+pub(super) fn stops_here(stops: &StopMap, regs: &Registers) -> bool {
     match stops.get(&regs.rip) {
         None => false,
         Some(None) => true,
-        Some(Some(cond)) => cond.eval(regs, &crate::debugger::Flags::from_eflags(regs.eflags)),
+        Some(Some(cond)) => cond.eval(regs, &Flags::from_eflags(regs.eflags)),
     }
 }
 
@@ -396,7 +399,11 @@ impl App {
         self.pred_input.clear();
         self.view_index = 0;
         self.dbg = None;
-        match Debugger::launch(&bin) {
+        #[cfg(target_os = "linux")]
+        let launched = Debugger::launch(&bin);
+        #[cfg(target_os = "macos")]
+        let launched = Debugger::launch();
+        match launched {
             Ok(dbg) => {
                 // Avant tout affichage : la barre d'état annonce RIP, et les
                 // tables doivent déjà être à l'échelle de ce RIP-là.
@@ -508,6 +515,29 @@ impl App {
         }
     }
 
+    /// Sonde le démarrage de la VM (macOS uniquement) : redemande une frame
+    /// tant qu'elle n'est pas prête, pour que la barre d'état avance sans
+    /// attendre une interaction. Rien à faire une fois `Ready`/`Failed` —
+    /// `VmSession` ne redémarre pas toute seule, un `Failed` reste affiché
+    /// jusqu'à ce que l'utilisateur relance l'IDE après avoir corrigé la
+    /// cause (QEMU absent, image manquante…).
+    #[cfg(target_os = "macos")]
+    pub(super) fn poll_vm_boot(&mut self, ctx: &egui::Context) {
+        use crate::vm_session::VmStatus;
+        match self.vm.status() {
+            VmStatus::Booting => {
+                self.status = i18n::tr(self.lang, "Démarrage de la machine virtuelle…", "Starting the virtual machine…").to_string();
+                ctx.request_repaint_after(std::time::Duration::from_millis(300));
+            }
+            VmStatus::Failed(reason) if self.dbg.is_none() && self.binary.is_none() => {
+                // Ne recouvre pas un statut plus récent (build/lancement déjà
+                // tenté) : ce message n'est utile qu'au tout début.
+                self.status = reason;
+            }
+            _ => {}
+        }
+    }
+
     /// Lance l'exécutable Windows sous Wine, ou explique pourquoi il ne se
     /// lancera pas.
     ///
@@ -580,7 +610,7 @@ impl App {
 
         self.checks = crate::exercise::check(
             &checkable,
-            &crate::debugger::Registers::default(),
+            &Registers::default(),
             Some(exit_code),
             &self.source,
         );
@@ -838,14 +868,33 @@ impl App {
         self.pending_syscall = None;
         let lang = self.lang;
         let done = match self.dbg.as_mut() {
-            Some(d) => match d.run_until(RUN_BUDGET, |regs| stops_here(&stops, regs)) {
-                Ok(n) => n,
-                Err(e) => {
-                    let msg = e.message(lang);
-                    self.log(&msg);
-                    return;
+            Some(d) => {
+                #[cfg(target_os = "linux")]
+                let result = d.run_until(RUN_BUDGET, |regs| stops_here(&stops, regs));
+                // Même information (adresses + conditions), transmise en
+                // données plutôt qu'en fermeture : voir `run_until_remote`.
+                // La boucle de pas elle-même reste entièrement côté agent —
+                // un seul aller-retour, quel que soit le nombre de pas.
+                #[cfg(target_os = "macos")]
+                let result = {
+                    let specs: Vec<crate::vm_protocol::StopSpec> = stops
+                        .iter()
+                        .map(|(addr, cond)| crate::vm_protocol::StopSpec {
+                            addr: *addr,
+                            condition_text: cond.as_ref().map(|c| c.to_string()),
+                        })
+                        .collect();
+                    d.run_until_remote(RUN_BUDGET, specs)
+                };
+                match result {
+                    Ok(n) => n,
+                    Err(e) => {
+                        let msg = e.message(lang);
+                        self.log(&msg);
+                        return;
+                    }
                 }
-            },
+            }
             None => return,
         };
         self.step_in_flight = true;
@@ -1010,9 +1059,18 @@ impl App {
     }
 
     pub(super) fn resume_here(&mut self) {
+        // `bin` n'est utile qu'au lancement natif (Linux) : sur macOS, l'agent
+        // relance le binaire déjà en place depuis le dernier lien — voir
+        // `VmDebugger::launch`. La garde reste utile aux deux : pas de relance
+        // tant que rien n'a été construit.
+        #[cfg_attr(target_os = "macos", allow(unused_variables))]
         let Some(bin) = self.binary.clone() else { return };
         let target = self.view_index;
-        match Debugger::launch(&bin) {
+        #[cfg(target_os = "linux")]
+        let relaunched = Debugger::launch(&bin);
+        #[cfg(target_os = "macos")]
+        let relaunched = Debugger::launch();
+        match relaunched {
             Ok(mut d) => {
                 // Un second processus : rien ne garantit qu'il soit tombé à la
                 // même base que le premier (voir `set_load_bias`).
@@ -1083,7 +1141,7 @@ impl App {
     /// l'exécution entière quadratique.
     pub(super) fn extend_trace(&mut self) {
         // Petit utilitaire local : décompose "name(args)" en (name, args).
-        let log_syscall = |list: &mut Vec<SyscallLog>, regs: &crate::debugger::Registers, ret: Option<i64>| {
+        let log_syscall = |list: &mut Vec<SyscallLog>, regs: &Registers, ret: Option<i64>| {
             let num = regs.rax;
             let call = syscall::format_call(regs);
             let args = call

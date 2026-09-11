@@ -14,6 +14,10 @@
 
 use eframe::egui::{self, Color32, RichText};
 
+#[cfg(target_os = "linux")]
+use crate::debugger::RegionKind;
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::RegionKind;
 use crate::i18n;
 
 use super::{App, changed_col, flash_bright, badge, lerp_color};
@@ -36,8 +40,8 @@ pub(super) fn blink_wave(p: f32) -> f32 {
 
 /// Couleurs des régions mémoire (vue unifiée) — un code couleur stable que
 /// l'élève peut mémoriser : bleu = code, violet = données, vert = tas, orange = pile.
-pub(super) fn region_color(kind: crate::debugger::RegionKind) -> Color32 {
-    use crate::debugger::RegionKind as K;
+pub(super) fn region_color(kind: RegionKind) -> Color32 {
+    use RegionKind as K;
     match kind {
         K::Code => Color32::from_rgb(0x4C, 0x8B, 0xF5),
         K::Rodata => Color32::from_rgb(0x5A, 0xA6, 0xB8),
@@ -306,11 +310,11 @@ impl App {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(tr("Régions :", "Regions:", "Regiones:")).small().color(hdr));
             for kind in [
-                crate::debugger::RegionKind::Code,
-                crate::debugger::RegionKind::Rodata,
-                crate::debugger::RegionKind::Data,
-                crate::debugger::RegionKind::Heap,
-                crate::debugger::RegionKind::Stack,
+                RegionKind::Code,
+                RegionKind::Rodata,
+                RegionKind::Data,
+                RegionKind::Heap,
+                RegionKind::Stack,
             ] {
                 if regions.iter().any(|r| r.kind == kind) {
                     badge(ui, kind.label(), region_color(kind));
@@ -764,7 +768,7 @@ mod tests {
     /// propre teinte, sinon l'élève ne pourrait pas les distinguer.
     #[test]
     fn region_colors_are_distinct() {
-        use crate::debugger::RegionKind::*;
+        use RegionKind::*;
         let kinds = [Code, Rodata, Data, Heap, Stack];
         for (i, a) in kinds.iter().enumerate() {
             for b in &kinds[i + 1..] {

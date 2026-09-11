@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.20] - 2026-09-11
+
+### Added
+- **macOS (Apple Silicon) is now supported**, through a backend that stays
+  invisible to the student: assembling still calls `nasm` directly on the
+  Mac, but linking and step-by-step execution — `ld` and `ptrace`, neither
+  of which macOS has — now happen inside a small Linux VM that ASM Studio
+  starts and manages on its own. The debugger itself (`src/debugger.rs`) is
+  untouched and unaware any of this is happening: the same ptrace engine
+  that runs natively on Linux now also runs, byte for byte, inside that VM,
+  reached over a small RPC protocol (`src/vm_protocol.rs`,
+  `src/vm_debugger.rs`) from a native macOS window. "Really executed, not
+  simulated" stays true on macOS exactly as it already was on Linux — no
+  x86-64 semantics are reimplemented anywhere.
+- `install/build-vm-image.sh` builds the VM image an installed copy of ASM
+  Studio uses (`~/Library/Application Support/ASM Studio/vm/`): an
+  unattended Debian installer run, with `nasm`, `ld`, and a small
+  cross-compiled agent (reusing `debugger.rs` as-is) baked in.
+- The Linux native path is unchanged: every new file is compiled only under
+  `#[cfg(target_os = "macos")]`, or for the VM agent's own cross-compiled
+  target — nothing shared with the existing Linux/Windows-via-Wine code
+  paths was modified beyond a handful of additive `cfg`-gated imports.
+
 ## [0.7.16] - 2026-09-11
 
 ### Fixed

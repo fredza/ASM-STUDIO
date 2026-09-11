@@ -9,7 +9,10 @@
 
 use eframe::egui::{self, Color32, RichText};
 
+#[cfg(target_os = "linux")]
 use crate::debugger::Debugger;
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::VmDebugger as Debugger;
 use crate::explain;
 
 use super::{action, changed_col, false_col, flag_on};

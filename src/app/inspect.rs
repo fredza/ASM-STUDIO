@@ -11,7 +11,10 @@
 //! label défini dans le fichier, littéral numérique. Le reste ne dit rien —
 //! une infobulle qui s'ouvre sur « mov » n'apprendrait rien à personne.
 
+#[cfg(target_os = "linux")]
 use crate::debugger::{Flags, Registers};
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::{Flags, Registers};
 use crate::i18n;
 
 use super::App;

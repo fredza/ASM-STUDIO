@@ -28,6 +28,10 @@ use eframe::egui::{self, RichText};
 
 use super::{App, accent};
 use super::edit_ops::Edit;
+#[cfg(target_os = "linux")]
+use crate::debugger::Flags;
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::Flags;
 use crate::i18n::{self, Lang};
 
 /// Nature d'une proposition — donne son libellé de droite.
@@ -76,7 +80,7 @@ impl Candidate {
             Kind::Mnemonic => crate::explain::explain(
                 &self.text,
                 "",
-                crate::debugger::Flags::default(),
+                Flags::default(),
                 lang,
             )
             .category

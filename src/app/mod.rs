@@ -10,9 +10,14 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, Color32};
 
-use crate::debugger::{Debugger, Snapshot};
+#[cfg(target_os = "linux")]
+use crate::debugger::{Debugger, Registers, Snapshot};
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::{Registers, Snapshot, VmDebugger as Debugger};
 use crate::disasm::Insn;
 use crate::i18n::{self, Lang};
+#[cfg(target_os = "macos")]
+use crate::vm_session::VmSession;
 
 mod file_ops;
 mod debug_ops;
@@ -455,7 +460,7 @@ pub(super) struct SyscallLog {
     /// Les registres tels qu'ils étaient au moment de l'appel. Gardés plutôt
     /// que la phrase déjà rédigée : l'explication se recalcule à l'affichage,
     /// et suit donc la langue si elle change en cours de session.
-    pub(super) regs: crate::debugger::Registers,
+    pub(super) regs: Registers,
 }
 
 pub struct App {
@@ -478,6 +483,12 @@ pub struct App {
     pub(super) project: Option<crate::project::Project>,
 
     pub(super) dbg: Option<Debugger>,
+    /// VM qui héberge `ld`+ptrace côté macOS (voir `src/vm_session.rs`) —
+    /// démarrée en tâche de fond à l'ouverture de l'IDE, sondée chaque frame
+    /// par `poll_vm_boot`. N'existe pas sur les autres plateformes : le
+    /// chemin natif n'a rien à démarrer.
+    #[cfg(target_os = "macos")]
+    pub(super) vm: VmSession,
     pub(super) disasm: Vec<Insn>,
     /// Mapping adresse → ligne source (1-based) pour le suivi dans l'éditeur.
     pub(super) src_map: HashMap<u64, usize>,
@@ -988,6 +999,8 @@ impl App {
             binary: None,
             project: None,
             dbg: None,
+            #[cfg(target_os = "macos")]
+            vm: VmSession::start(),
             disasm: Vec::new(),
             src_map: HashMap::new(),
             selected: None,
@@ -1633,6 +1646,10 @@ impl eframe::App for App {
         // Et le pas-à-pas Windows expérimental, dont le débogueur tourne sur
         // son propre thread : ici on ne fait que relever ce qu'il a rapporté.
         self.poll_win_debug(ctx);
+        // Démarrage de la VM (macOS) : rien à faire une fois `Ready`, sinon
+        // on redemande une image pour que l'utilisateur voie l'état avancer.
+        #[cfg(target_os = "macos")]
+        self.poll_vm_boot(ctx);
         if self.pending_flash {
             self.flash_time = ctx.input(|i| i.time);
             self.pending_flash = false;
@@ -1774,6 +1791,17 @@ impl App {
             return;
         }
         if self.is_licensed() {
+            // Même besoin de réveil continu que `quit_confirmed` un peu plus
+            // bas (voir son commentaire) : `Close` ne fait que programmer un
+            // événement pour la frame suivante, qui n'arrive jamais toute
+            // seule en rendu à la demande. Sans ce repaint forcé, la fenêtre
+            // peut disparaître (fermeture traitée côté OS) sans que le
+            // processus ne sorte jamais — il faut alors un second clic, ou
+            // n'importe quel autre événement, pour que la frame suivante
+            // arrive et termine la fermeture.
+            if ctx.input(|i| i.viewport().close_requested()) {
+                ctx.request_repaint();
+            }
             return;
         }
         // `quit_confirmed` : une fois « Quitter quand même » cliqué, on laisse

@@ -28,3 +28,6 @@
 # et entrerait en conflit à chaque fusion. Ce qui identifie une livraison, ce
 # sont la version et le commit ; le numéro de build distingue les compilations.
 /build-number.txt
+
+# Poubelle Finder — jamais du projet, une par dossier ouvert dans le Finder.
+/.DS_Store

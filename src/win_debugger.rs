@@ -65,7 +65,10 @@ use std::time::{Duration, Instant};
 
 use object::Object;
 
+#[cfg(target_os = "linux")]
 use crate::debugger::{Flags, FpRegisters, Registers};
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::{Flags, FpRegisters, Registers};
 use crate::i18n::{self, Lang};
 
 /// Ce qui peut empêcher le débogueur Windows de faire ce qu'on lui demande.

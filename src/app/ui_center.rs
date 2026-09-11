@@ -2,7 +2,10 @@ use std::fmt::Write as _;
 
 use eframe::egui::{self, RichText};
 
+#[cfg(target_os = "linux")]
 use crate::debugger::Flags;
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::Flags;
 use crate::explain;
 use crate::i18n;
 use crate::syntax;

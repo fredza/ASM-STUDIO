@@ -15,7 +15,10 @@
 //! Les directives sont des commentaires NASM ordinaires : un fichier d'exercice
 //! s'assemble et s'exécute normalement, y compris hors de l'application.
 
+#[cfg(target_os = "linux")]
 use crate::debugger::Registers;
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::Registers;
 use crate::i18n::{self, Lang};
 
 /// Ce qu'une attente porte sur.

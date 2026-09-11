@@ -1,6 +1,6 @@
 [package]
 name = "asm_studio"
-version = "0.7.16"
+version = "0.7.20"
 edition = "2024"
 # GPLv3 + clause Commons Clause (revente interdite) : ce montage composite
 # n'a pas d'identifiant SPDX standard, le fichier fait foi.
@@ -18,6 +18,26 @@ authors = ["Frederic Z"]
 # de fond, où un panic (rfd, ureq, serde_json) se contente aujourd'hui de tuer
 # le thread. En abort il emporterait l'IDE, et avec lui le source que l'élève
 # n'a pas encore enregistré.
+[lib]
+name = "asm_studio"
+path = "src/lib.rs"
+
+# Agent embarqué dans la VM macOS (voir src/vm_session.rs) : réutilise
+# `debugger` tel quel, compilé pour la cible croisée x86_64-unknown-linux-gnu
+# depuis l'hôte macOS — pas musl : `nix::sys::ptrace::getregset` (registres
+# FP/XMM) n'existe dans nix 0.31 que pour musl+aarch64 ou glibc, jamais
+# musl+x86_64 (voir .cargo/config.toml). `required-features` l'exclut de tout
+# `cargo build` ordinaire — y compris sur Linux, où il n'a aucune raison
+# d'exister — il ne se construit que via `cargo build --bin asmstudio-agent
+# --features vm-agent --target x86_64-unknown-linux-gnu`.
+[[bin]]
+name = "asmstudio-agent"
+path = "src/bin/asmstudio_agent.rs"
+required-features = ["vm-agent"]
+
+[features]
+vm-agent = []
+
 [profile.test.package.epaint]
 # `epaint::textures::TexturesDelta` panique à son `Drop` (via `debug_assert!`,
 # donc seulement en debug — `cargo test --release` n'a jamais vu le problème)

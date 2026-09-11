@@ -1,6 +1,9 @@
 use eframe::egui::{self, Color32, RichText};
 
+#[cfg(target_os = "linux")]
 use crate::debugger::Flags;
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::Flags;
 use crate::i18n;
 use crate::simd::{self, XmmView};
 

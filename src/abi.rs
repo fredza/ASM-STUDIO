@@ -317,7 +317,11 @@ mod tests {
 
 /// Vérifie la description de l'ABI contre un vrai cadre de pile monté par un
 /// programme NASM : sans cela, la table ci-dessus resterait une affirmation.
-#[cfg(test)]
+///
+/// Linux uniquement : exerce `Debugger` (ptrace) directement, pas le chemin
+/// VM de macOS — voir le plan de portage macOS pour la raison (couvrir le
+/// backend VM demande une VM démarrée, hors de portée d'un test unitaire).
+#[cfg(all(test, target_os = "linux"))]
 mod integration {
     use super::*;
     use crate::{assemble, debugger::Debugger, disasm};

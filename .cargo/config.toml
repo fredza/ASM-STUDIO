@@ -1,0 +1,8 @@
+# Lieur croisé pour construire l'agent macOS→VM (src/bin/asmstudio_agent.rs,
+# feature `vm-agent`) depuis cet hôte : `x86_64-unknown-linux-gnu` plutôt que
+# `-musl`, parce que `nix::ptrace::getregset` (utilisé par `debugger.rs` pour
+# les registres FP/XMM) n'est pas disponible pour musl+x86_64 dans nix 0.31 —
+# voir le plan de portage macOS. Nécessite le tap Homebrew
+# `messense/macos-cross-toolchains` (`brew install x86_64-unknown-linux-gnu`).
+[target.x86_64-unknown-linux-gnu]
+linker = "x86_64-linux-gnu-gcc"

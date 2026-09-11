@@ -3,7 +3,10 @@
 //! Pour les sauts conditionnels, la condition est évaluée contre les flags
 //! réels afin d'afficher « le saut sera pris / non pris », comme dans la maquette.
 
+#[cfg(target_os = "linux")]
 use crate::debugger::Flags;
+#[cfg(target_os = "macos")]
+use crate::vm_debugger::Flags;
 use crate::i18n::{self, Lang};
 
 /// Résultat de l'évaluation d'un saut conditionnel :
