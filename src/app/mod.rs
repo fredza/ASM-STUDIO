@@ -980,6 +980,12 @@ const SETTINGS: &[Setting] = &[
     Setting { key: "pie", read: |a| a.pie_enabled.to_string(), write: |a, v| a.pie_enabled = v == "true" },
 ];
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         setup_examples();
